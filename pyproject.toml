@@ -1,0 +1,59 @@
+# =============================================================================
+# 舆情验证报告工具 — 项目元数据配置
+# =============================================================================
+# 参考 MediaCrawler 的 pyproject.toml 结构。
+# 本项目使用 PEP 621 标准格式管理项目元数据。
+# =============================================================================
+
+[project]
+name = "public-opinion-verification-report"
+version = "0.1.0"
+description = "舆情验证报告桌面工具 —— 输入链接文件，自动爬取页面内容、截图、生成 Excel 报告"
+authors = [
+    { name = "developer" },
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.61.0",
+    "httpx>=0.28.0",
+    "requests>=2.32.0",
+    "lxml>=5.3.0",
+    "beautifulsoup4>=4.13.0",
+    "parsel>=1.9.0",
+    "openpyxl>=3.1.2",
+    "chardet>=5.2.0",
+    "PyQt5>=5.15.0",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.0.0",
+    "typer>=0.12.0",
+    "aiofiles>=24.1.0",
+]
+
+[project.urls]
+Homepage = ""
+
+# =============================================================================
+# 工具配置
+# =============================================================================
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
+[tool.pylint.MASTER]
+max-line-length = 120
+
+# =============================================================================
+# 打包配置（使用 PEP 660 的 editabel install）
+# =============================================================================
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["src/*"]
