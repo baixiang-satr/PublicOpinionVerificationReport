@@ -67,7 +67,8 @@ python -m pytest -m excel tests/contract
 测试分层如下：
 
 - 单元测试：URL、枚举、路由、字段映射、资产命名和 ZIP 清单。
-- Playwright 集成测试：使用路由拦截或本地 fixture，覆盖重定向、超时、429、登录墙和空白页。
+- 资产测试：使用内存响应和本地文件，覆盖 MIME/文件头不一致、超限、重复 URL、登录墙以及失败文件不进入附件集合。
+- Playwright 集成测试：只访问本地 fixture，覆盖重定向、正文解析、页面/作者主页截图和页面图片下载。
 - 模板契约测试：仅在 Windows + Microsoft Excel 环境运行，验证源模板哈希、工作表顺序、首行、数据验证、保护和附件引用不变。
 
 不在默认测试中访问真实社交站点、使用真实 Cookie 或写入源 `template/`。

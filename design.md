@@ -347,12 +347,15 @@ class PlatformExtractor(Protocol):
 
 `platform_catalog.py` 枚举所有适用 URL 抓取的模板平台、域名、路径优先级、提取器类别和平台选择器；群聊与朋友圈不注册 URL 路由。提取优先级固定为：平台专用 DOM -> JSON-LD -> Open Graph/meta -> 通用 DOM -> 可见文本。每个字段记录来源标签，例如 `platform_dom`、`json_ld`、`generic_dom` 或 `nickname_fallback`，用于 GUI 审计而非 Excel 导出。
 
+`AuthorShooter` 在主记录必填字段校验通过后，使用原页面的隔离 browser context 新建短生命周期页面访问作者主页。主页返回错误状态、出现登录/访问验证页或截图失败时，关闭页面并追加运行态警告，不改变主记录的 `ASSETS_READY` 状态，也不产生附件引用。
+
 `AssetCollector` 处理页面图片：
 
 - 从 `img[src]`、有效 `srcset` 和平台提取器的媒体数据中收集候选 URL。
 - 去除 `data:`、`blob:`、非 HTTP(S)、重复 URL、跟踪像素、明显头像/图标和过小图片。
-- 以页面上下文的 Cookie/请求头下载公开图片，核验响应状态、`Content-Type` 和大小。
-- 使用真实响应 MIME 类型决定 `jpg`、`png`、`webp` 等扩展名，命名为 `{evidence_id:03d}_{asset_no:02d}.{ext}`。
+- 复用 Playwright browser context 的请求会话下载公开图片，按 `max_images_per_record` 和 `max_image_bytes` 限制数量与体积。
+- 同时核验响应状态、`Content-Type` 与 JPEG/PNG/GIF/WebP/BMP 文件头；类型不一致或无法识别时拒绝附件。
+- 由真实文件头决定扩展名，命名为 `{evidence_id:03d}_{asset_no:02d}.{ext}`，先写 `.part` 再原子替换。
 - 仅将下载成功的文件名写入模板附件列；原始 URL 不进入 ZIP。
 
 ## 7. 固定模板导出设计
