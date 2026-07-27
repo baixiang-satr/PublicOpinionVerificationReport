@@ -2,12 +2,14 @@
 
 本任务清单以 [requirements.md](../requirements.md)、[design.md](../design.md) 和 [template_contract.md](template_contract.md) 为准。每项任务完成后应独立验证，不把未完成的下游功能当作验收前提。
 
-## 当前状态（2026-07-27）
+## 当前状态（2026-07-28）
 
 - [x] T01：模板配置、8 张工作表契约、标准枚举、源目录哈希清单与只读 Excel 契约校验已实现。
 - [x] T02：运行态模型，以及 TXT、CSV、普通 XLSX 的 URL 导入、规范化、稳定去重和证据编号已实现。
 - [x] T03：staging 模板副本、隔离 Excel COM 写入、资产引用校验和 `template.zip` 打包已实现。
-- [ ] T04 至 T08：待后续实现。
+- [x] T04：Playwright 生命周期、隔离 context、域名限速、有限重试、取消、状态码、重定向链与主截图已实现。
+- [x] T05：完整平台目录、模板路由、平台 DOM 优先与 JSON-LD/meta/通用 DOM 回退、时间解析及 ID 昵称回退审计已实现。
+- [ ] T06 至 T08：待后续实现。
 
 ## T01 模板契约与配置基线
 

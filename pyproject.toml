@@ -48,6 +48,7 @@ python_functions = ["test_*"]
 asyncio_mode = "auto"
 markers = [
     "excel: requires pywin32 and a local Microsoft Excel automation server",
+    "playwright: requires an installed local Playwright Chromium executable",
 ]
 
 [tool.pylint.MASTER]

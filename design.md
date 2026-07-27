@@ -3,8 +3,8 @@
 ## 1. 文档信息
 
 - 项目名称：舆情验证报告工具（Public Opinion Verification Report Tool）
-- 文档版本：v0.2
-- 编写日期：2026-07-27
+- 文档版本：v0.3
+- 编写日期：2026-07-28
 - 需求依据：[requirements.md](requirements.md)
 - 适用范围：Windows 本地桌面应用 MVP
 
@@ -305,17 +305,18 @@ src/
 | 生活资讯 | H | I | URL、昵称、平台、文本类型、内容 |
 | 浏览器 | H | I | URL、用户账号、昵称、平台、文本类型、内容 |
 
-作者主页 URL 本身没有模板列。若主页截图成功，将 `{证据编号}主页.{ext}` 加入附件列；主页 URL 始终保留在 `RecordResult.page.author_url` 和运行日志中。
+作者主页 URL 本身没有模板列。若主页截图成功，将 `{证据编号}主页.{ext}` 加入附件列；主页 URL 始终保留在 `RecordResult.page.author_url` 和运行日志中。账号 ID 无法从公开页可靠取得时允许昵称回退，但必须设置 `author_id_is_fallback=True`，并将字段来源标记为 `nickname_fallback`。
 
 ### 6.4 爬虫与浏览器池
 
-`CrawlEngine` 管理一个共享 Chromium 实例和 N 个隔离的 browser context。每个 worker 使用一个 context，在其中完成：访问页面、读取响应状态、提取 HTML、主截图、作者主页截图和需要登录态的页面图片下载。
+`CrawlEngine` 管理一个共享 Chromium 实例，并在并发上限内为每次 URL 尝试创建隔离的 browser context。context 负责访问页面、读取响应状态、提取渲染后 DOM 和生成主截图，并在本次尝试结束后关闭；批任务结束时统一关闭 Chromium 和 Playwright。
 
 ```python
 class CrawlEngine:
     async def run(
         self,
         tasks: list[UrlTask],
+        output_dir: Path,
         on_event: Callable[[TaskEvent], None],
         cancel_event: asyncio.Event,
     ) -> list[RecordResult]: ...
@@ -337,11 +338,14 @@ class CrawlEngine:
 
 ```python
 class PlatformExtractor(Protocol):
-    def matches(self, url: str) -> bool: ...
-    async def extract(self, page: Page) -> PageData: ...
+    def extract(
+        self,
+        document: RenderedDocument,
+        definition: PlatformDefinition,
+    ) -> PageData: ...
 ```
 
-提取优先级固定为：平台专用 DOM/嵌入数据 -> JSON-LD -> Open Graph/meta -> 通用 DOM -> 可见文本。每个字段记录来源标签，例如 `platform_dom`、`json_ld` 或 `fallback_text`，用于 GUI 审计而非 Excel 导出。
+`platform_catalog.py` 枚举所有适用 URL 抓取的模板平台、域名、路径优先级、提取器类别和平台选择器；群聊与朋友圈不注册 URL 路由。提取优先级固定为：平台专用 DOM -> JSON-LD -> Open Graph/meta -> 通用 DOM -> 可见文本。每个字段记录来源标签，例如 `platform_dom`、`json_ld`、`generic_dom` 或 `nickname_fallback`，用于 GUI 审计而非 Excel 导出。
 
 `AssetCollector` 处理页面图片：
 

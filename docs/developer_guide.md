@@ -18,7 +18,7 @@ playwright install chromium
 1. `template/` 是只读源；所有写入只能针对任务 staging 副本。
 2. 模板工作簿禁止用 `openpyxl`、pandas 或 xlsxwriter 另存；只允许 Excel COM 直接保存副本。
 3. 采集事实与模板行必须分离：`RecordResult` 保存完整事实，`TemplateRow` 只保存模板允许的字段。
-4. 平台路由、标准枚举和列映射集中于 `src/domain/template_schema.py`，不得散落在 UI 或选择器中。
+4. 模板标准枚举和列映射集中于 `src/domain/template_schema.py`；平台域名、分类和选择器集中于 `src/crawler/platform_catalog.py`，不得散落在 UI 中。
 5. 每个异步任务必须可以取消；浏览器、页面、Excel COM 和临时文件都必须在 `finally` 中释放。
 6. 不实现代理池、反检测、验证码处理、未经用户授权的 CDP 连接或访问控制绕过。
 
@@ -48,8 +48,8 @@ playwright install chromium
 
 新增平台前必须先确认其在固定模板的允许枚举中有明确落点。实现顺序：
 
-1. 在 `template_schema.py` 注册域名、工作表和标准发布平台值。
-2. 在 `crawler/extractors/` 新增符合 `PlatformExtractor` 协议的提取器。
+1. 确认平台值已经存在于 `template_schema.py` 的固定模板枚举。
+2. 在 `crawler/platform_catalog.py` 注册域名、路径优先级、提取器类别和平台选择器。
 3. 写入 fixture 和路由、提取、模板映射测试。
 4. 在可访问的真实页面上做人工验证；访问受限时记录为待人工补录，而不是以猜测数据通过导出。
 
@@ -59,6 +59,8 @@ playwright install chromium
 
 ```powershell
 python -m pytest tests/test_input tests/test_export
+python -m pytest tests/test_crawler tests/test_screenshot -m "not playwright"
+python -m pytest tests/test_crawler tests/test_screenshot -m playwright
 python -m pytest -m excel tests/contract
 ```
 
