@@ -1,0 +1,56 @@
+import pytest
+
+from src.crawler.platform_catalog import PLATFORM_DEFINITIONS, validate_catalog
+from src.crawler.platform_router import PlatformRouter
+from src.domain.models import PageData
+from src.domain.template_schema import SHEET_LAYOUTS
+
+
+def test_platform_catalog_exactly_covers_url_supported_template_enums() -> None:
+    validate_catalog()
+    expected = set()
+    for sheet_name, layout in SHEET_LAYOUTS.items():
+        if sheet_name in {"群聊", "朋友圈"}:
+            continue
+        platform_column = layout.field_columns["platform"]
+        expected.update(layout.validation_values[platform_column])
+    actual = {definition.platform_value for definition in PLATFORM_DEFINITIONS}
+
+    assert actual == expected
+    assert not {definition.sheet_name for definition in PLATFORM_DEFINITIONS} & {"群聊", "朋友圈"}
+
+
+@pytest.mark.parametrize(
+    ("url", "sheet_name", "platform_value"),
+    [
+        ("https://item.jd.com/100.html", "电商平台", "京东_京东商城_电商平台"),
+        ("https://www.douyin.com/product/123", "电商平台", "字节跳动_抖音_电商平台"),
+        ("https://mp.weixin.qq.com/s/abc", "公众号", "微信-公众号"),
+        ("https://www.douyin.com/video/123", "图文视频", "字节跳动_抖音_图文视频"),
+        ("https://tv.sohu.com/v/abc.html", "图文视频", "搜狐_搜狐视频_图文视频"),
+        ("https://www.zhihu.com/question/1", "微博博客", "知乎_知乎_博客贴吧"),
+        ("https://news.sohu.com/a/123", "生活资讯", "搜狐_搜狐新闻_生活资讯"),
+        ("https://m.sm.cn/article/123", "浏览器", "阿里巴巴_UC浏览器_浏览器"),
+    ],
+)
+def test_platform_router_uses_final_domain_and_specific_path(
+    url: str,
+    sheet_name: str,
+    platform_value: str,
+) -> None:
+    decision = PlatformRouter().route(url, PageData(text_type_hint="正文"))
+
+    assert decision is not None
+    assert decision.sheet_name == sheet_name
+    assert decision.platform_value == platform_value
+
+
+def test_platform_router_preserves_comment_hint_and_rejects_unknown_hosts() -> None:
+    router = PlatformRouter()
+    decision = router.route("https://weibo.com/123/abc", PageData(text_type_hint="评论回复"))
+
+    assert decision is not None
+    assert decision.text_type == "评论回复"
+    assert router.route("https://example.com/article", PageData()) is None
+    assert not router.is_url_supported_sheet("群聊")
+    assert not router.is_url_supported_sheet("朋友圈")
