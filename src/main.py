@@ -1,13 +1,20 @@
-"""
-舆情验证报告工具 — 桌面应用入口
-"""
+"""Desktop application entry point."""
+
+from __future__ import annotations
+
 import sys
 
 
-def main():
-    """应用程序入口函数，初始化 UI 并启动事件循环。"""
-    pass
+def main() -> int:
+    try:
+        from src.ui.app import run_app
+    except ImportError as error:
+        if error.name and error.name.startswith("PyQt5"):
+            print("缺少 PyQt5，请先运行：pip install -r requirements.txt", file=sys.stderr)
+            return 2
+        raise
+    return run_app()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

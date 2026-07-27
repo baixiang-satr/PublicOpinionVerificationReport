@@ -64,6 +64,7 @@ class CrawlEngine:
         tasks: list[UrlTask],
         output_dir: Path,
         on_event: Callable[[TaskEvent], None] | None = None,
+        on_result: Callable[[RecordResult], None] | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> list[RecordResult]:
         if not tasks:
@@ -73,7 +74,13 @@ class CrawlEngine:
         try:
             jobs = [
                 asyncio.create_task(
-                    self._process(task, Path(output_dir), on_event, cancellation),
+                    self._process(
+                        task,
+                        Path(output_dir),
+                        on_event,
+                        on_result,
+                        cancellation,
+                    ),
                     name=f"crawl-{task.evidence_id}",
                 )
                 for task in tasks
@@ -87,6 +94,7 @@ class CrawlEngine:
         task: UrlTask,
         output_dir: Path,
         on_event: Callable[[TaskEvent], None] | None,
+        on_result: Callable[[RecordResult], None] | None,
         cancel_event: asyncio.Event,
     ) -> RecordResult:
         result = RecordResult(task=task, status=RecordStatus.RUNNING, started_at=_now())
@@ -113,6 +121,11 @@ class CrawlEngine:
         finally:
             result.finished_at = _now()
             self._emit(result, "finish", result.status.value, on_event)
+            if on_result is not None:
+                try:
+                    on_result(result)
+                except Exception:
+                    pass
         return result
 
     async def _crawl_attempt(
