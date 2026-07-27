@@ -2,7 +2,7 @@
 
 ## 开始前
 
-开发以 [requirements.md](../requirements.md)、[design.md](../design.md) 和 [template_contract.md](template_contract.md) 为准。README 只提供导航，不是字段映射的权威来源。
+开发以 [requirements.md](../requirements.md)、[design.md](../design.md)、[template_contract.md](template_contract.md)、[task_breakdown.md](task_breakdown.md) 和 [ai_coding_constraints.md](ai_coding_constraints.md) 为准。README 只提供导航，不是字段映射的权威来源。
 
 运行环境为 Windows 10/11、Python 3.11+、Microsoft Excel 和 Playwright Chromium。安装命令：
 
@@ -38,7 +38,7 @@ playwright install chromium
 
 1. `TemplateManager` 对源 `template/` 计算 SHA-256 清单并复制到 staging。
 2. `TemplateRowMapper` 只接收 `READY_FOR_EXPORT` 的记录，并校验必填列与标准枚举。
-3. `ExcelTemplateWriter` 在单一 COM 线程中打开副本，清空第 3 行及后的业务值，写入新数据并直接 `Save()`。
+3. `ExcelTemplateWriter` 在短生命周期、隔离的 Excel COM worker 中打开副本，清空第 3 行及后的业务值，写入新数据并直接 `Save()`；worker 在退出前调用 `Quit()`，避免 COM 释放影响 UI 进程。
 4. `PackageValidator` 从 Excel 读取截图/附件列，确认每一个引用都在 staging 根目录存在。
 5. `Packager` 使用临时压缩包和原子替换生成 `template.zip`。
 
@@ -58,8 +58,8 @@ playwright install chromium
 ## 测试
 
 ```powershell
-pytest
-pytest tests/test_input tests/test_crawler tests/test_export
+python -m pytest tests/test_input tests/test_export
+python -m pytest -m excel tests/contract
 ```
 
 测试分层如下：

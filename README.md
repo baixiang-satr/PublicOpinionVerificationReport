@@ -2,7 +2,7 @@
 
 本项目是一个 Windows 本地桌面工具：导入网页 URL，采集页面基础信息、截图和图片附件，并生成固定格式的 `template.zip`。
 
-当前仓库处于“需求与架构已确定、业务代码骨架待实现”阶段。`src/` 中的大多数模块仍为占位骨架，不能把当前版本视为可运行交付物。
+当前已完成 T01 至 T03：模板契约、URL 导入和固定模板导出链路可以独立验证。网页采集、浏览器截图、平台适配、端到端编排与桌面界面仍是待实现骨架，因此当前版本还不是完整可运行交付物。
 
 ## 交付契约
 
@@ -22,6 +22,8 @@
 | [design.md](design.md) | 模块设计、数据模型、任务状态机、模板写入、GUI 和测试方案。 |
 | [docs/template_contract.md](docs/template_contract.md) | 固定模板与 `template.zip` 的开发检查清单。 |
 | [docs/reference_review.md](docs/reference_review.md) | 三个参考项目的取舍与本项目最终选择。 |
+| [docs/task_breakdown.md](docs/task_breakdown.md) | 按依赖与验收标准拆分的实施任务。 |
+| [docs/ai_coding_constraints.md](docs/ai_coding_constraints.md) | 编码前必须遵守的 10 条 AI 约束。 |
 | [docs/developer_guide.md](docs/developer_guide.md) | 开发环境、模块职责、测试和完成定义。 |
 | [docs/user_guide.md](docs/user_guide.md) | 完成实现后的安装、操作流程和限制说明。 |
 

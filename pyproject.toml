@@ -46,6 +46,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
+markers = [
+    "excel: requires pywin32 and a local Microsoft Excel automation server",
+]
 
 [tool.pylint.MASTER]
 max-line-length = 120
