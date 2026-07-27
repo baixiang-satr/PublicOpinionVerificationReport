@@ -246,6 +246,8 @@ src/
 │   ├── page_shooter.py           # 主页面截图
 │   ├── author_shooter.py         # 作者主页截图
 │   └── asset_collector.py        # 图片筛选与下载
+├── tools/
+│   └── page_access.py            # 受限页识别与可视人工处理等待
 ├── export/
 │   ├── template_manager.py       # 模板副本、源模板指纹和旧资产清理
 │   ├── row_mapper.py             # RecordResult -> TemplateRow
@@ -275,6 +277,7 @@ src/
 | 抓取 | `min_host_interval_seconds` | 1.0 | 同一域名请求的最小间隔。 |
 | 浏览器 | `headless` | `True` | 可由 GUI 覆盖。 |
 | 浏览器 | `storage_state_path` | `None` | 用户显式提供的登录态，不写入日志或 ZIP。 |
+| 浏览器 | `manual_intervention_timeout_seconds` | 90 | 仅可视模式下等待用户完成登录/验证，范围 0-600 秒。 |
 | 截图 | `screenshot_format` | `jpeg` | 仅 `jpeg` 或 `png`。 |
 | 截图 | `full_page` | `True` | 全页截图开关。 |
 | 图片 | `download_page_images` | `True` | 是否将页面图片纳入附件。 |
@@ -326,11 +329,13 @@ class CrawlEngine:
 
 1. `page.goto(url, wait_until="domcontentloaded")` 获取主文档响应和状态码。
 2. 等待短暂稳定窗口与平台关键元素；不能把 `networkidle` 作为唯一成功条件，因为社交页面可能长期轮询。
-3. 获取 `page.url`、`page.title()`、`page.content()`、可见文本和 DOM 中的图片候选。
-4. 主页面截图写入 staging 目录；之后再尝试作者主页。
-5. 每次导航、截图和文件下载均检查 `cancel_event`。
+3. 调用 `tools.page_access` 检查登录墙、验证码、空白页、API 响应、内容失效和跳回首页；命中时先阻止截图。
+4. 可视模式下仅对登录/验证码开放有界人工处理窗口；处理成功后重新检查页面，不自动破解验证。
+5. 获取 `page.url`、页面标题、可见文本、结构化数据和 DOM 中的图片候选。
+6. 仅通过访问诊断和必填字段校验的页面写入主截图；之后再尝试作者主页。
+7. 每次导航、截图和文件下载均检查 `cancel_event`。
 
-重试仅针对 DNS/连接失败、超时、429 和 5xx；403、验证码、登录墙和平台结构变化应直接进入 `NEEDS_REVIEW` 或 `FAILED`，不应高频重试。退避策略为 `base_delay * 2^attempt + 随机抖动`，并受域名限速器约束。
+重试仅针对 DNS/连接失败、超时、429 和 5xx；401/403/405、验证码、登录墙和平台结构变化应直接进入 `NEEDS_REVIEW` 或 `FAILED`，不应高频重试。404 和明确的“内容不存在/已删除”进入 `FAILED`。退避策略为 `base_delay * 2^attempt + 随机抖动`，并受域名限速器约束。
 
 ### 6.5 内容、作者和图片提取
 

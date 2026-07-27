@@ -60,6 +60,7 @@ src/
 ├── screenshot/             # 浏览器池、页面/主页截图、图片附件
 ├── export/                 # 模板副本、行映射、Excel COM、校验和打包
 ├── services/               # 端到端任务编排
+├── tools/                  # 受限页诊断与可视人工接力
 ├── ui/                     # PyQt5 界面与后台 worker
 └── utils/                  # 文件、时间、日志和 URL 工具
 
@@ -94,8 +95,8 @@ python -m pytest -m "not excel and not external"
 
 `references/MediaCrawler-main` 的任务生命周期、资源清理、浏览器上下文和平台适配器设计被吸收；`MediaCrawler-new-main` 提供了保持骨架精简的思路；浏览器插件帮助确认模板字段、示例行和截图附件关联。
 
-本项目不采用参考项目中的代理池、反检测、验证码处理、默认 CDP 连接用户浏览器、重建单工作表或多数据库输出方案。默认使用隔离的 Playwright context，用户只能显式提供合法登录态或选择可视化登录。
+本项目不采用参考项目中的代理池、自动化隐匿、验证码破解、默认 CDP 连接用户浏览器、重建单工作表或多数据库输出方案。默认使用隔离的 Playwright context；用户可显式提供自己的合法登录态，或选择可视模式，在 90 秒人工处理窗口内完成登录/验证。
 
 ## 合规边界
 
-工具只处理用户有权处理的公开信息，不绕过验证码、付费墙、登录权限或站点访问控制。Cookie、令牌、浏览器 profile、调试 HTML 和本机日志均不得打入 `template.zip`。
+工具只处理用户有权处理的信息，不自动破解验证码，不绕过付费墙、登录权限或站点访问控制。`src/tools/page_access.py` 只负责识别受限页面、阻止错误截图，并支持用户在可视浏览器中手工处理。Cookie、令牌、浏览器 profile、调试 HTML 和本机日志均不得打入 `template.zip`。
