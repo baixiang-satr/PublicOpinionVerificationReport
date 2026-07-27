@@ -6,9 +6,9 @@
 #
 # 依赖来源说明:
 #   Playwright      — 参考 MediaCrawler 的浏览器自动化方案，用于页面截图
-#   openpyxl        — 参考 浏览器插件 的 Excel 处理方案，生成 template.xlsx
+#   openpyxl        — 仅读取用户提供的普通 XLSX URL 清单
 #   httpx / requests — 参考 MediaCrawler 的 HTTP 客户端方案，用于页面爬取
-#   PyQt5 / tkinter  — 桌面 UI 框架
+#   PyQt5           — 桌面 UI 框架
 # =============================================================================
 
 # ── 浏览器自动化 & 截图 ──────────────────────────────────────────────────────

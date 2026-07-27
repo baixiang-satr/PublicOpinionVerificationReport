@@ -2,7 +2,7 @@
 
 本项目是一个 Windows 本地桌面工具：导入网页 URL，采集页面基础信息、截图和图片附件，并生成固定格式的 `template.zip`。
 
-当前已完成 T01 至 T06：模板契约、URL 导入、固定模板导出、Playwright 页面访问、平台路由、内容解析、主页面/作者主页截图和页面图片下载均可独立验证。端到端任务编排与桌面界面仍待实现，因此当前版本还不是完整可运行交付物。
+T01 至 T08 已完成：模板契约、URL 导入、页面采集、平台路由、截图与附件、固定模板导出、端到端任务编排、桌面界面和发布检查均已接通并通过自动化验证。
 
 ## 交付契约
 
@@ -27,7 +27,19 @@
 | [docs/developer_guide.md](docs/developer_guide.md) | 开发环境、模块职责、测试和完成定义。 |
 | [docs/user_guide.md](docs/user_guide.md) | 完成实现后的安装、操作流程和限制说明。 |
 
-## 目标架构
+## 运行工具
+
+安装依赖和浏览器后启动桌面界面：
+
+```powershell
+pip install -r requirements.txt
+python -m playwright install chromium
+python -m src.main
+```
+
+界面按“选择 URL 文件、检查设置、开始生成”三步操作。成功后会显示 `output/<任务编号>/template.zip` 的绝对路径；取消或全部失败时不会生成空包。
+
+## 处理流程
 
 ```text
 输入文件 -> URL 解析/去重 -> 任务编排 -> Playwright 页面访问
@@ -56,7 +68,12 @@ tests/
 ├── test_crawler/
 ├── test_screenshot/
 ├── test_export/
+├── test_services/
+├── test_ui/
 └── contract/               # 仅 Windows + Excel 环境运行的模板契约测试
+
+tools/
+└── release_check.py        # 代码、文档链接、模板哈希和 ZIP 发布检查
 ```
 
 ## 开发环境
@@ -67,11 +84,11 @@ tests/
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-playwright install chromium
-pytest
+python -m playwright install chromium
+python -m pytest -m "not excel and not external"
 ```
 
-真实的模板导出契约测试必须在已安装 Microsoft Excel 的 Windows 环境中执行；普通单元测试不应启动 Excel 或访问外部站点。
+真实模板契约测试使用 `python -m pytest -m excel tests/contract`。发布前运行 `python tools/release_check.py`；普通测试和发布检查均不会访问真实外部站点。
 
 ## 参考项目取舍
 

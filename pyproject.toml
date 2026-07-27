@@ -49,6 +49,8 @@ asyncio_mode = "auto"
 markers = [
     "excel: requires pywin32 and a local Microsoft Excel automation server",
     "playwright: requires an installed local Playwright Chromium executable",
+    "ui: requires PyQt5 and an offscreen-capable Qt platform",
+    "external: opt-in tests that access real public websites",
 ]
 
 [tool.pylint.MASTER]

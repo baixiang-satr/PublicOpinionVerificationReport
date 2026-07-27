@@ -58,10 +58,11 @@ playwright install chromium
 ## 测试
 
 ```powershell
-python -m pytest tests/test_input tests/test_export
-python -m pytest tests/test_crawler tests/test_screenshot -m "not playwright"
-python -m pytest tests/test_crawler tests/test_screenshot -m playwright
+python -m pytest -m "not excel and not external"
+python -m pytest tests/test_crawler/test_engine_playwright.py
+python -m pytest -m ui tests/test_ui
 python -m pytest -m excel tests/contract
+python tools/release_check.py
 ```
 
 测试分层如下：
@@ -69,9 +70,13 @@ python -m pytest -m excel tests/contract
 - 单元测试：URL、枚举、路由、字段映射、资产命名和 ZIP 清单。
 - 资产测试：使用内存响应和本地文件，覆盖 MIME/文件头不一致、超限、重复 URL、登录墙以及失败文件不进入附件集合。
 - Playwright 集成测试：只访问本地 fixture，覆盖重定向、正文解析、页面/作者主页截图和页面图片下载。
+- 服务与 UI 测试：使用依赖替身覆盖成功、取消、全失败、合并重试和 QThread 信号；Qt 使用 offscreen 平台验证布局。
 - 模板契约测试：仅在 Windows + Microsoft Excel 环境运行，验证源模板哈希、工作表顺序、首行、数据验证、保护和附件引用不变。
+- 端到端契约测试：本地 HTTP fixture 经 Playwright、TaskRunner 和真实 Excel COM 生成最终 ZIP。
 
-不在默认测试中访问真实社交站点、使用真实 Cookie 或写入源 `template/`。
+真实站点诊断测试标记为 `external` 并默认跳过；只有显式设置 `POR_RUN_EXTERNAL_TESTS=1` 时才运行。普通测试不得使用真实 Cookie 或写入源 `template/`。
+
+`tools/release_check.py` 会解析全部 Python 文件、检查 500 行上限、验证 Markdown 本地链接、输出源模板指纹，并可通过 `--archive <path>` 检查 ZIP 路径和运行态文件泄漏。
 
 ## 完成定义
 
