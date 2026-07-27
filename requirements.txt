@@ -56,6 +56,10 @@ typer>=0.12.0
 # 参考 MediaCrawler 使用 asyncio + aiofiles
 aiofiles>=24.1.0
 
+# ── OCR 图片文字识别 ──────────────────────────────────────────────────────────
+# rapidocr-onnxruntime: 基于 ONNX Runtime 的 OCR，中文识别优秀，相对轻量
+rapidocr-onnxruntime>=1.2.3
+
 # ── 开发 / 测试 ──────────────────────────────────────────────────────────────
 pytest>=7.4.0
 pytest-asyncio>=0.24.0
