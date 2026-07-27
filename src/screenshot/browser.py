@@ -1,12 +1,7 @@
 """
-浏览器管理器 — 封装 Playwright 浏览器的生命周期管理
+浏览器管理器 — 封装 Playwright Chromium 与隔离 context 的生命周期。
 
-参考项目: MediaCrawler-main 的 Playwright 使用方式
-
-功能:
-    1. 启动/关闭 Chromium 浏览器实例
-    2. 管理浏览器上下文（Cookies、缓存等）
-    3. 提供统一的页面操作接口
-    4. 支持无头模式和可视化模式切换
+默认启动本程序拥有的浏览器实例；支持用户显式提供 storage state 或可视化登录。
+不默认通过 CDP 连接用户正在运行的浏览器，不注入反检测脚本，也不持久化 Cookie 到交付目录。
 """
 pass

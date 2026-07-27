@@ -30,8 +30,11 @@ beautifulsoup4>=4.13.0
 parsel>=1.9.0
 
 # ── Excel 文件处理 ────────────────────────────────────────────────────────────
-# openpyxl: 读写 .xlsx 文件，用于生成最终的 template.xlsx
+# openpyxl: 仅读取用户输入的标准 .xlsx，禁止用其写出固定模板
 openpyxl>=3.1.2
+
+# pywin32: 通过 Windows Excel COM 在不破坏受保护模板的前提下写入副本
+pywin32>=308; platform_system == "Windows"
 
 # ── 文本处理 ──────────────────────────────────────────────────────────────────
 # chardet: 自动检测文件编码（处理用户输入的 TXT/CSV 文件）

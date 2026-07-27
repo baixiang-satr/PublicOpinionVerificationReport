@@ -1,15 +1,75 @@
 # 开发者指南
 
-## 项目概述
+## 开始前
 
-## 环境搭建
+开发以 [requirements.md](../requirements.md)、[design.md](../design.md) 和 [template_contract.md](template_contract.md) 为准。README 只提供导航，不是字段映射的权威来源。
 
-## 项目结构
+运行环境为 Windows 10/11、Python 3.11+、Microsoft Excel 和 Playwright Chromium。安装命令：
 
-## 开发规范
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+playwright install chromium
+```
 
-## 模块说明
+## 开发原则
 
-## 测试指南
+1. `template/` 是只读源；所有写入只能针对任务 staging 副本。
+2. 模板工作簿禁止用 `openpyxl`、pandas 或 xlsxwriter 另存；只允许 Excel COM 直接保存副本。
+3. 采集事实与模板行必须分离：`RecordResult` 保存完整事实，`TemplateRow` 只保存模板允许的字段。
+4. 平台路由、标准枚举和列映射集中于 `src/domain/template_schema.py`，不得散落在 UI 或选择器中。
+5. 每个异步任务必须可以取消；浏览器、页面、Excel COM 和临时文件都必须在 `finally` 中释放。
+6. 不实现代理池、反检测、验证码处理、未经用户授权的 CDP 连接或访问控制绕过。
 
-## 构建与发布
+## 模块职责
+
+| 模块 | 职责 | 不应承担的职责 |
+| --- | --- | --- |
+| `input/` | 读取用户文件、抽取和稳定去重 URL | 路由平台、写 Excel。 |
+| `crawler/` | 页面访问、限速、重试、字段提取和平台路由 | 直接生成模板行或控制 GUI。 |
+| `screenshot/` | 管理浏览器 context、主截图、主页截图、图片下载 | 决定 Excel 列。 |
+| `domain/` | 稳定模型、模板结构和枚举 | I/O、UI 或浏览器调用。 |
+| `export/` | 模板复制、行映射、Excel COM、资产校验、ZIP | 重新抓取网页。 |
+| `services/` | 协调完整任务、发布进度事件、处理取消 | 具体页面 DOM 选择器。 |
+| `ui/` | 收集参数、显示进度和运行态审计信息 | 在主线程执行阻塞任务。 |
+
+## 模板开发流程
+
+1. `TemplateManager` 对源 `template/` 计算 SHA-256 清单并复制到 staging。
+2. `TemplateRowMapper` 只接收 `READY_FOR_EXPORT` 的记录，并校验必填列与标准枚举。
+3. `ExcelTemplateWriter` 在单一 COM 线程中打开副本，清空第 3 行及后的业务值，写入新数据并直接 `Save()`。
+4. `PackageValidator` 从 Excel 读取截图/附件列，确认每一个引用都在 staging 根目录存在。
+5. `Packager` 使用临时压缩包和原子替换生成 `template.zip`。
+
+任何一步失败都不能修改源模板或生成看似成功的 ZIP。
+
+## 平台扩展
+
+新增平台前必须先确认其在固定模板的允许枚举中有明确落点。实现顺序：
+
+1. 在 `template_schema.py` 注册域名、工作表和标准发布平台值。
+2. 在 `crawler/extractors/` 新增符合 `PlatformExtractor` 协议的提取器。
+3. 写入 fixture 和路由、提取、模板映射测试。
+4. 在可访问的真实页面上做人工验证；访问受限时记录为待人工补录，而不是以猜测数据通过导出。
+
+不能通过新增“其他”平台值或篡改模板下拉选项绕过路由问题。
+
+## 测试
+
+```powershell
+pytest
+pytest tests/test_input tests/test_crawler tests/test_export
+```
+
+测试分层如下：
+
+- 单元测试：URL、枚举、路由、字段映射、资产命名和 ZIP 清单。
+- Playwright 集成测试：使用路由拦截或本地 fixture，覆盖重定向、超时、429、登录墙和空白页。
+- 模板契约测试：仅在 Windows + Microsoft Excel 环境运行，验证源模板哈希、工作表顺序、首行、数据验证、保护和附件引用不变。
+
+不在默认测试中访问真实社交站点、使用真实 Cookie 或写入源 `template/`。
+
+## 完成定义
+
+一次功能改动只有同时满足以下条件才可认为完成：需求文档已同步、单元测试覆盖主要分支、模板契约未被破坏、源模板清单未改变、最终 ZIP 没有缺失引用或额外运行态文件。

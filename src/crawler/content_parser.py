@@ -1,14 +1,7 @@
 """
-内容解析器 — 从 HTML 中提取结构化信息
+内容解析器 — 从 Playwright 渲染后的 DOM 中提取运行态 PageData。
 
-参考项目: MediaCrawler-main/model/ 数据模型定义
-
-提取字段:
-    - title:      页面标题
-    - content:    正文文本
-    - author:     发布者名称
-    - author_url: 发布者主页链接
-    - publish_time: 发布时间
-    - images:     页面中的图片列表
+提取顺序为平台专用规则、JSON-LD、meta、通用 DOM 和可见文本。返回的标题、正文、
+作者、主页、发布时间和图片 URL 都是采集事实；是否能写入固定模板由后续路由和行映射决定。
 """
 pass
