@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,15 @@ from src.config.settings import TaskConfig
 from src.crawler.engine import CrawlEngine
 from src.domain.models import RecordStatus, UrlTask
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.playwright]
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.playwright,
+    pytest.mark.external,
+    pytest.mark.skipif(
+        os.getenv("POR_RUN_EXTERNAL_TESTS") != "1",
+        reason="Set POR_RUN_EXTERNAL_TESTS=1 to run real-site diagnostics.",
+    ),
+]
 
 # ── 测试 URL 列表（覆盖模板所有适用工作表的平台） ────────────────────────
 # 每个平台一个公开可访问的 URL。部分 URL 可能已过期，但不影响反爬分析。
