@@ -6,7 +6,9 @@ import pytest
 
 from src.config.settings import TaskConfig
 from src.crawler.engine import CrawlEngine
-from src.domain.models import PageData, RecordStatus, UrlTask
+from src.domain.models import PageData, RecordStatus, TaskError, UrlTask
+from src.screenshot.asset_collector import AssetCollectionResult
+from src.screenshot.author_shooter import AuthorScreenshotError
 
 
 class FakeRequest:
@@ -75,6 +77,40 @@ class StubShooter:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"jpeg")
         return path
+
+
+class AssetParser:
+    async def extract(self, _page: FakePage, _definition: object) -> PageData:
+        return PageData(
+            title="Question",
+            content_text="Answer body",
+            content_summary="Answer body",
+            author_name="Author",
+            author_url="https://example.test/author",
+            image_urls=["https://example.test/image.png"],
+        )
+
+
+class FailingAuthorShooter:
+    async def capture(self, *_args: object) -> Path:
+        raise AuthorScreenshotError("AUTHOR_HTTP_ERROR", "作者主页返回 HTTP 403")
+
+
+class StubAssetCollector:
+    async def collect(
+        self,
+        _page: object,
+        _urls: list[str],
+        _evidence_id: int,
+        output_dir: Path,
+        _cancel_event: object,
+    ) -> AssetCollectionResult:
+        path = output_dir / "001_01.png"
+        path.write_bytes(b"png")
+        return AssetCollectionResult(
+            files=(path,),
+            errors=(TaskError("image_download", "IMAGE_HTTP_ERROR", "另一张图片失败"),),
+        )
 
 
 @pytest.mark.asyncio
@@ -159,3 +195,26 @@ async def test_engine_applies_http_retry_policy(
     assert result.attempt_count == expected_attempts
     assert pool.page_count == expected_attempts
     assert all(error.code == error_code for error in result.errors)
+
+
+@pytest.mark.asyncio
+async def test_optional_asset_failures_do_not_block_valid_record(tmp_path: Path) -> None:
+    pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
+    engine = CrawlEngine(
+        TaskConfig(min_host_interval_seconds=0, page_stabilize_milliseconds=0),
+        browser_pool=pool,
+        parser=AssetParser(),
+        shooter=StubShooter(),
+        author_shooter=FailingAuthorShooter(),
+        asset_collector=StubAssetCollector(),
+    )
+
+    [result] = await engine.run(
+        [UrlTask(1, "https://www.zhihu.com/question/1", "https://www.zhihu.com/question/1")],
+        tmp_path,
+    )
+
+    assert result.status == RecordStatus.ASSETS_READY
+    assert result.assets.author_screenshot is None
+    assert [path.name for path in result.assets.downloaded_images] == ["001_01.png"]
+    assert [error.code for error in result.errors] == ["AUTHOR_HTTP_ERROR", "IMAGE_HTTP_ERROR"]

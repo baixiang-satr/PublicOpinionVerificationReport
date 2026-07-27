@@ -1,0 +1,128 @@
+from pathlib import Path
+
+import pytest
+
+from src.config.settings import TaskConfig
+from src.screenshot.author_shooter import AuthorShooter, AuthorScreenshotError
+
+
+class FakeResponse:
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+
+class FakeAuthorPage:
+    def __init__(self, status: int) -> None:
+        self.status = status
+        self.closed = False
+        self.goto_url: str | None = None
+
+    async def goto(self, url: str, **_options: object) -> FakeResponse:
+        self.goto_url = url
+        return FakeResponse(self.status)
+
+    async def wait_for_timeout(self, _milliseconds: int) -> None:
+        return None
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeBodyLocator:
+    async def inner_text(self, **_options: object) -> str:
+        return "请先登录后查看该作者主页"
+
+
+class RestrictedAuthorPage(FakeAuthorPage):
+    async def title(self) -> str:
+        return "登录"
+
+    def locator(self, _selector: str) -> FakeBodyLocator:
+        return FakeBodyLocator()
+
+
+class FakeContext:
+    def __init__(self, author_page: FakeAuthorPage) -> None:
+        self.author_page = author_page
+
+    async def new_page(self) -> FakeAuthorPage:
+        return self.author_page
+
+
+class FakeSourcePage:
+    def __init__(self, author_page: FakeAuthorPage) -> None:
+        self.context = FakeContext(author_page)
+
+
+class StubPageShooter:
+    async def capture_named(
+        self,
+        _page: object,
+        file_stem: str,
+        output_dir: Path,
+        _cancel_event: object,
+    ) -> Path:
+        path = output_dir / f"{file_stem}.png"
+        path.write_bytes(b"png")
+        return path
+
+
+@pytest.mark.asyncio
+async def test_author_shooter_reuses_context_and_closes_page(tmp_path: Path) -> None:
+    author_page = FakeAuthorPage(200)
+    shooter = AuthorShooter(
+        TaskConfig(page_stabilize_milliseconds=0, screenshot_format="png"),
+        shooter=StubPageShooter(),
+    )
+
+    path = await shooter.capture(
+        FakeSourcePage(author_page),
+        "https://example.test/author/42",
+        3,
+        tmp_path,
+    )
+
+    assert path.name == "003主页.png"
+    assert author_page.goto_url == "https://example.test/author/42"
+    assert author_page.closed
+
+
+@pytest.mark.asyncio
+async def test_author_shooter_http_failure_is_reportable_and_closes_page(tmp_path: Path) -> None:
+    author_page = FakeAuthorPage(403)
+    shooter = AuthorShooter(
+        TaskConfig(page_stabilize_milliseconds=0),
+        shooter=StubPageShooter(),
+    )
+
+    with pytest.raises(AuthorScreenshotError) as caught:
+        await shooter.capture(
+            FakeSourcePage(author_page),
+            "https://example.test/author/42",
+            1,
+            tmp_path,
+        )
+
+    assert caught.value.code == "AUTHOR_HTTP_ERROR"
+    assert author_page.closed
+
+
+@pytest.mark.asyncio
+async def test_author_shooter_rejects_login_wall_without_creating_evidence(tmp_path: Path) -> None:
+    author_page = RestrictedAuthorPage(200)
+    shooter = AuthorShooter(
+        TaskConfig(page_stabilize_milliseconds=0),
+        shooter=StubPageShooter(),
+    )
+
+    with pytest.raises(AuthorScreenshotError) as caught:
+        await shooter.capture(
+            FakeSourcePage(author_page),
+            "https://example.test/login",
+            1,
+            tmp_path,
+        )
+
+    assert caught.value.code == "AUTHOR_ACCESS_RESTRICTED"
+    assert author_page.closed
+    assert not list(tmp_path.iterdir())
