@@ -21,6 +21,15 @@ class RecordStatus(StrEnum):
     EXPORTED = "exported"
 
 
+class ExtractionSource(StrEnum):
+    PLATFORM_DOM = "platform_dom"
+    JSON_LD = "json_ld"
+    META = "meta"
+    GENERIC_DOM = "generic_dom"
+    VISIBLE_TEXT = "visible_text"
+    NICKNAME_FALLBACK = "nickname_fallback"
+
+
 @dataclass(frozen=True)
 class UrlTask:
     evidence_id: int
@@ -50,6 +59,10 @@ class PageData:
     image_urls: list[str] = field(default_factory=list)
     status_code: int | None = None
     redirect_chain: list[str] = field(default_factory=list)
+    text_type_hint: str = "正文"
+    field_sources: dict[str, ExtractionSource] = field(default_factory=dict)
+    summary_truncated: bool = False
+    author_id_is_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -88,6 +101,7 @@ class RecordResult:
     errors: list[TaskError] = field(default_factory=list)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    attempt_count: int = 0
 
     def add_error(self, error: TaskError, status: RecordStatus = RecordStatus.FAILED) -> None:
         self.errors.append(error)
@@ -98,6 +112,14 @@ class RecordResult:
         if not self.started_at or not self.finished_at:
             return None
         return max(0.0, (self.finished_at - self.started_at).total_seconds())
+
+
+@dataclass(frozen=True)
+class TaskEvent:
+    evidence_id: int
+    status: RecordStatus
+    stage: str
+    message: str
 
 
 @dataclass(frozen=True)
