@@ -51,7 +51,10 @@ class TaskConfig:
     timezone: str = "Asia/Shanghai"
     headless: bool = True
     storage_state_path: Path | None = None
+    manual_intervention_timeout_seconds: int = 90
     allow_nickname_as_id: bool = True
+    ocr_enabled: bool = True
+    ocr_confidence_threshold: float = 0.5
 
     def __post_init__(self) -> None:
         if not 1 <= self.max_concurrency <= 10:
@@ -70,6 +73,10 @@ class TaskConfig:
             raise ValueError("Image limits must be non-negative and positive respectively.")
         if not 1 <= self.summary_max_chars <= 32_767:
             raise ValueError("summary_max_chars must be between 1 and 32767.")
+        if not 0 <= self.manual_intervention_timeout_seconds <= 600:
+            raise ValueError("manual_intervention_timeout_seconds must be between 0 and 600.")
+        if not 0.0 <= self.ocr_confidence_threshold <= 1.0:
+            raise ValueError("ocr_confidence_threshold must be between 0 and 1.")
 
 
 @dataclass(frozen=True)
@@ -105,10 +112,21 @@ class AppConfig:
             screenshot_format=os.getenv("POR_SCREENSHOT_FORMAT", defaults.task.screenshot_format),
             headless=os.getenv("POR_HEADLESS", str(defaults.task.headless)).lower() in {"1", "true", "yes"},
             storage_state_path=_path_from_environment("POR_STORAGE_STATE_PATH"),
+            manual_intervention_timeout_seconds=int(
+                os.getenv(
+                    "POR_MANUAL_INTERVENTION_TIMEOUT_SECONDS",
+                    defaults.task.manual_intervention_timeout_seconds,
+                )
+            ),
             allow_nickname_as_id=os.getenv(
                 "POR_ALLOW_NICKNAME_AS_ID", str(defaults.task.allow_nickname_as_id)
             ).lower()
             in {"1", "true", "yes"},
+            ocr_enabled=os.getenv("POR_OCR_ENABLED", str(defaults.task.ocr_enabled)).lower()
+            in {"1", "true", "yes"},
+            ocr_confidence_threshold=float(
+                os.getenv("POR_OCR_CONFIDENCE", str(defaults.task.ocr_confidence_threshold))
+            ),
         )
         return cls(template=defaults.template, task=task)
 

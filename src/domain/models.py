@@ -28,6 +28,7 @@ class ExtractionSource(StrEnum):
     GENERIC_DOM = "generic_dom"
     VISIBLE_TEXT = "visible_text"
     NICKNAME_FALLBACK = "nickname_fallback"
+    OCR = "ocr"
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class PageData:
     field_sources: dict[str, ExtractionSource] = field(default_factory=dict)
     summary_truncated: bool = False
     author_id_is_fallback: bool = False
+    ocr_text: str | None = None
 
 
 @dataclass(frozen=True)
