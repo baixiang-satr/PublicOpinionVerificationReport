@@ -24,6 +24,8 @@ from src.domain.models import (
     UrlTask,
 )
 from src.domain.template_schema import get_sheet_layout
+from src.screenshot.asset_collector import AssetCollector
+from src.screenshot.author_shooter import AuthorShooter, AuthorScreenshotError
 from src.screenshot.browser import BrowserPool
 from src.screenshot.page_shooter import PageShooter, PageScreenshotError
 from src.utils.time_utils import DEFAULT_TIMEZONE
@@ -44,12 +46,16 @@ class CrawlEngine:
         parser: ContentParser | None = None,
         router: PlatformRouter | None = None,
         shooter: PageShooter | None = None,
+        author_shooter: AuthorShooter | None = None,
+        asset_collector: AssetCollector | None = None,
     ) -> None:
         self._config = config
         self._browser_pool = browser_pool or BrowserPool(config)
         self._parser = parser or ContentParser(config.summary_max_chars)
         self._router = router or PlatformRouter()
         self._shooter = shooter or PageShooter(config)
+        self._author_shooter = author_shooter or AuthorShooter(config)
+        self._asset_collector = asset_collector or AssetCollector(config)
         self._author = AuthorExtractor(config.allow_nickname_as_id)
         self._rate_limiter = HostRateLimiter(config.min_host_interval_seconds)
 
@@ -189,6 +195,7 @@ class CrawlEngine:
                         ),
                         RecordStatus.NEEDS_REVIEW,
                     )
+                await self._collect_optional_assets(page, result, output_dir, cancel_event)
                 result.status = RecordStatus.ASSETS_READY
         except CrawlFailure:
             raise
@@ -200,6 +207,62 @@ class CrawlEngine:
                 TaskError("navigation", code, str(error), retryable=True),
                 RecordStatus.FAILED,
             ) from error
+
+    async def _collect_optional_assets(
+        self,
+        page: Any,
+        result: RecordResult,
+        output_dir: Path,
+        cancel_event: asyncio.Event,
+    ) -> None:
+        if result.page.author_url:
+            try:
+                result.assets.author_screenshot = await self._author_shooter.capture(
+                    page,
+                    result.page.author_url,
+                    result.task.evidence_id,
+                    output_dir,
+                    cancel_event,
+                )
+            except AuthorScreenshotError as error:
+                result.errors.append(
+                    TaskError("author_screenshot", error.code, str(error), retryable=False)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                result.errors.append(
+                    TaskError(
+                        "author_screenshot",
+                        "AUTHOR_SCREENSHOT_FAILED",
+                        str(error),
+                        retryable=False,
+                    )
+                )
+
+        if not result.page.image_urls:
+            return
+        try:
+            collected = await self._asset_collector.collect(
+                page,
+                result.page.image_urls,
+                result.task.evidence_id,
+                output_dir,
+                cancel_event,
+            )
+            result.assets.downloaded_images.extend(collected.files)
+            result.errors.extend(collected.errors)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            result.errors.append(
+                TaskError(
+                    "image_download",
+                    "ASSET_COLLECTION_FAILED",
+                    str(error),
+                    retryable=False,
+                )
+            )
 
     def _check_response(self, status_code: int | None) -> None:
         if status_code == 403:
