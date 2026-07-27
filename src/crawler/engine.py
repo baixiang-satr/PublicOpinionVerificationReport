@@ -6,9 +6,13 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+import logging
 from pathlib import Path
 import random
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 from src.config.settings import TaskConfig
 from src.crawler.author_extractor import AuthorExtractor
@@ -16,6 +20,7 @@ from src.crawler.content_parser import ContentParser
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.rate_limiter import HostRateLimiter, wait_with_cancellation
 from src.domain.models import (
+    ExtractionSource,
     PageData,
     RecordResult,
     RecordStatus,
@@ -28,6 +33,12 @@ from src.screenshot.asset_collector import AssetCollector
 from src.screenshot.author_shooter import AuthorShooter, AuthorScreenshotError
 from src.screenshot.browser import BrowserPool
 from src.screenshot.page_shooter import PageShooter, PageScreenshotError
+from src.tools.page_access import (
+    inspect_http_response,
+    inspect_page_access,
+    wait_for_manual_access,
+)
+from src.utils.ocr import extract_text_from_images
 from src.utils.time_utils import DEFAULT_TIMEZONE
 
 
@@ -159,6 +170,36 @@ class CrawlEngine:
                 definition = self._router.definition_for(final_url)
                 await _wait_for_platform_marker(page, definition)
                 _raise_if_cancelled(cancel_event)
+                barrier = await inspect_page_access(
+                    page,
+                    final_url,
+                    result.task.normalized_url,
+                )
+                if (
+                    barrier is not None
+                    and barrier.manual_recoverable
+                    and not self._config.headless
+                    and self._config.manual_intervention_timeout_seconds
+                ):
+                    barrier = await wait_for_manual_access(
+                        page,
+                        final_url,
+                        result.task.normalized_url,
+                        self._config.manual_intervention_timeout_seconds,
+                        cancel_event=cancel_event,
+                    )
+                    final_url = str(page.url)
+                    result.page.final_url = final_url
+                    if final_url and result.page.redirect_chain[-1] != final_url:
+                        result.page.redirect_chain.append(final_url)
+                    definition = self._router.definition_for(final_url)
+                    await _wait_for_platform_marker(page, definition)
+                if barrier is not None:
+                    raise CrawlFailure(
+                        TaskError("access", barrier.code, barrier.message, retryable=False),
+                        barrier.status,
+                    )
+                _raise_if_cancelled(cancel_event)
                 try:
                     extracted = await self._parser.extract(page, definition)
                 except Exception as error:
@@ -276,27 +317,47 @@ class CrawlEngine:
                     retryable=False,
                 )
             )
+            return
+
+        # ── OCR fallback: extract text from images when DOM has none ──
+        if (
+            not self._config.ocr_enabled
+            or result.page.content_text
+            or not result.assets.downloaded_images
+        ):
+            return
+
+        _raise_if_cancelled(cancel_event)
+        ocr_text = extract_text_from_images(
+            list(result.assets.downloaded_images),
+            confidence_threshold=self._config.ocr_confidence_threshold,
+        )
+        result.page.ocr_text = ocr_text
+
+        if ocr_text and ocr_text != "无文字":
+            result.page.content_text = ocr_text
+            result.page.field_sources["content_text"] = ExtractionSource.OCR
+            logger.info(
+                "OCR extracted text from %d image(s) for evidence %d",
+                len(result.assets.downloaded_images),
+                result.task.evidence_id,
+            )
+        else:
+            result.errors.append(
+                TaskError(
+                    "ocr",
+                    "OCR_NO_TEXT",
+                    f"已下载的 {len(result.assets.downloaded_images)} 张图片中未识别到文字",
+                    retryable=False,
+                )
+            )
 
     def _check_response(self, status_code: int | None) -> None:
-        if status_code == 403:
+        barrier = inspect_http_response(status_code)
+        if barrier is not None:
             raise CrawlFailure(
-                TaskError("navigation", "HTTP_403", "页面返回 HTTP 403，需要人工确认访问权限", False),
-                RecordStatus.NEEDS_REVIEW,
-            )
-        if status_code == 429:
-            raise CrawlFailure(
-                TaskError("navigation", "HTTP_429", "页面返回 HTTP 429", True),
-                RecordStatus.NEEDS_REVIEW,
-            )
-        if status_code is not None and status_code >= 500:
-            raise CrawlFailure(
-                TaskError("navigation", "HTTP_5XX", f"页面返回 HTTP {status_code}", True),
-                RecordStatus.FAILED,
-            )
-        if status_code is not None and status_code >= 400:
-            raise CrawlFailure(
-                TaskError("navigation", f"HTTP_{status_code}", f"页面返回 HTTP {status_code}", False),
-                RecordStatus.FAILED,
+                TaskError("navigation", barrier.code, barrier.message, barrier.retryable),
+                barrier.status,
             )
 
     async def _backoff(self, attempt: int, cancel_event: asyncio.Event) -> None:

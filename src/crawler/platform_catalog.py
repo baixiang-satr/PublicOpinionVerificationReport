@@ -33,7 +33,9 @@ class PlatformDefinition:
         host = (parsed.hostname or "").lower()
         if not any(host == item or host.endswith(f".{item}") for item in self.hosts):
             return False
-        target = f"{parsed.path}?{parsed.query}".lower()
+        target = parsed.path.lower()
+        if parsed.query:
+            target = f"{target}?{parsed.query.lower()}"
         if self.include_patterns and not any(re.search(pattern, target) for pattern in self.include_patterns):
             return False
         return not any(re.search(pattern, target) for pattern in self.exclude_patterns)
@@ -149,6 +151,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         ExtractorFamily.SOCIAL,
         ("tv.sohu.com",),
         _selectors(title=("h1", ".video-title"), content_text=(".video-info", "main"), author_name=(".user-name",)),
+        include_patterns=(r"/v/",),
     ),
     PlatformDefinition(
         "xiaohongshu",
@@ -163,6 +166,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
             author_url=(".author-wrapper a",),
             published_at=(".date", ".publish-time"),
         ),
+        include_patterns=(r"/explore/", r"/discovery/item/"),
     ),
     PlatformDefinition(
         "douyin",
@@ -185,6 +189,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         ExtractorFamily.SOCIAL,
         ("kuaishou.com", "gifshow.com"),
         _selectors(content_text=(".video-info-title", ".caption"), author_name=(".profile-user-name", ".author-name"), published_at=(".publish-time",)),
+        include_patterns=(r"/short-video/", r"/fw/photo/"),
     ),
     PlatformDefinition(
         "bilibili",
@@ -194,10 +199,38 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         ("bilibili.com", "b23.tv"),
         _selectors(title=("h1.video-title", "h1"), content_text=(".video-desc-container", ".opus-module-content"), author_name=(".up-name", ".bili-user-profile-name"), author_url=(".up-name", ".up-info-container a")),
     ),
-    PlatformDefinition("tudou", "图文视频", "阿里巴巴_土豆_图文视频", ExtractorFamily.SOCIAL, ("tudou.com",)),
-    PlatformDefinition("youku", "图文视频", "阿里巴巴_优酷_图文视频", ExtractorFamily.SOCIAL, ("youku.com",)),
-    PlatformDefinition("ixigua", "图文视频", "字节跳动_西瓜视频_图文视频", ExtractorFamily.SOCIAL, ("ixigua.com",)),
-    PlatformDefinition("iqiyi", "图文视频", "爱奇艺_爱奇艺_图文视频", ExtractorFamily.SOCIAL, ("iqiyi.com",)),
+    PlatformDefinition(
+        "tudou",
+        "图文视频",
+        "阿里巴巴_土豆_图文视频",
+        ExtractorFamily.SOCIAL,
+        ("tudou.com",),
+        include_patterns=(r"/programs/view/",),
+    ),
+    PlatformDefinition(
+        "youku",
+        "图文视频",
+        "阿里巴巴_优酷_图文视频",
+        ExtractorFamily.SOCIAL,
+        ("youku.com",),
+        include_patterns=(r"/v_show/",),
+    ),
+    PlatformDefinition(
+        "ixigua",
+        "图文视频",
+        "字节跳动_西瓜视频_图文视频",
+        ExtractorFamily.SOCIAL,
+        ("ixigua.com",),
+        include_patterns=(r"/video/", r"/\d{10,}"),
+    ),
+    PlatformDefinition(
+        "iqiyi",
+        "图文视频",
+        "爱奇艺_爱奇艺_图文视频",
+        ExtractorFamily.SOCIAL,
+        ("iqiyi.com",),
+        include_patterns=(r"/v_", r"/w_"),
+    ),
     PlatformDefinition(
         "weibo",
         "微博博客",
@@ -222,14 +255,83 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         ("zhihu.com",),
         _selectors(title=(".Post-Title", ".QuestionHeader-title"), content_text=(".RichContent-inner", "article"), author_name=(".AuthorInfo-name", ".UserLink-link"), author_url=(".AuthorInfo-name a", ".UserLink-link"), published_at=(".ContentItem-time", "time")),
     ),
-    PlatformDefinition("toutiao", "生活资讯", "字节跳动_今日头条_生活资讯", ExtractorFamily.ARTICLE, ("toutiao.com",)),
-    PlatformDefinition("netease_news", "生活资讯", "网易_网易新闻_生活资讯", ExtractorFamily.ARTICLE, ("163.com",), _selectors(content_text=("#content", ".post_body"), author_name=(".post_info", ".source"))),
-    PlatformDefinition("ifeng_news", "生活资讯", "凤凰网_凤凰新闻_生活资讯", ExtractorFamily.ARTICLE, ("ifeng.com",), _selectors(content_text=("#main_content", ".article-content"))),
+    PlatformDefinition(
+        "toutiao",
+        "生活资讯",
+        "字节跳动_今日头条_生活资讯",
+        ExtractorFamily.ARTICLE,
+        ("toutiao.com",),
+        _selectors(
+            title=("h1", ".article-title"),
+            content_text=("article", ".article-content", ".syl-article-base"),
+            author_name=("[class*='author']", ".source"),
+            published_at=("time", "[class*='time']"),
+        ),
+        include_patterns=(r"/article/",),
+    ),
+    PlatformDefinition(
+        "netease_news",
+        "生活资讯",
+        "网易_网易新闻_生活资讯",
+        ExtractorFamily.ARTICLE,
+        ("163.com",),
+        _selectors(
+            title=("h1", ".post_title"),
+            content_text=("#content", ".post_body"),
+            author_name=(".post_info", ".source"),
+            published_at=(".post_info", ".post_time_source", "time"),
+        ),
+        include_patterns=(r"/dy/article/", r"/article/", r"/\d{2}/\d{4}/"),
+    ),
+    PlatformDefinition(
+        "ifeng_news",
+        "生活资讯",
+        "凤凰网_凤凰新闻_生活资讯",
+        ExtractorFamily.ARTICLE,
+        ("ifeng.com",),
+        _selectors(
+            title=("h1", ".article-title"),
+            content_text=("#main_content", "#articleBox", ".article-content"),
+            author_name=(".source", "[class*='source']"),
+            author_url=(".source a", "[class*='source'] a"),
+            published_at=("time", "[class*='time']"),
+        ),
+        include_patterns=(r"/c/",),
+    ),
     PlatformDefinition("huyou", "生活资讯", "搜狐_狐友_生活资讯", ExtractorFamily.SOCIAL, ("huyou.sohu.com",)),
-    PlatformDefinition("sohu_news", "生活资讯", "搜狐_搜狐新闻_生活资讯", ExtractorFamily.ARTICLE, ("sohu.com",), exclude_patterns=(r"/video",)),
-    PlatformDefinition("hupu", "生活资讯", "虎扑_虎扑_生活资讯", ExtractorFamily.SOCIAL, ("hupu.com",)),
+    PlatformDefinition(
+        "sohu_news",
+        "生活资讯",
+        "搜狐_搜狐新闻_生活资讯",
+        ExtractorFamily.ARTICLE,
+        ("sohu.com",),
+        _selectors(
+            title=("h1", ".text-title", ".article-title"),
+            content_text=("article", ".article-content", "#mp-editor", ".text"),
+            author_name=(".author-name", ".source", "[class*='source']"),
+            author_url=(".author-name a", "[class*='source'] a"),
+            published_at=(".article-info .time", "#news-time", "time", "[class*='time']"),
+        ),
+        include_patterns=(r"/a/",),
+        exclude_patterns=(r"/video",),
+    ),
+    PlatformDefinition(
+        "hupu",
+        "生活资讯",
+        "虎扑_虎扑_生活资讯",
+        ExtractorFamily.SOCIAL,
+        ("hupu.com",),
+        include_patterns=(r"/bbs/", r"/\d+(?:-\d+)?(?:\.html)?$"),
+    ),
     PlatformDefinition("meituan", "生活资讯", "三快_美团_生活资讯", ExtractorFamily.COMMERCE, ("meituan.com", "dianping.com")),
-    PlatformDefinition("dongchedi", "生活资讯", "字节跳动_懂车帝_生活资讯", ExtractorFamily.ARTICLE, ("dongchedi.com",)),
+    PlatformDefinition(
+        "dongchedi",
+        "生活资讯",
+        "字节跳动_懂车帝_生活资讯",
+        ExtractorFamily.ARTICLE,
+        ("dongchedi.com",),
+        include_patterns=(r"/article/", r"/ugc/", r"/video/"),
+    ),
     PlatformDefinition("uc_browser", "浏览器", "阿里巴巴_UC浏览器_浏览器", ExtractorFamily.ARTICLE, ("sm.cn", "uc.cn")),
     PlatformDefinition("browser_360", "浏览器", "360_360浏览器_浏览器", ExtractorFamily.ARTICLE, ("so.com", "360kuai.com", "browser.360.cn")),
     PlatformDefinition("huawei_browser", "浏览器", "华为_华为浏览器_浏览器", ExtractorFamily.ARTICLE, ("browser.huawei.com",)),
