@@ -1,7 +1,53 @@
-"""
-页面截图器 — 对已访问的 Playwright 页面生成主截图。
+"""Stable evidence-ID page screenshots written directly to the staging root."""
 
-页面导航使用 domcontentloaded 加平台关键元素/短暂稳定窗口，networkidle 不是唯一成功条件。
-主截图以全局证据编号命名，例如 001.jpg；截图成功不代表模板字段已完整。
-"""
-pass
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+from src.config.settings import TaskConfig
+
+
+class PageScreenshotError(RuntimeError):
+    """Raised when a primary page screenshot cannot be created."""
+
+
+class PageShooter:
+    def __init__(self, config: TaskConfig) -> None:
+        self._config = config
+
+    async def capture(
+        self,
+        page: Any,
+        evidence_id: int,
+        output_dir: Path,
+        cancel_event: asyncio.Event | None = None,
+    ) -> Path:
+        _raise_if_cancelled(cancel_event)
+        extension = "jpg" if self._config.screenshot_format == "jpeg" else "png"
+        output_path = Path(output_dir).resolve() / f"{evidence_id:03d}.{extension}"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        options: dict[str, Any] = {
+            "path": str(output_path),
+            "type": self._config.screenshot_format,
+            "full_page": self._config.full_page_screenshot,
+            "animations": "disabled",
+        }
+        if self._config.screenshot_format == "jpeg":
+            options["quality"] = 85
+        try:
+            await page.screenshot(**options)
+        except Exception as error:
+            output_path.unlink(missing_ok=True)
+            raise PageScreenshotError(f"Unable to capture primary screenshot: {error}") from error
+        _raise_if_cancelled(cancel_event)
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            output_path.unlink(missing_ok=True)
+            raise PageScreenshotError("Playwright returned an empty primary screenshot.")
+        return output_path
+
+
+def _raise_if_cancelled(cancel_event: asyncio.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise asyncio.CancelledError
