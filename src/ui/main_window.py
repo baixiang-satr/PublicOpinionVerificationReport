@@ -64,7 +64,8 @@ class MainWindow(QMainWindow):
 
         notice = QLabel(
             "按下面 3 步操作即可。程序只写任务副本，不会修改 template 原件；"
-            "无法确认的内容会标成“待人工补录”，不会猜测填写。"
+            "登录或验证码页面不会被当作证据。需要登录时选择自己的登录态，"
+            "或取消“后台运行浏览器”后在可视窗口中手工完成。"
         )
         notice.setObjectName("stepNotice")
         notice.setWordWrap(True)

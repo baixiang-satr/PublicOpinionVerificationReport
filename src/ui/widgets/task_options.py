@@ -98,6 +98,7 @@ class TaskOptionsWidget(QWidget):
             timezone=self._defaults.timezone,
             headless=self.headless.isChecked(),
             storage_state_path=storage_path,
+            manual_intervention_timeout_seconds=self._defaults.manual_intervention_timeout_seconds,
             allow_nickname_as_id=self._defaults.allow_nickname_as_id,
         )
 
