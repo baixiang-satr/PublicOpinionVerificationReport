@@ -1,1 +1,13 @@
-"""通用与平台专用的结构化页面提取器。"""
+"""Generic and template-catalog platform extraction."""
+
+from src.crawler.extractors.base import ImageCandidate, PlatformExtractor, RenderedDocument
+from src.crawler.extractors.catalog import CatalogPlatformExtractor
+from src.crawler.extractors.generic import GenericExtractor
+
+__all__ = [
+    "CatalogPlatformExtractor",
+    "GenericExtractor",
+    "ImageCandidate",
+    "PlatformExtractor",
+    "RenderedDocument",
+]
