@@ -1,6 +1,6 @@
 import pytest
 
-from src.crawler.platform_catalog import PLATFORM_DEFINITIONS, validate_catalog
+from src.crawler.platform_catalog import PLATFORM_DEFINITIONS, find_platform, validate_catalog
 from src.crawler.platform_router import PlatformRouter
 from src.domain.models import PageData
 from src.domain.template_schema import SHEET_LAYOUTS
@@ -30,6 +30,8 @@ def test_platform_catalog_exactly_covers_url_supported_template_enums() -> None:
         ("https://tv.sohu.com/v/abc.html", "图文视频", "搜狐_搜狐视频_图文视频"),
         ("https://www.zhihu.com/question/1", "微博博客", "知乎_知乎_博客贴吧"),
         ("https://news.sohu.com/a/123", "生活资讯", "搜狐_搜狐新闻_生活资讯"),
+        ("https://news.163.com/24/0728/10/ABC.html", "生活资讯", "网易_网易新闻_生活资讯"),
+        ("https://bbs.hupu.com/62820345-1.html", "生活资讯", "虎扑_虎扑_生活资讯"),
         ("https://m.sm.cn/article/123", "浏览器", "阿里巴巴_UC浏览器_浏览器"),
     ],
 )
@@ -54,3 +56,31 @@ def test_platform_router_preserves_comment_hint_and_rejects_unknown_hosts() -> N
     assert router.route("https://example.com/article", PageData()) is None
     assert not router.is_url_supported_sheet("群聊")
     assert not router.is_url_supported_sheet("朋友圈")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.xiaohongshu.com/",
+        "https://tv.sohu.com/",
+        "https://www.163.com/",
+        "https://www.ifeng.com/",
+        "https://www.hupu.com/",
+    ],
+)
+def test_platform_catalog_does_not_treat_homepages_as_content_evidence(url: str) -> None:
+    assert find_platform(url) is None
+
+
+def test_reported_news_platforms_have_field_specific_selectors() -> None:
+    for url in (
+        "https://news.sohu.com/a/123",
+        "https://news.ifeng.com/c/123",
+        "https://www.163.com/dy/article/ABC123.html",
+    ):
+        definition = find_platform(url)
+        assert definition is not None
+        assert definition.selectors["title"]
+        assert definition.selectors["content_text"]
+        assert definition.selectors["author_name"]
+        assert definition.selectors["published_at"]

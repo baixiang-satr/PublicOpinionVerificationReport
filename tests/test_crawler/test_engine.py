@@ -161,7 +161,10 @@ async def test_engine_honors_pre_set_cancellation_and_still_closes_pool(tmp_path
 @pytest.mark.parametrize(
     ("statuses", "max_retries", "expected_status", "expected_attempts", "error_code"),
     [
+        ([401], 2, RecordStatus.NEEDS_REVIEW, 1, "HTTP_401"),
         ([403], 2, RecordStatus.NEEDS_REVIEW, 1, "HTTP_403"),
+        ([404], 2, RecordStatus.FAILED, 1, "CONTENT_NOT_FOUND"),
+        ([405], 2, RecordStatus.NEEDS_REVIEW, 1, "HTTP_405_ACCESS_RESTRICTED"),
         ([429, 429], 1, RecordStatus.NEEDS_REVIEW, 2, "HTTP_429"),
     ],
 )

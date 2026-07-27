@@ -147,19 +147,10 @@ async def test_candidate_url(name: str, url: str, sheet: str, description: str, 
     errors = result.errors
     screenshot = result.assets.page_screenshot
 
-    # 判断页面是否有效 (非404/405/超时/空页面且能提取到标题或内容)
+    # 仅把完成取证的内容页视为有效；首页、受限页和诊断响应都不是证据。
     is_valid = False
     if result.status == RecordStatus.ASSETS_READY:
         is_valid = True
-    elif result.status in (RecordStatus.NEEDS_REVIEW, RecordStatus.FAILED):
-        # 检查是否有真正的反爬/登录拦截(不是简单的404)
-        if page and page.status_code and page.status_code < 400:
-            has_error = any(
-                e.code in ("REQUIRED_FIELDS_MISSING", "EMPTY_PAGE", "PARSE_FAILED", "NAVIGATION_TIMEOUT", "ROUTE_UNSUPPORTED")
-                for e in errors
-            )
-            if not has_error:
-                is_valid = True
 
     tag = "✅有效" if is_valid else "❌无效"
     print(f"\n{'='*60}")
