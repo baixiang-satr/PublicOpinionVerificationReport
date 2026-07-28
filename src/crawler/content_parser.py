@@ -7,21 +7,9 @@ from typing import Any
 
 from src.crawler.extractors.catalog import CatalogPlatformExtractor
 from src.crawler.extractors.generic import GenericExtractor
+from src.crawler.field_resolver import merge_page_data
 from src.crawler.platform_catalog import ExtractorFamily, PlatformDefinition
 from src.domain.models import PageData
-
-
-MERGED_FIELDS = (
-    "title",
-    "content_text",
-    "author_name",
-    "author_id",
-    "author_url",
-    "account_uin",
-    "store_name",
-    "published_at",
-    "published_at_raw",
-)
 
 
 class ContentParser:
@@ -55,11 +43,4 @@ class ContentParser:
 
     @staticmethod
     def _merge(primary: PageData, fallback: PageData) -> PageData:
-        for field in MERGED_FIELDS:
-            if not getattr(primary, field):
-                setattr(primary, field, getattr(fallback, field))
-                if field in fallback.field_sources:
-                    primary.field_sources[field] = fallback.field_sources[field]
-        primary.image_urls = list(dict.fromkeys([*primary.image_urls, *fallback.image_urls]))
-        primary.text_type_hint = fallback.text_type_hint
-        return primary
+        return merge_page_data(primary, fallback)

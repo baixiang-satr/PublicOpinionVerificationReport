@@ -7,6 +7,7 @@ from html import unescape
 import re
 from typing import Any
 
+from src.crawler.field_resolver import consider_field
 from src.domain.models import ExtractionSource, PageData
 
 
@@ -16,6 +17,10 @@ _TITLE_KEYS = (
     "subject",
     "note_title",
     "noteTitle",
+    "item_title",
+    "itemTitle",
+    "product_name",
+    "productName",
     "goods_name",
     "goodsName",
     "video_title",
@@ -30,6 +35,13 @@ _CONTENT_KEYS = (
     "desc",
     "caption",
     "text",
+    "text_raw",
+    "textRaw",
+    "body",
+    "article_content",
+    "articleContent",
+    "digest",
+    "intro",
     "summary",
     "dynamic",
 )
@@ -38,9 +50,19 @@ _AUTHOR_NAME_KEYS = (
     "authorName",
     "nickname",
     "nickName",
+    "nick",
+    "screen_name",
+    "screenName",
+    "display_name",
+    "displayName",
+    "uname",
     "user_name",
     "userName",
     "username",
+    "owner_name",
+    "ownerName",
+    "publisher_name",
+    "publisherName",
 )
 _AUTHOR_ID_KEYS = (
     "author_id",
@@ -48,21 +70,46 @@ _AUTHOR_ID_KEYS = (
     "user_id",
     "userId",
     "uid",
+    "mid",
+    "id_str",
+    "idStr",
     "sec_uid",
     "secUid",
+    "seller_id",
+    "sellerId",
+    "shop_id",
+    "shopId",
+    "account_id",
+    "accountId",
 )
 _AUTHOR_URL_KEYS = (
     "author_url",
     "authorUrl",
     "profile_url",
     "profileUrl",
+    "homepage",
+    "homepage_url",
+    "homepageUrl",
     "home_url",
     "homeUrl",
+    "user_url",
+    "userUrl",
+    "space_url",
+    "spaceUrl",
 )
 _PUBLISHED_KEYS = (
     "datePublished",
     "publish_time",
     "publishTime",
+    "pubdate",
+    "pub_date",
+    "pubDate",
+    "pubtime",
+    "pubTime",
+    "release_time",
+    "releaseTime",
+    "ptime",
+    "ctime",
     "published_at",
     "publishedAt",
     "create_time",
@@ -78,6 +125,8 @@ _STORE_KEYS = (
     "shopName",
     "seller_name",
     "sellerName",
+    "seller_nick",
+    "sellerNick",
 )
 _ACCOUNT_KEYS = ("account_uin", "accountUin", "uin")
 _IMAGE_KEYS = (
@@ -90,7 +139,18 @@ _IMAGE_KEYS = (
     "coverUrl",
     "thumbnailUrl",
 )
-_NESTED_AUTHOR_KEYS = ("author", "creator", "user", "owner", "account", "profile", "seller")
+_NESTED_AUTHOR_KEYS = (
+    "author",
+    "creator",
+    "user",
+    "owner",
+    "uploader",
+    "publisher",
+    "account",
+    "profile",
+    "seller",
+    "shop",
+)
 _CONTENT_SIGNAL_KEYS = frozenset(
     (*_TITLE_KEYS, *_CONTENT_KEYS, *_AUTHOR_NAME_KEYS, *_STORE_KEYS)
 )
@@ -182,10 +242,7 @@ class StructuredDataExtractor:
         value: str | None,
         source: ExtractionSource,
     ) -> None:
-        if getattr(data, field) or not value:
-            return
-        setattr(data, field, value)
-        data.field_sources[field] = source
+        consider_field(data, field, value, source)
 
 
 def _mapping_nodes(

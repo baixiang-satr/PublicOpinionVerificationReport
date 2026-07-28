@@ -66,6 +66,7 @@ async def navigate_with_fallback(
             page,
             candidate_url,
             config.page_timeout_seconds * 1000,
+            cancel_event,
         )
         if partial_error is not None:
             warnings.append(partial_error)

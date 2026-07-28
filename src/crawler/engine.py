@@ -15,11 +15,12 @@ from src.config.settings import TaskConfig
 from src.crawler.author_extractor import AuthorExtractor
 from src.crawler.content_parser import ContentParser
 from src.crawler.crawl_navigation import CrawlFailure, navigate_with_fallback
+from src.crawler.field_quality import missing_required_fields
+from src.crawler.ocr_pipeline import OcrPipeline
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.platform_scheduler import PlatformTaskScheduler
 from src.crawler.rate_limiter import HostRateLimiter, wait_with_cancellation
 from src.domain.models import (
-    ExtractionSource,
     PageData,
     RecordResult,
     RecordStatus,
@@ -27,16 +28,14 @@ from src.domain.models import (
     TaskEvent,
     UrlTask,
 )
-from src.domain.template_schema import get_sheet_layout
 from src.screenshot.asset_collector import AssetCollector
-from src.screenshot.author_shooter import AuthorShooter, AuthorScreenshotError
+from src.screenshot.author_asset import capture_author_home_asset
+from src.screenshot.author_shooter import AuthorShooter
 from src.screenshot.browser import BrowserPool
 from src.screenshot.page_shooter import PageShooter, PageScreenshotError
-from src.utils.ocr import extract_text_from_images
 from src.utils.time_utils import DEFAULT_TIMEZONE
 
 logger = logging.getLogger(__name__)
-
 class CrawlEngine:
     def __init__(
         self,
@@ -48,6 +47,7 @@ class CrawlEngine:
         shooter: PageShooter | None = None,
         author_shooter: AuthorShooter | None = None,
         asset_collector: AssetCollector | None = None,
+        ocr_pipeline: OcrPipeline | None = None,
         auth_store: AuthProfileStore | None = None,
     ) -> None:
         self._config = config
@@ -60,6 +60,7 @@ class CrawlEngine:
         self._shooter = shooter or PageShooter(config)
         self._author_shooter = author_shooter or AuthorShooter(config)
         self._asset_collector = asset_collector or AssetCollector(config)
+        self._ocr_pipeline = ocr_pipeline or OcrPipeline(config)
         self._author = AuthorExtractor(config.allow_nickname_as_id)
         self._rate_limiter = HostRateLimiter(config.min_host_interval_seconds)
         self._scheduler = PlatformTaskScheduler(
@@ -105,7 +106,14 @@ class CrawlEngine:
                 key=lambda result: result.task.evidence_id,
             )
         finally:
-            await self._browser_pool.close()
+            await self._ocr_pipeline.close()
+            if cancellation.is_set() and hasattr(
+                self._browser_pool,
+                "close_for_cancellation",
+            ):
+                await self._browser_pool.close_for_cancellation()
+            else:
+                await self._browser_pool.close()
 
     async def _process_platform_queue(
         self,
@@ -131,6 +139,15 @@ class CrawlEngine:
 
         paused_by: RecordResult | None = None
         for task in tasks:
+            if cancel_event.is_set():
+                results.append(
+                    self._publish_synthetic_result(
+                        self._scheduler.cancelled_result(task),
+                        on_event,
+                        on_result,
+                    )
+                )
+                continue
             if paused_by is not None:
                 result = self._publish_paused_result(
                     task,
@@ -154,18 +171,15 @@ class CrawlEngine:
             results.append(result)
         return results
 
-    def _publish_paused_result(
+    def _publish_synthetic_result(
         self,
-        task: UrlTask,
-        message: str,
+        result: RecordResult,
         on_event: Callable[[TaskEvent], None] | None,
         on_result: Callable[[RecordResult], None] | None,
     ) -> RecordResult:
-        result = self._scheduler.auth_paused_result(task, message)
         now = _now()
         result.started_at = now
         result.finished_at = now
-        self._emit(result, "start", "平台登录态门禁检查", on_event)
         self._emit(result, "finish", result.status.value, on_event)
         if on_result is not None:
             try:
@@ -173,6 +187,19 @@ class CrawlEngine:
             except Exception:
                 pass
         return result
+
+    def _publish_paused_result(
+        self,
+        task: UrlTask,
+        message: str,
+        on_event: Callable[[TaskEvent], None] | None,
+        on_result: Callable[[RecordResult], None] | None,
+    ) -> RecordResult:
+        return self._publish_synthetic_result(
+            self._scheduler.auth_paused_result(task, message),
+            on_event,
+            on_result,
+        )
 
     async def _process(
         self,
@@ -227,7 +254,7 @@ class CrawlEngine:
             async with self._browser_pool.page(
                 cancel_event,
                 result.task.normalized_url,
-            ) as page:
+            ) as page, asyncio.timeout(self._config.page_processing_timeout_seconds):
                 navigation = await navigate_with_fallback(
                     page,
                     result.task.normalized_url,
@@ -306,7 +333,37 @@ class CrawlEngine:
                         TaskError("screenshot", "PAGE_SCREENSHOT_FAILED", str(error), retryable=False),
                         RecordStatus.FAILED,
                     ) from error
-                await self._collect_optional_assets(page, result, output_dir, cancel_event)
+                enrichment_timeout = min(
+                    50.0,
+                    max(
+                        0.05,
+                        self._config.page_processing_timeout_seconds / 3,
+                    )
+                )
+                try:
+                    async with asyncio.timeout(enrichment_timeout):
+                        await self._collect_optional_assets(
+                            page,
+                            result,
+                            output_dir,
+                            cancel_event,
+                        )
+                        result.errors.extend(
+                            await self._ocr_pipeline.recover_screenshot_fields(
+                                result.page,
+                                result.assets.page_screenshot,
+                                cancel_event,
+                            )
+                        )
+                except TimeoutError:
+                    result.errors.append(
+                        TaskError(
+                            "optional_enrichment",
+                            "OPTIONAL_ENRICHMENT_TIMEOUT",
+                            "主页截图、正文图片或 OCR 补充超时；已保留正文和主截图",
+                            retryable=True,
+                        )
+                    )
                 if not extracted.title and not extracted.content_text:
                     raise CrawlFailure(
                         TaskError(
@@ -317,7 +374,7 @@ class CrawlEngine:
                         ),
                         RecordStatus.NEEDS_REVIEW,
                     )
-                missing = _missing_required_fields(result)
+                missing = missing_required_fields(result)
                 if missing:
                     result.errors.append(
                         TaskError(
@@ -333,9 +390,10 @@ class CrawlEngine:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            code = "NAVIGATION_TIMEOUT" if "timeout" in type(error).__name__.lower() or "timeout" in str(error).lower() else "NAVIGATION_FAILED"
+            processing_timeout = isinstance(error, TimeoutError)
+            code = "PAGE_PROCESSING_TIMEOUT" if processing_timeout else "NAVIGATION_TIMEOUT" if "timeout" in type(error).__name__.lower() or "timeout" in str(error).lower() else "NAVIGATION_FAILED"
             raise CrawlFailure(
-                TaskError("navigation", code, str(error), retryable=True),
+                TaskError("navigation", code, str(error) or "页面处理超过硬超时", retryable=not processing_timeout),
                 RecordStatus.FAILED,
             ) from error
 
@@ -347,37 +405,27 @@ class CrawlEngine:
         cancel_event: asyncio.Event,
     ) -> None:
         if result.page.author_url:
-            try:
-                result.assets.author_screenshot = await self._author_shooter.capture(
-                    page,
-                    result.page.author_url,
-                    result.task.evidence_id,
-                    output_dir,
+            asset, error = await capture_author_home_asset(
+                self._author_shooter,
+                page,
+                result,
+                output_dir,
+                cancel_event,
+            )
+            result.assets.author_screenshot = asset
+            if error is not None:
+                result.errors.append(error)
+
+        # Body images are temporary OCR inputs, including mixed text/image
+        # posts. They never become delivery attachments.
+        if not self._config.ocr_enabled or not result.page.image_urls:
+            result.errors.extend(
+                await self._ocr_pipeline.process_content_images(
+                    result.page,
+                    [],
                     cancel_event,
                 )
-            except AuthorScreenshotError as error:
-                result.errors.append(
-                    TaskError("author_screenshot", error.code, str(error), retryable=False)
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                result.errors.append(
-                    TaskError(
-                        "author_screenshot",
-                        "AUTHOR_SCREENSHOT_FAILED",
-                        str(error),
-                        retryable=False,
-                    )
-                )
-
-        # Body images are not delivery attachments. They are downloaded only
-        # when DOM extraction found no text and OCR may recover useful content.
-        if (
-            not self._config.ocr_enabled
-            or result.page.content_text
-            or not result.page.image_urls
-        ):
+            )
             return
         collected_files: list[Path] = []
         try:
@@ -403,36 +451,15 @@ class CrawlEngine:
             )
             return
 
-        if not collected_files:
-            return
-
         try:
             _raise_if_cancelled(cancel_event)
-            ocr_text = extract_text_from_images(
-                collected_files,
-                confidence_threshold=self._config.ocr_confidence_threshold,
+            result.errors.extend(
+                await self._ocr_pipeline.process_content_images(
+                    result.page,
+                    collected_files,
+                    cancel_event,
+                )
             )
-            result.page.ocr_text = ocr_text
-
-            if ocr_text and ocr_text != "无文字":
-                result.page.content_text = ocr_text
-                result.page.content_summary = ocr_text[: self._config.summary_max_chars]
-                result.page.summary_truncated = len(ocr_text) > self._config.summary_max_chars
-                result.page.field_sources["content_text"] = ExtractionSource.OCR
-                logger.info(
-                    "OCR extracted text from %d temporary image(s) for evidence %d",
-                    len(collected_files),
-                    result.task.evidence_id,
-                )
-            else:
-                result.errors.append(
-                    TaskError(
-                        "ocr",
-                        "OCR_NO_TEXT",
-                        f"临时读取的 {len(collected_files)} 张图片中未识别到文字",
-                        retryable=False,
-                    )
-                )
         finally:
             for path in collected_files:
                 try:
@@ -464,37 +491,9 @@ class CrawlEngine:
             pass
 
 
-def _missing_required_fields(result: RecordResult) -> list[str]:
-    if result.route is None or result.assets.page_screenshot is None:
-        return ["route_or_screenshot"]
-    layout = get_sheet_layout(result.route.sheet_name)
-    reverse_fields = {column: field for field, column in layout.field_columns.items()}
-    runtime_values = {
-        "url": result.page.final_url or result.task.normalized_url,
-        "platform": result.route.platform_value,
-        "text_type": result.route.text_type,
-        "title": result.page.title,
-        "content": result.page.content_summary or result.page.content_text,
-        "author_name": result.page.author_name,
-        "author_id": result.page.author_id,
-        "account_uin": result.page.account_uin,
-        "store_name": result.page.store_name,
-        "published_at": result.page.published_at,
-    }
-    missing: list[str] = []
-    for column in sorted(layout.required_columns):
-        if column == layout.primary_screenshot_column:
-            continue
-        field = reverse_fields.get(column)
-        if field and not runtime_values.get(field):
-            missing.append(field)
-    return missing
-
-
 def _raise_if_cancelled(cancel_event: asyncio.Event) -> None:
     if cancel_event.is_set():
         raise asyncio.CancelledError
-
 
 def _now() -> datetime:
     return datetime.now(DEFAULT_TIMEZONE)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import random
 from typing import Any
@@ -13,14 +14,16 @@ async def navigate_page(
     page: Any,
     url: str,
     timeout_milliseconds: int,
+    cancel_event: asyncio.Event | None = None,
 ) -> tuple[Any, TaskError | None]:
     """Navigate without treating a usable, partially loaded DOM as a failure."""
 
     try:
-        response = await page.goto(
+        response = await _goto_with_cancellation(
+            page,
             url,
-            wait_until="domcontentloaded",
-            timeout=timeout_milliseconds,
+            timeout_milliseconds,
+            cancel_event,
         )
     except Exception as error:
         if not _is_timeout_error(error) or not await _has_rendered_content(page):
@@ -44,6 +47,41 @@ async def navigate_page(
         except Exception:
             pass
     return response, None
+
+
+async def _goto_with_cancellation(
+    page: Any,
+    url: str,
+    timeout_milliseconds: int,
+    cancel_event: asyncio.Event | None,
+) -> Any:
+    if cancel_event is None:
+        return await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=timeout_milliseconds,
+        )
+    if cancel_event.is_set():
+        raise asyncio.CancelledError
+    navigation_task = asyncio.create_task(
+        page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=timeout_milliseconds,
+        )
+    )
+    cancellation_task = asyncio.create_task(cancel_event.wait())
+    done, pending = await asyncio.wait(
+        {navigation_task, cancellation_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if cancellation_task in done and cancel_event.is_set():
+        navigation_task.cancel()
+        await asyncio.gather(navigation_task, return_exceptions=True)
+        raise asyncio.CancelledError
+    cancellation_task.cancel()
+    await asyncio.gather(cancellation_task, return_exceptions=True)
+    return await navigation_task
 
 
 async def stabilize_rendered_page(

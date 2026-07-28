@@ -8,6 +8,8 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from src.crawler.extractors.base import ImageCandidate, RenderedDocument
+from src.crawler.content_classifier import initialize_content_kind
+from src.crawler.field_resolver import consider_field
 from src.crawler.structured_data import StructuredDataExtractor
 from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import parse_web_published_at
@@ -135,7 +137,16 @@ DOCUMENT_SCRIPT = r"""
     url: image.currentSrc || image.src || '',
     width: image.naturalWidth || image.width || 0,
     height: image.naturalHeight || image.height || 0,
-    alt: image.alt || ''
+    alt: image.alt || '',
+    context: [
+      image.className || '',
+      image.id || '',
+      image.parentElement?.className || ''
+    ].join(' '),
+    inContent: Boolean(image.closest(
+      'article, main, [role="main"], [class*="article"], '
+      + '[class*="content"], [class*="detail"], [class*="post"]'
+    ))
   }));
   return {
     url: location.href,
@@ -180,6 +191,8 @@ class GenericExtractor:
                     width=int(item.get("width") or 0),
                     height=int(item.get("height") or 0),
                     alt=str(item.get("alt") or ""),
+                    context=str(item.get("context") or ""),
+                    in_content=bool(item.get("inContent")),
                 )
                 for item in raw.get("images") or ()
             ),
@@ -286,32 +299,46 @@ class GenericExtractor:
     def finalize(self, data: PageData) -> None:
         data.title = clean_text(data.title)
         data.content_text = clean_text(data.content_text)
-        data.author_name = clean_text(data.author_name)
+        data.author_name = clean_author_name(data.author_name)
         data.store_name = clean_text(data.store_name)
         if data.published_at_raw:
             data.published_at = parse_web_published_at(data.published_at_raw)
-        summary = data.content_text or ""
-        data.summary_truncated = len(summary) > self._summary_max_chars
-        data.content_summary = summary[: self._summary_max_chars]
+            source = data.field_sources.get("published_at_raw")
+            if source is not None:
+                data.field_sources["published_at"] = source
+                data.field_confidences["published_at"] = (
+                    data.field_confidences.get("published_at_raw", 0.0)
+                )
+        initialize_content_kind(
+            data,
+            summary_max_chars=self._summary_max_chars,
+        )
         data.image_urls = list(dict.fromkeys(url for url in data.image_urls if _valid_image_url(url)))
 
     @staticmethod
     def _set(data: PageData, field: str, value: Any, source: ExtractionSource) -> None:
-        if getattr(data, field) or value is None:
-            return
-        normalized = str(value).strip()
-        if normalized:
-            setattr(data, field, normalized)
-            data.field_sources[field] = source
+        consider_field(data, field, value, source)
 
     @staticmethod
     def _image_urls(images: tuple[ImageCandidate, ...]) -> list[str]:
+        content_images = tuple(image for image in images if image.in_content)
+        candidates = content_images or images
         return [
             image.url
-            for image in images
+            for image in candidates
             if (image.width == 0 or image.width >= 80)
             and (image.height == 0 or image.height >= 80)
-            and not re.search(r"(?:avatar|icon|logo|sprite|tracking|pixel)", f"{image.url} {image.alt}", re.I)
+            and (
+                image.width == 0
+                or image.height == 0
+                or image.width * image.height >= 10_000
+            )
+            and not re.search(
+                r"(?:avatar|icon|logo|sprite|tracking|pixel|emoji|qrcode|"
+                r"banner|advert|placeholder)",
+                f"{image.url} {image.alt} {image.context}",
+                re.I,
+            )
         ]
 
 
@@ -321,6 +348,32 @@ def clean_text(value: str | None) -> str | None:
     lines = [re.sub(r"\s+", " ", line).strip() for line in str(value).splitlines()]
     unique = list(dict.fromkeys(line for line in lines if line))
     return "\n".join(unique) or None
+
+
+def clean_author_name(value: str | None) -> str | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    text = re.sub(r"[\u200b-\u200d\ufeff]", "", text)
+    if "\n" in text:
+        text = text.splitlines()[0].strip()
+    if not text or len(text) > 100:
+        return None
+    compact = text.casefold().replace(" ", "")
+    if compact in {
+        "首页",
+        "登录",
+        "点击登录",
+        "未登录",
+        "作者",
+        "用户",
+        "account",
+        "profile",
+    }:
+        return None
+    if re.search(r"(?:19|20)\d{2}[-/.年]\d{1,2}.*(?:来源|source)", text, re.I):
+        return None
+    return text
 
 
 def _json_nodes(value: Any) -> list[Any]:

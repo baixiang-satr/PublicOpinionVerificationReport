@@ -81,6 +81,21 @@ class PlatformTaskScheduler:
             ],
         )
 
+    @staticmethod
+    def cancelled_result(task: UrlTask) -> RecordResult:
+        return RecordResult(
+            task=task,
+            status=RecordStatus.CANCELLED,
+            errors=[
+                TaskError(
+                    "crawl",
+                    "CANCELLED",
+                    "任务已取消，未再访问该 URL。",
+                    retryable=False,
+                )
+            ],
+        )
+
     def should_pause_after(self, result: RecordResult) -> bool:
         if not self._config.pause_platform_on_auth_failure:
             return False

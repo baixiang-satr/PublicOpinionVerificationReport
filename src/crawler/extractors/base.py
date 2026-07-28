@@ -15,6 +15,8 @@ class ImageCandidate:
     width: int = 0
     height: int = 0
     alt: str = ""
+    context: str = ""
+    in_content: bool = False
 
 
 @dataclass(frozen=True)
