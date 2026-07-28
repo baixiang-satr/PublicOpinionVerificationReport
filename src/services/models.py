@@ -65,6 +65,9 @@ class JobResult:
     job_dir: Path
     archive_path: Path | None = None
     cancelled: bool = False
+    quality_report_path: Path | None = None
+    quality_summary_path: Path | None = None
+    manual_entry_path: Path | None = None
 
     @property
     def retryable_tasks(self) -> tuple[UrlTask, ...]:

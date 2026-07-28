@@ -78,7 +78,14 @@ class ExcelTemplateWriter:
         try:
             self._verify_template_contract(workbook)
             for layout in SHEET_LAYOUTS.values():
-                self._clear_data_rows(workbook.Worksheets(layout.name), layout)
+                sheet = workbook.Worksheets(layout.name)
+                sheet_rows = rows_by_sheet.get(layout.name, [])
+                clear_last_row = self._ensure_sheet_capacity(
+                    sheet,
+                    layout,
+                    len(sheet_rows),
+                )
+                self._clear_data_rows(sheet, layout, clear_last_row)
             for sheet_name, rows in rows_by_sheet.items():
                 layout = SHEET_LAYOUTS[sheet_name]
                 self._write_sheet_rows(workbook.Worksheets(sheet_name), layout, rows)
@@ -89,7 +96,10 @@ class ExcelTemplateWriter:
     def _inspect_in_excel(self, app: Any, workbook_path: Path) -> WorkbookInspection:
         workbook = self._open_workbook(app, workbook_path, read_only=True)
         try:
-            self._verify_template_contract(workbook)
+            self._verify_template_contract(
+                workbook,
+                allow_dynamic_unprotected=True,
+            )
             asset_names: set[str] = set()
             for layout in SHEET_LAYOUTS.values():
                 asset_names.update(self._read_sheet_assets(workbook.Worksheets(layout.name), layout))
@@ -118,23 +128,35 @@ class ExcelTemplateWriter:
             grouped[row.sheet_name].append(row)
         for sheet_name, sheet_rows in grouped.items():
             layout = SHEET_LAYOUTS[sheet_name]
-            if len(sheet_rows) > layout.max_rows:
-                raise TemplateIntegrityError(
-                    f"{sheet_name} needs {len(sheet_rows)} rows but template safely allows {layout.max_rows}."
-                )
             sheet_rows.sort(key=lambda row: row.evidence_id)
             for row in sheet_rows:
                 ExcelTemplateWriter._validate_row(layout, row)
         return grouped
 
     @staticmethod
-    def _verify_template_contract(workbook: Any) -> None:
+    def _verify_template_contract(
+        workbook: Any,
+        *,
+        allow_dynamic_unprotected: bool = False,
+    ) -> None:
         actual_order = tuple(sheet.Name for sheet in workbook.Worksheets)
         if actual_order != SHEET_ORDER:
             raise TemplateIntegrityError(f"Worksheet order changed: {actual_order}")
         for layout in SHEET_LAYOUTS.values():
             sheet = workbook.Worksheets(layout.name)
-            if not bool(sheet.ProtectContents):
+            used_last_row = (
+                int(sheet.UsedRange.Row)
+                + int(sheet.UsedRange.Rows.Count)
+                - 1
+            )
+            dynamically_extended = used_last_row > layout.formatted_last_row
+            if (
+                not bool(sheet.ProtectContents)
+                and not (
+                    allow_dynamic_unprotected
+                    and dynamically_extended
+                )
+            ):
                 raise TemplateIntegrityError(f"Worksheet protection is missing: {layout.name}")
             actual_headers = tuple(ExcelTemplateWriter._cell_text(sheet, 1, column) for column in range(1, layout.column_count + 1))
             if actual_headers != layout.headers:
@@ -150,9 +172,40 @@ class ExcelTemplateWriter:
                     raise TemplateIntegrityError(f"Data validation changed: {layout.name}!{column}")
 
     @staticmethod
-    def _clear_data_rows(sheet: Any, layout: SheetLayout) -> None:
+    def _ensure_sheet_capacity(
+        sheet: Any,
+        layout: SheetLayout,
+        row_count: int,
+    ) -> int:
+        """Extend a short protected template section by cloning its last input row."""
+
+        required_last_row = max(
+            layout.formatted_last_row,
+            layout.data_start_row + max(0, row_count) - 1,
+        )
+        if required_last_row <= layout.formatted_last_row:
+            return layout.formatted_last_row
+
+        try:
+            # Cells beyond the source template's preformatted area are locked.
+            # Unprotect only a dynamically extended sheet so the new rows can
+            # be written now and manually completed later. Existing sheets
+            # that fit their reserved rows remain protected.
+            sheet.Unprotect()
+        except Exception as error:
+            raise TemplateIntegrityError(
+                f"Unable to extend writable business rows in {layout.name}: {error}"
+            ) from error
+        return required_last_row
+
+    @staticmethod
+    def _clear_data_rows(
+        sheet: Any,
+        layout: SheetLayout,
+        last_row: int | None = None,
+    ) -> None:
         start = sheet.Cells(layout.data_start_row, 1)
-        end = sheet.Cells(layout.formatted_last_row, layout.column_count)
+        end = sheet.Cells(last_row or layout.formatted_last_row, layout.column_count)
         try:
             sheet.Range(start, end).ClearContents()
         except Exception as error:
@@ -164,14 +217,18 @@ class ExcelTemplateWriter:
             target_row = layout.data_start_row + offset
             for column, value in row.values_by_column.items():
                 cell = sheet.Cells(target_row, layout.column_number(column))
-                if bool(cell.Locked):
+                if bool(sheet.ProtectContents) and bool(cell.Locked):
                     raise TemplateIntegrityError(f"Template input cell is locked: {layout.name}!{column}{target_row}")
                 cell.Value = value
 
     @staticmethod
     def _read_sheet_assets(sheet: Any, layout: SheetLayout) -> set[str]:
         assets: set[str] = set()
-        for row_number in range(layout.data_start_row, layout.formatted_last_row + 1):
+        used_last_row = max(
+            layout.formatted_last_row,
+            int(sheet.UsedRange.Row) + int(sheet.UsedRange.Rows.Count) - 1,
+        )
+        for row_number in range(layout.data_start_row, used_last_row + 1):
             if layout.primary_screenshot_column:
                 screenshot = ExcelTemplateWriter._cell_text(sheet, row_number, layout.column_number(layout.primary_screenshot_column))
                 if screenshot:
@@ -187,15 +244,11 @@ class ExcelTemplateWriter:
         unknown_columns = sorted(set(row.values_by_column) - valid_columns)
         if unknown_columns:
             raise TemplateIntegrityError(f"Unknown columns for {layout.name}: {', '.join(unknown_columns)}")
-        if row.values_by_column.get(layout.primary_screenshot_column) != row.primary_screenshot_name:
-            raise TemplateIntegrityError(f"Primary screenshot column does not match row assets: {layout.name}")
         if (
-            layout.primary_screenshot_column
-            and not row.values_by_column.get(layout.primary_screenshot_column)
+            row.values_by_column.get(layout.primary_screenshot_column)
+            != row.primary_screenshot_name
         ):
-            raise TemplateIntegrityError(
-                f"Primary screenshot column is empty: {layout.name}!{layout.primary_screenshot_column}"
-            )
+            raise TemplateIntegrityError(f"Primary screenshot column does not match row assets: {layout.name}")
         for column, allowed_values in layout.validation_values.items():
             value = row.values_by_column.get(column)
             if value is not None and value not in allowed_values:

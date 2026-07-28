@@ -18,8 +18,16 @@ class TemplateRowMapper:
     """Build rows from auditable records, preserving any unavailable fields as blank."""
 
     def map(self, result: RecordResult) -> TemplateRow:
-        if result.status != RecordStatus.READY_FOR_EXPORT or result.route is None:
-            raise TemplateRowMappingError("Only READY_FOR_EXPORT records with a route can be exported.")
+        if result.route is None:
+            raise TemplateRowMappingError("A template route is required for export.")
+        if result.status in {
+            RecordStatus.PENDING,
+            RecordStatus.RUNNING,
+            RecordStatus.CANCELLED,
+        }:
+            raise TemplateRowMappingError(
+                f"Record status {result.status.value!r} is not complete enough for export."
+            )
         layout = get_sheet_layout(result.route.sheet_name)
         screenshot_name = self._page_screenshot_name(result)
         attachments = tuple(self._attachment_names(result, screenshot_name))
@@ -37,7 +45,9 @@ class TemplateRowMapper:
     def _field_values(result: RecordResult) -> dict[str, object | None]:
         page = result.page
         return {
-            "url": page.final_url or result.task.normalized_url,
+            # Preserve the exact submitted URL so every output row can be
+            # reconciled one-to-one with the input, even after redirects.
+            "url": result.task.original_url,
             "title": page.title,
             "content": page.content_summary or page.content_text,
             "author_name": page.author_name,
@@ -48,13 +58,16 @@ class TemplateRowMapper:
         }
 
     @staticmethod
-    def _page_screenshot_name(result: RecordResult) -> str:
+    def _page_screenshot_name(result: RecordResult) -> str | None:
         if result.assets.page_screenshot is None:
-            raise TemplateRowMappingError("A primary page screenshot is required for export.")
+            return None
         return require_safe_file_name(result.assets.page_screenshot.name)
 
     @staticmethod
-    def _attachment_names(result: RecordResult, page_screenshot_name: str) -> list[str]:
+    def _attachment_names(
+        result: RecordResult,
+        page_screenshot_name: str | None,
+    ) -> list[str]:
         names: list[str] = []
         for path in result.assets.attachment_paths():
             name = require_safe_file_name(path.name)
@@ -66,7 +79,7 @@ class TemplateRowMapper:
     def _to_column_values(
         layout: SheetLayout,
         fields: dict[str, object | None],
-        screenshot_name: str,
+        screenshot_name: str | None,
         attachments: tuple[str, ...],
     ) -> dict[str, object]:
         values = {
@@ -74,7 +87,7 @@ class TemplateRowMapper:
             for field, column in layout.field_columns.items()
             if (value := fields.get(field)) is not None and str(value).strip() != ""
         }
-        if layout.primary_screenshot_column:
+        if layout.primary_screenshot_column and screenshot_name:
             values[layout.primary_screenshot_column] = screenshot_name
         if layout.attachment_column and attachments:
             values[layout.attachment_column] = ",".join(attachments)
@@ -82,9 +95,6 @@ class TemplateRowMapper:
 
     @staticmethod
     def _validate_values(layout: SheetLayout, values: dict[str, object]) -> None:
-        screenshot_column = layout.primary_screenshot_column
-        if screenshot_column and not values.get(screenshot_column):
-            raise TemplateRowMappingError(f"{layout.name} is missing its primary screenshot.")
         for column, allowed_values in layout.validation_values.items():
             value = values.get(column)
             if value is not None and value not in allowed_values:

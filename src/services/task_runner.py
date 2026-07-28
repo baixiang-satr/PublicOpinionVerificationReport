@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import datetime
@@ -14,6 +13,7 @@ from uuid import uuid4
 
 from src.config.settings import AppConfig, TaskConfig
 from src.crawler.engine import CrawlEngine
+from src.crawler.platform_router import PlatformRouter
 from src.domain.models import (
     RecordResult,
     RecordStatus,
@@ -22,7 +22,6 @@ from src.domain.models import (
     TemplateRow,
     UrlTask,
 )
-from src.domain.template_schema import get_sheet_layout
 from src.export.excel_writer import ExcelAutomationUnavailable, ExcelTemplateWriter, TemplateIntegrityError
 from src.export.package_validator import validate_template_assets
 from src.export.packager import create_template_archive
@@ -40,6 +39,7 @@ from src.services.models import (
 from src.utils.time_utils import DEFAULT_TIMEZONE
 from src.utils.file_utils import require_safe_file_name
 from src.screenshot.browser import BrowserUnavailableError
+from src.tools.quality_report import QualityArtifacts, write_quality_artifacts
 
 class TaskRunnerError(RuntimeError):
     """A fatal job-level failure suitable for display in the desktop UI."""
@@ -54,6 +54,7 @@ class TaskRunner:
         engine_factory: Callable[[TaskConfig], CrawlEngine] | None = None,
         row_mapper: TemplateRowMapper | None = None,
         excel_writer: ExcelTemplateWriter | None = None,
+        platform_router: PlatformRouter | None = None,
         asset_validator: Callable[..., Any] = validate_template_assets,
         packager: Callable[..., Path] = create_template_archive,
     ) -> None:
@@ -62,6 +63,7 @@ class TaskRunner:
         self._engine_factory = engine_factory or CrawlEngine
         self._row_mapper = row_mapper or TemplateRowMapper()
         self._excel_writer = excel_writer or ExcelTemplateWriter(config.template.workbook_name)
+        self._platform_router = platform_router or PlatformRouter()
         self._asset_validator = asset_validator
         self._packager = packager
 
@@ -141,7 +143,7 @@ class TaskRunner:
                 self._log(
                     callbacks,
                     "WARNING",
-                    "没有取得可审计内容和主截图，因此未生成空的 template.zip。",
+                    "没有记录能匹配固定模板平台，因此未生成空的 template.zip。",
                 )
                 return JobResult(
                     job_id=prepared.job_id,
@@ -187,8 +189,21 @@ class TaskRunner:
                 if record.status == RecordStatus.READY_FOR_EXPORT:
                     record.status = RecordStatus.EXPORTED
                     _call(callbacks.record_updated, record)
+            quality = await asyncio.to_thread(
+                self._write_quality_artifacts,
+                records,
+                prepared.job_dir,
+                prepared.job_id,
+                request.label,
+                rejected_count,
+            )
             tracker.publish(records, stage="已完成")
             self._log(callbacks, "SUCCESS", f"任务完成：{archive_path}")
+            self._log(
+                callbacks,
+                "INFO",
+                f"质量报告：{quality.report_path}；待补录清单：{quality.manual_entry_path}",
+            )
             return JobResult(
                 job_id=prepared.job_id,
                 label=request.label,
@@ -196,6 +211,9 @@ class TaskRunner:
                 rejected_count=rejected_count,
                 job_dir=prepared.job_dir,
                 archive_path=archive_path,
+                quality_report_path=quality.report_path,
+                quality_summary_path=quality.summary_path,
+                manual_entry_path=quality.manual_entry_path,
             )
         except asyncio.CancelledError:
             cancellation.set()
@@ -232,29 +250,38 @@ class TaskRunner:
         callbacks: RunnerCallbacks,
     ) -> list[TemplateRow]:
         rows: list[TemplateRow] = []
-        used_rows: dict[str, int] = defaultdict(int)
         for record in records:
-            if record.status != RecordStatus.ASSETS_READY:
+            if record.status in {
+                RecordStatus.PENDING,
+                RecordStatus.RUNNING,
+                RecordStatus.CANCELLED,
+            }:
                 continue
-            record.status = RecordStatus.READY_FOR_EXPORT
+            if record.route is None:
+                route_url = record.task.normalized_url
+                record.route = self._platform_router.route(route_url, record.page)
+            if record.route is None:
+                record.errors.append(
+                    TaskError(
+                        "export_validation",
+                        "ROW_ROUTE_UNAVAILABLE",
+                        "URL 未匹配固定模板平台，无法保留对应工作表行。",
+                        retryable=False,
+                    )
+                )
+                if record.status == RecordStatus.ASSETS_READY:
+                    record.status = RecordStatus.NEEDS_REVIEW
+                _call(callbacks.record_updated, record)
+                continue
+            was_assets_ready = record.status == RecordStatus.ASSETS_READY
+            if was_assets_ready:
+                record.status = RecordStatus.READY_FOR_EXPORT
             try:
                 row = self._row_mapper.map(record)
-                layout = get_sheet_layout(row.sheet_name)
-                if used_rows[row.sheet_name] >= layout.max_rows:
-                    record.status = RecordStatus.NEEDS_REVIEW
-                    record.errors.append(
-                        TaskError(
-                            "export_validation",
-                            "TEMPLATE_CAPACITY_EXCEEDED",
-                            f"{row.sheet_name}最多可写 {layout.max_rows} 条，当前记录未写入。",
-                            retryable=False,
-                        )
-                    )
-                else:
-                    rows.append(row)
-                    used_rows[row.sheet_name] += 1
+                rows.append(row)
             except TemplateRowMappingError as error:
-                record.status = RecordStatus.NEEDS_REVIEW
+                if was_assets_ready:
+                    record.status = RecordStatus.NEEDS_REVIEW
                 record.errors.append(
                     TaskError("export_validation", "ROW_MAPPING_FAILED", str(error))
                 )
@@ -281,6 +308,23 @@ class TaskRunner:
                 continue
             if path.name not in expected:
                 path.unlink()
+
+    def _write_quality_artifacts(
+        self,
+        records: list[RecordResult],
+        job_dir: Path,
+        job_id: str,
+        label: str,
+        rejected_count: int,
+    ) -> QualityArtifacts:
+        return write_quality_artifacts(
+            records,
+            job_dir,
+            job_id=job_id,
+            label=label,
+            rejected_count=rejected_count,
+            router=self._platform_router,
+        )
 
     @staticmethod
     def _cancelled_result(
