@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from src.crawler.extractors.catalog import CatalogPlatformExtractor
@@ -28,9 +29,17 @@ class ContentParser:
         self._generic = GenericExtractor(summary_max_chars)
         self._platform = CatalogPlatformExtractor()
 
-    async def extract(self, page: Any, definition: PlatformDefinition | None) -> PageData:
+    async def extract(
+        self,
+        page: Any,
+        definition: PlatformDefinition | None,
+        *,
+        network_payloads: tuple[Any, ...] = (),
+    ) -> PageData:
         selectors = definition.selectors if definition else None
         document = await self._generic.collect_document(page, selectors)
+        if network_payloads:
+            document = replace(document, network_payloads=network_payloads)
         fallback = self._generic.extract(document)
         if definition is None:
             return fallback

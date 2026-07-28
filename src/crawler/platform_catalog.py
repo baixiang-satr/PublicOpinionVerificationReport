@@ -3,7 +3,7 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from src.domain.template_schema import SHEET_LAYOUTS
-from src.crawler.platform_types import ExtractorFamily, PlatformDefinition, _selectors
+from src.crawler.platform_types import ExtractorFamily, PlatformDefinition
 
 # Data definitions are in platform_data.py to keep files under the line limit.
 # Import and re-export for backward compatibility with existing import paths.
@@ -11,6 +11,15 @@ from src.crawler.platform_data import (  # noqa: E402  # isort:skip
     UNMAPPED_TEMPLATE_HOSTS,
     PLATFORM_DEFINITIONS,
 )
+
+__all__ = [
+    "ExtractorFamily",
+    "PlatformDefinition",
+    "PLATFORM_DEFINITIONS",
+    "UNMAPPED_TEMPLATE_HOSTS",
+    "find_platform",
+    "find_unmapped_template_platform",
+]
 
 
 def find_platform(url: str) -> PlatformDefinition | None:

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from src.crawler.extractors.base import ImageCandidate, RenderedDocument
+from src.crawler.structured_data import StructuredDataExtractor
 from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import parse_web_published_at
 
@@ -37,6 +38,40 @@ DOCUMENT_SCRIPT = r"""
     const value = (element.getAttribute('content') || '').trim();
     if (key && value && !meta[key]) meta[key] = value;
   }
+  const embeddedPayloads = [];
+  const pushPayload = (value) => {
+    if (value === null || value === undefined) return;
+    try {
+      const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+      if (!serialized || serialized.length > 2000000) return;
+      const parsed = typeof value === 'string' ? JSON.parse(serialized) : JSON.parse(serialized);
+      if (parsed && (Array.isArray(parsed) || typeof parsed === 'object')) {
+        embeddedPayloads.push(parsed);
+      }
+    } catch (_) {}
+  };
+  const structuredScriptSelector = [
+    'script[type="application/json"]',
+    'script#__NEXT_DATA__',
+    'script#__NUXT_DATA__',
+    'script#RENDER_DATA',
+    'script[data-hypernova-key]',
+  ].join(',');
+  for (const node of Array.from(document.querySelectorAll(structuredScriptSelector)).slice(0, 30)) {
+    pushPayload(node.textContent || '');
+  }
+  for (const key of [
+    '__NEXT_DATA__',
+    '__NUXT__',
+    '__INITIAL_STATE__',
+    '__APOLLO_STATE__',
+    '_SSR_HYDRATED_DATA',
+    '__INITIAL_PROPS__',
+  ]) {
+    try { pushPayload(window[key]); } catch (_) {}
+  }
+  const bodyText = text(document.body);
+  if (/^\s*[\[{]/.test(bodyText)) pushPayload(bodyText);
   const domSelectors = {
     content_text: ['article', '[role="main"]', 'main', '.article-content', '.post-content', '.content'],
     author_name: [
@@ -105,10 +140,11 @@ DOCUMENT_SCRIPT = r"""
   return {
     url: location.href,
     title: document.title || '',
-    visibleText: text(document.body),
+    visibleText: bodyText,
     canonicalUrl: document.querySelector('link[rel="canonical"]')?.href || '',
     meta,
     jsonLd: Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map((node) => node.textContent || ''),
+    embeddedPayloads,
     domValues,
     platformValues,
     images
@@ -120,6 +156,7 @@ DOCUMENT_SCRIPT = r"""
 class GenericExtractor:
     def __init__(self, summary_max_chars: int = 2_000) -> None:
         self._summary_max_chars = summary_max_chars
+        self._structured = StructuredDataExtractor()
 
     async def collect_document(
         self,
@@ -134,6 +171,7 @@ class GenericExtractor:
             canonical_url=str(raw.get("canonicalUrl") or ""),
             meta={str(key).lower(): str(value) for key, value in (raw.get("meta") or {}).items()},
             json_ld=tuple(str(value) for value in raw.get("jsonLd") or () if value),
+            embedded_payloads=tuple(raw.get("embeddedPayloads") or ()),
             dom_values={str(key): str(value) for key, value in (raw.get("domValues") or {}).items()},
             platform_values={str(key): str(value) for key, value in (raw.get("platformValues") or {}).items()},
             images=tuple(
@@ -150,6 +188,16 @@ class GenericExtractor:
     def extract(self, document: RenderedDocument) -> PageData:
         data = PageData(final_url=document.url)
         self._extract_json_ld(document, data)
+        self._structured.apply(
+            document.embedded_payloads,
+            data,
+            ExtractionSource.EMBEDDED_JSON,
+        )
+        self._structured.apply(
+            document.network_payloads,
+            data,
+            ExtractionSource.NETWORK_JSON,
+        )
         self._extract_meta(document.meta, data)
         self._extract_dom(document, data)
         data.image_urls.extend(self._image_urls(document.images))

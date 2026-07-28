@@ -4,21 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import datetime
 import logging
 from pathlib import Path
 import random
 from typing import Any
 
-
-logger = logging.getLogger(__name__)
-
+from src.auth.store import AuthProfileStore
 from src.config.settings import TaskConfig
 from src.crawler.author_extractor import AuthorExtractor
 from src.crawler.content_parser import ContentParser
-from src.crawler.navigation import navigate_page, stabilize_rendered_page
+from src.crawler.crawl_navigation import CrawlFailure, navigate_with_fallback
 from src.crawler.platform_router import PlatformRouter
+from src.crawler.platform_scheduler import PlatformTaskScheduler
 from src.crawler.rate_limiter import HostRateLimiter, wait_with_cancellation
 from src.domain.models import (
     ExtractionSource,
@@ -34,20 +32,10 @@ from src.screenshot.asset_collector import AssetCollector
 from src.screenshot.author_shooter import AuthorShooter, AuthorScreenshotError
 from src.screenshot.browser import BrowserPool
 from src.screenshot.page_shooter import PageShooter, PageScreenshotError
-from src.tools.page_access import (
-    inspect_http_response,
-    inspect_page_access,
-    wait_for_manual_access,
-)
 from src.utils.ocr import extract_text_from_images
 from src.utils.time_utils import DEFAULT_TIMEZONE
 
-
-@dataclass
-class CrawlFailure(Exception):
-    error: TaskError
-    status: RecordStatus
-
+logger = logging.getLogger(__name__)
 
 class CrawlEngine:
     def __init__(
@@ -60,9 +48,13 @@ class CrawlEngine:
         shooter: PageShooter | None = None,
         author_shooter: AuthorShooter | None = None,
         asset_collector: AssetCollector | None = None,
+        auth_store: AuthProfileStore | None = None,
     ) -> None:
         self._config = config
-        self._browser_pool = browser_pool or BrowserPool(config)
+        self._auth_store = auth_store
+        if self._auth_store is None and config.auth_store_dir is not None:
+            self._auth_store = AuthProfileStore(config.auth_store_dir)
+        self._browser_pool = browser_pool or BrowserPool(config, auth_store=self._auth_store)
         self._parser = parser or ContentParser(config.summary_max_chars)
         self._router = router or PlatformRouter()
         self._shooter = shooter or PageShooter(config)
@@ -70,6 +62,11 @@ class CrawlEngine:
         self._asset_collector = asset_collector or AssetCollector(config)
         self._author = AuthorExtractor(config.allow_nickname_as_id)
         self._rate_limiter = HostRateLimiter(config.min_host_interval_seconds)
+        self._scheduler = PlatformTaskScheduler(
+            config,
+            self._router,
+            self._auth_store,
+        )
 
     async def run(
         self,
@@ -82,24 +79,100 @@ class CrawlEngine:
         if not tasks:
             return []
         cancellation = cancel_event or asyncio.Event()
+        queues = self._scheduler.queues(tasks)
         await self._browser_pool.start()
         try:
             jobs = [
                 asyncio.create_task(
-                    self._process(
-                        task,
+                    self._process_platform_queue(
+                        queue,
                         Path(output_dir),
                         on_event,
                         on_result,
                         cancellation,
                     ),
-                    name=f"crawl-{task.evidence_id}",
+                    name=f"crawl-platform-{queue_key}",
                 )
-                for task in tasks
+                for queue_key, queue in queues.items()
             ]
-            return list(await asyncio.gather(*jobs))
+            grouped_results = await asyncio.gather(*jobs)
+            return sorted(
+                (
+                    result
+                    for group in grouped_results
+                    for result in group
+                ),
+                key=lambda result: result.task.evidence_id,
+            )
         finally:
             await self._browser_pool.close()
+
+    async def _process_platform_queue(
+        self,
+        tasks: list[UrlTask],
+        output_dir: Path,
+        on_event: Callable[[TaskEvent], None] | None,
+        on_result: Callable[[RecordResult], None] | None,
+        cancel_event: asyncio.Event,
+    ) -> list[RecordResult]:
+        results: list[RecordResult] = []
+        known_block = self._scheduler.known_auth_block(tasks[0])
+        if known_block is not None:
+            for task in tasks:
+                results.append(
+                    self._publish_paused_result(
+                        task,
+                        known_block,
+                        on_event,
+                        on_result,
+                    )
+                )
+            return results
+
+        paused_by: RecordResult | None = None
+        for task in tasks:
+            if paused_by is not None:
+                result = self._publish_paused_result(
+                    task,
+                    (
+                        f"同平台记录 #{paused_by.task.evidence_id:03d} 检测到登录或验证屏障；"
+                        "已暂停该平台剩余 URL，请在“管理平台登录态”中复验后重试。"
+                    ),
+                    on_event,
+                    on_result,
+                )
+            else:
+                result = await self._process(
+                    task,
+                    output_dir,
+                    on_event,
+                    on_result,
+                    cancel_event,
+                )
+                if self._scheduler.should_pause_after(result):
+                    paused_by = result
+            results.append(result)
+        return results
+
+    def _publish_paused_result(
+        self,
+        task: UrlTask,
+        message: str,
+        on_event: Callable[[TaskEvent], None] | None,
+        on_result: Callable[[RecordResult], None] | None,
+    ) -> RecordResult:
+        result = self._scheduler.auth_paused_result(task, message)
+        now = _now()
+        result.started_at = now
+        result.finished_at = now
+        self._emit(result, "start", "平台登录态门禁检查", on_event)
+        self._emit(result, "finish", result.status.value, on_event)
+        if on_result is not None:
+            try:
+                on_result(result)
+            except Exception:
+                pass
+        return result
 
     async def _process(
         self,
@@ -147,8 +220,7 @@ class CrawlEngine:
         cancel_event: asyncio.Event,
     ) -> None:
         _raise_if_cancelled(cancel_event)
-        # A small jitter avoids sending all same-host requests at exactly the
-        # same instant; the host limiter remains the primary load control.
+        # Jitter avoids same-host requests starting at the same instant.
         await wait_with_cancellation(random.uniform(0.3, 1.0), cancel_event)
         await self._rate_limiter.wait(result.task.normalized_url, cancel_event)
         try:
@@ -156,82 +228,38 @@ class CrawlEngine:
                 cancel_event,
                 result.task.normalized_url,
             ) as page:
-                # Modern pages often keep analytics/video connections open
-                # forever. Requiring networkidle turned otherwise usable pages
-                # into navigation failures, so use DOM readiness followed by
-                # bounded, best-effort stabilization.
-                response, partial_navigation_error = await navigate_page(
+                navigation = await navigate_with_fallback(
                     page,
                     result.task.normalized_url,
-                    self._config.page_timeout_seconds * 1000,
+                    self._config,
+                    self._router,
+                    self._browser_pool,
+                    cancel_event,
                 )
-                if partial_navigation_error is not None:
-                    result.errors.append(partial_navigation_error)
-                final_url = str(page.url)
-                status_code = int(response.status) if response is not None else None
-                redirect_chain = _redirect_chain(response, result.task.normalized_url, final_url)
+                result.errors.extend(navigation.warnings)
+                final_url = navigation.final_url
+                status_code = navigation.status_code
+                redirect_chain = navigation.redirect_chain
+                definition = navigation.definition
                 result.page = PageData(
                     final_url=final_url,
                     status_code=status_code,
                     redirect_chain=redirect_chain,
                 )
-                self._check_response(status_code)
-                _raise_if_cancelled(cancel_event)
-
-                # ── 页面稳定等待 + 模拟人类滚动行为 ──────────────────────
-                # 滚动页面以触发懒加载内容、图片等
-                await stabilize_rendered_page(
-                    page,
-                    self._config.page_stabilize_milliseconds,
-                    definition=self._router.definition_for(final_url),
-                )
-                _raise_if_cancelled(cancel_event)
-
-                definition = self._router.definition_for(final_url)
-
-                # ── 检测访问屏障（验证码、登录等）────────────────────────
-                barrier = await inspect_page_access(
-                    page,
-                    final_url,
-                    result.task.normalized_url,
-                )
-                if (
-                    barrier is not None
-                    and barrier.manual_recoverable
-                    and not self._config.headless
-                    and self._config.manual_intervention_timeout_seconds
-                ):
-                    barrier = await wait_for_manual_access(
-                        page,
-                        final_url,
-                        result.task.normalized_url,
-                        self._config.manual_intervention_timeout_seconds,
-                        cancel_event=cancel_event,
-                    )
-                    final_url = str(page.url)
-                    result.page.final_url = final_url
-                    if final_url and result.page.redirect_chain[-1] != final_url:
-                        result.page.redirect_chain.append(final_url)
-                    definition = self._router.definition_for(final_url)
-                    await stabilize_rendered_page(page, 0, definition=definition)
-                if barrier is not None:
-                    self._browser_pool.mark_access_invalid(
-                        page,
-                        result.task.normalized_url,
-                        barrier_code=barrier.code,
-                        message=barrier.message,
-                    )
-                    raise CrawlFailure(
-                        TaskError("access", barrier.code, barrier.message, retryable=True),
-                        barrier.status,
-                    )
                 self._browser_pool.mark_access_valid(
                     page,
                     result.task.normalized_url,
                 )
                 _raise_if_cancelled(cancel_event)
                 try:
-                    extracted = await self._parser.extract(page, definition)
+                    if isinstance(self._parser, ContentParser):
+                        extracted = await self._parser.extract(
+                            page,
+                            definition,
+                            network_payloads=navigation.network_payloads,
+                        )
+                    else:
+                        extracted = await self._parser.extract(page, definition)
                 except Exception as error:
                     raise CrawlFailure(
                         TaskError("parse", "PARSE_FAILED", str(error), retryable=False),
@@ -242,7 +270,12 @@ class CrawlEngine:
                 extracted.redirect_chain = redirect_chain
                 result.page = extracted
                 result.status = RecordStatus.CRAWLED
-                route = self._router.route(final_url, extracted)
+                route_url = (
+                    final_url
+                    if self._router.definition_for(final_url) is not None
+                    else result.task.normalized_url
+                )
+                route = self._router.route(route_url, extracted)
                 if route is None:
                     unsupported_message = getattr(
                         self._router,
@@ -407,14 +440,6 @@ class CrawlEngine:
                 except OSError as error:
                     logger.warning("Unable to remove temporary OCR image %s: %s", path, error)
 
-    def _check_response(self, status_code: int | None) -> None:
-        barrier = inspect_http_response(status_code)
-        if barrier is not None:
-            raise CrawlFailure(
-                TaskError("navigation", barrier.code, barrier.message, barrier.retryable),
-                barrier.status,
-            )
-
     async def _backoff(self, attempt: int, cancel_event: asyncio.Event) -> None:
         # Exponential backoff with full jitter (AWS-recommended strategy)
         # 指数退避 + 全抖动，比固定退避更难被风控检测
@@ -437,20 +462,6 @@ class CrawlEngine:
             callback(TaskEvent(result.task.evidence_id, result.status, stage, message))
         except Exception:
             pass
-
-
-def _redirect_chain(response: Any, original_url: str, final_url: str) -> list[str]:
-    urls: list[str] = []
-    request = response.request if response is not None else None
-    while request is not None:
-        urls.append(str(request.url))
-        request = request.redirected_from
-    urls.reverse()
-    if not urls:
-        urls.append(original_url)
-    if final_url and urls[-1] != final_url:
-        urls.append(final_url)
-    return list(dict.fromkeys(urls))
 
 
 def _missing_required_fields(result: RecordResult) -> list[str]:
