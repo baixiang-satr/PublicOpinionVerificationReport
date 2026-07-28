@@ -154,9 +154,10 @@ async def _is_access_restricted(page: Any) -> bool:
         has_profile_surface = bool(
             await page.evaluate(
                 """() => Boolean(document.querySelector(
-                    'h1, main h2, [class*="profile"], [class*="user-info"], [class*="author-info"], '
-                    '[class*="avatar"], [class*="display-name"], [class*="user-name"], '
-                    '[class*="author-name"], [class*="nickname"]'
+                    'h1, main h2, [class*="profile"], [class*="user-info"], '
+                    + '[class*="author-info"], [class*="avatar"], '
+                    + '[class*="display-name"], [class*="user-name"], '
+                    + '[class*="author-name"], [class*="nickname"]'
                 ))"""
             )
         )
@@ -195,9 +196,9 @@ async def _has_author_content(page: Any) -> bool:
                 await page.evaluate(
                     """() => Boolean(document.querySelector(
                         'h1, main h2, [class*="profile"], [class*="user-info"], '
-                        '[class*="author-info"], [class*="avatar"], '
-                        '[class*="display-name"], [class*="user-name"], '
-                        '[class*="author-name"], [class*="nickname"]'
+                        + '[class*="author-info"], [class*="avatar"], '
+                        + '[class*="display-name"], [class*="user-name"], '
+                        + '[class*="author-name"], [class*="nickname"]'
                     ))"""
                 )
             )
