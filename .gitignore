@@ -13,6 +13,7 @@ build/
 env/
 venv/
 .venv/
+.ocr-venv/
 env.bak/
 venv.bak/
 

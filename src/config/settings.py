@@ -40,6 +40,7 @@ class TaskConfig:
     # ── Core crawling ─────────────────────────────────────────────────
     max_concurrency: int = 3
     page_timeout_seconds: int = 30
+    page_processing_timeout_seconds: float = 150.0
     max_retries: int = 2
     retry_base_delay_seconds: float = 2.0
     min_host_interval_seconds: float = 3.0
@@ -60,6 +61,7 @@ class TaskConfig:
 
     # ── Content extraction ────────────────────────────────────────────
     summary_max_chars: int = 2_000
+    export_content_max_chars: int = 32_000
     capture_network_json: bool = True
     max_structured_payload_bytes: int = 2_000_000
     max_structured_payloads: int = 24
@@ -82,6 +84,11 @@ class TaskConfig:
     allow_nickname_as_id: bool = True
     ocr_enabled: bool = True
     ocr_confidence_threshold: float = 0.5
+    ocr_python_executable: Path | None = None
+    ocr_worker_timeout_seconds: float = 45.0
+    ocr_max_restarts: int = 1
+    ocr_min_image_width: int = 80
+    ocr_min_image_height: int = 80
 
     # ──────────────────────────────────────────────────────────────────
     # Anti-detection / anti-crawling options
@@ -123,7 +130,11 @@ class TaskConfig:
     def __post_init__(self) -> None:
         if not 1 <= self.max_concurrency <= 10:
             raise ValueError("max_concurrency must be between 1 and 10.")
-        if self.page_timeout_seconds <= 0 or self.max_retries < 0:
+        if (
+            self.page_timeout_seconds <= 0
+            or self.page_processing_timeout_seconds <= 0
+            or self.max_retries < 0
+        ):
             raise ValueError("Timeout must be positive and retries cannot be negative.")
         if self.retry_base_delay_seconds < 0:
             raise ValueError("retry_base_delay_seconds cannot be negative.")
@@ -144,6 +155,8 @@ class TaskConfig:
             raise ValueError("Image limits must be non-negative and positive respectively.")
         if not 1 <= self.summary_max_chars <= 32_767:
             raise ValueError("summary_max_chars must be between 1 and 32767.")
+        if not 1 <= self.export_content_max_chars <= 32_767:
+            raise ValueError("export_content_max_chars must be between 1 and 32767.")
         if self.max_structured_payload_bytes < 1_024:
             raise ValueError("max_structured_payload_bytes must be at least 1024.")
         if not 1 <= self.max_structured_payloads <= 100:
@@ -152,6 +165,10 @@ class TaskConfig:
             raise ValueError("manual_intervention_timeout_seconds must be between 0 and 600.")
         if not 0.0 <= self.ocr_confidence_threshold <= 1.0:
             raise ValueError("ocr_confidence_threshold must be between 0 and 1.")
+        if self.ocr_worker_timeout_seconds <= 0 or self.ocr_max_restarts < 0:
+            raise ValueError("OCR timeout must be positive and restarts cannot be negative.")
+        if self.ocr_min_image_width < 1 or self.ocr_min_image_height < 1:
+            raise ValueError("OCR image dimensions must be positive.")
         if self.viewport_width < 800 or self.viewport_height < 600:
             raise ValueError("viewport dimensions must be at least 800x600.")
         if self.proxy_url and not self.proxy_url.startswith(("http://", "https://", "socks5://", "socks4://")):
@@ -182,6 +199,12 @@ class AppConfig:
         task = TaskConfig(
             max_concurrency=int(os.getenv("POR_MAX_CONCURRENCY", defaults.task.max_concurrency)),
             page_timeout_seconds=int(os.getenv("POR_PAGE_TIMEOUT_SECONDS", defaults.task.page_timeout_seconds)),
+            page_processing_timeout_seconds=float(
+                os.getenv(
+                    "POR_PAGE_PROCESSING_TIMEOUT_SECONDS",
+                    defaults.task.page_processing_timeout_seconds,
+                )
+            ),
             max_retries=int(os.getenv("POR_MAX_RETRIES", defaults.task.max_retries)),
             retry_base_delay_seconds=float(
                 os.getenv("POR_RETRY_BASE_DELAY_SECONDS", defaults.task.retry_base_delay_seconds)
@@ -249,10 +272,58 @@ class AppConfig:
                 "POR_ENABLE_PLATFORM_FALLBACKS",
                 defaults.task.enable_platform_fallbacks,
             ),
+            max_images_per_record=int(
+                os.getenv(
+                    "POR_MAX_IMAGES_PER_RECORD",
+                    defaults.task.max_images_per_record,
+                )
+            ),
+            max_image_bytes=int(
+                os.getenv(
+                    "POR_MAX_IMAGE_BYTES",
+                    defaults.task.max_image_bytes,
+                )
+            ),
+            summary_max_chars=int(
+                os.getenv(
+                    "POR_SUMMARY_MAX_CHARS",
+                    defaults.task.summary_max_chars,
+                )
+            ),
+            export_content_max_chars=int(
+                os.getenv(
+                    "POR_EXPORT_CONTENT_MAX_CHARS",
+                    defaults.task.export_content_max_chars,
+                )
+            ),
             allow_nickname_as_id=_bool_env("POR_ALLOW_NICKNAME_AS_ID", defaults.task.allow_nickname_as_id),
             ocr_enabled=_bool_env("POR_OCR_ENABLED", defaults.task.ocr_enabled),
             ocr_confidence_threshold=float(
                 os.getenv("POR_OCR_CONFIDENCE", defaults.task.ocr_confidence_threshold)
+            ),
+            ocr_python_executable=_path_from_environment(
+                "POR_OCR_PYTHON_EXECUTABLE"
+            ),
+            ocr_worker_timeout_seconds=float(
+                os.getenv(
+                    "POR_OCR_WORKER_TIMEOUT_SECONDS",
+                    defaults.task.ocr_worker_timeout_seconds,
+                )
+            ),
+            ocr_max_restarts=int(
+                os.getenv("POR_OCR_MAX_RESTARTS", defaults.task.ocr_max_restarts)
+            ),
+            ocr_min_image_width=int(
+                os.getenv(
+                    "POR_OCR_MIN_IMAGE_WIDTH",
+                    defaults.task.ocr_min_image_width,
+                )
+            ),
+            ocr_min_image_height=int(
+                os.getenv(
+                    "POR_OCR_MIN_IMAGE_HEIGHT",
+                    defaults.task.ocr_min_image_height,
+                )
             ),
             # ── Anti-detection overrides ──────────────────────────────
             enable_stealth=_bool_env("POR_ENABLE_STEALTH", defaults.task.enable_stealth),

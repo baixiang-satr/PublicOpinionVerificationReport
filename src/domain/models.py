@@ -29,8 +29,28 @@ class ExtractionSource(StrEnum):
     META = "meta"
     GENERIC_DOM = "generic_dom"
     VISIBLE_TEXT = "visible_text"
+    DERIVED_URL = "derived_url"
     NICKNAME_FALLBACK = "nickname_fallback"
     OCR = "ocr"
+    SYSTEM_MARKER = "system_marker"
+
+
+class ContentKind(StrEnum):
+    UNKNOWN = "unknown"
+    TEXT = "text"
+    IMAGE_WITH_TEXT = "image_with_text"
+    IMAGE_WITHOUT_TEXT = "image_without_text"
+    MIXED_TEXT_AND_IMAGE = "mixed_text_and_image"
+    VIDEO_ONLY = "video_only"
+
+
+class OcrStatus(StrEnum):
+    NOT_RUN = "not_run"
+    SUCCESS = "success"
+    NO_TEXT = "no_text"
+    UNAVAILABLE = "unavailable"
+    TIMEOUT = "timeout"
+    FAILED = "failed"
 
 
 @dataclass(frozen=True)
@@ -64,9 +84,16 @@ class PageData:
     redirect_chain: list[str] = field(default_factory=list)
     text_type_hint: str = "正文"
     field_sources: dict[str, ExtractionSource] = field(default_factory=dict)
+    field_confidences: dict[str, float] = field(default_factory=dict)
     summary_truncated: bool = False
     author_id_is_fallback: bool = False
     ocr_text: str | None = None
+    ocr_status: OcrStatus = OcrStatus.NOT_RUN
+    ocr_image_count: int = 0
+    ocr_text_image_count: int = 0
+    content_kind: ContentKind = ContentKind.UNKNOWN
+    original_content_chars: int = 0
+    exported_content_chars: int = 0
 
 
 @dataclass(frozen=True)
