@@ -128,6 +128,12 @@ class TaskRunner:
                     job_dir=prepared.job_dir,
                 )
 
+            self._cleanup_staging_assets(
+                prepared.template_dir,
+                rows,
+                self._config.template.workbook_name,
+            )
+
             tracker.publish(records, stage="正在写入固定模板")
             self._log(callbacks, "INFO", f"正在将 {len(rows)} 条记录写入模板副本。")
             write_result = await asyncio.to_thread(
@@ -216,6 +222,27 @@ class TaskRunner:
                 )
             _call(callbacks.record_updated, record)
         return rows
+
+    @staticmethod
+    def _cleanup_staging_assets(
+        template_dir: Path,
+        rows: list[TemplateRow],
+        workbook_name: str,
+    ) -> None:
+        """Remove staging files not referenced by any export row (failed-record leftovers)."""
+        expected: set[str] = set()
+        for row in rows:
+            for name in row.all_asset_names():
+                expected.add(name)
+        for path in list(template_dir.rglob("*")):
+            if path.is_dir():
+                continue
+            if path.name == workbook_name and path.parent == template_dir:
+                continue
+            if path.parent != template_dir:
+                continue
+            if path.name not in expected:
+                path.unlink()
 
     @staticmethod
     def _cancelled_result(
