@@ -8,9 +8,20 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from src.config.settings import TaskConfig
-from src.crawler.navigation import stabilize_rendered_page
+from src.crawler.navigation import navigate_page, stabilize_rendered_page
 from src.screenshot.page_shooter import PageShooter, PageScreenshotError
 from src.tools.page_access import inspect_page_access, wait_for_manual_access
+
+
+PROFILE_SELECTORS = (
+    "[class*='profile-header']",
+    "[class*='user-info']",
+    "[class*='author-info']",
+    "[class*='profile']",
+    "[class*='nickname']",
+    "main h1",
+    "main h2",
+)
 
 
 class AuthorScreenshotError(RuntimeError):
@@ -31,6 +42,9 @@ class AuthorShooter:
         evidence_id: int,
         output_dir: Path,
         cancel_event: asyncio.Event | None = None,
+        *,
+        expected_author_name: str | None = None,
+        expected_author_id: str | None = None,
     ) -> Path:
         _raise_if_cancelled(cancel_event)
         if urlsplit(author_url).scheme.lower() not in {"http", "https"}:
@@ -39,10 +53,11 @@ class AuthorShooter:
         author_page = None
         try:
             author_page = await source_page.context.new_page()
-            response = await author_page.goto(
+            response, _partial_navigation_error = await navigate_page(
+                author_page,
                 author_url,
-                wait_until="domcontentloaded",
-                timeout=self._config.page_timeout_seconds * 1000,
+                self._config.page_timeout_seconds * 1000,
+                cancel_event,
             )
             _raise_if_cancelled(cancel_event)
             status = int(response.status) if response is not None else None
@@ -88,11 +103,17 @@ class AuthorShooter:
                     "AUTHOR_CONTENT_NOT_READY",
                     "作者主页未渲染出可见的账号资料或实质内容",
                 )
+            await _validate_author_identity(
+                author_page,
+                expected_author_name,
+                expected_author_id,
+            )
             return await self._shooter.capture_named(
                 author_page,
                 f"{evidence_id:03d}主页",
                 output_dir,
                 cancel_event,
+                focus_selectors=PROFILE_SELECTORS,
             )
         except AuthorScreenshotError:
             raise
@@ -180,6 +201,72 @@ async def _wait_for_author_surface(page: Any) -> None:
         ).first.wait_for(state="visible", timeout=3_000)
     except Exception:
         pass
+
+
+async def _validate_author_identity(
+    page: Any,
+    expected_name: str | None,
+    expected_id: str | None,
+) -> None:
+    if not expected_name and not expected_id:
+        return
+    if not hasattr(page, "evaluate"):
+        return
+    try:
+        identity = await page.evaluate(
+            """() => {
+                const selectors = [
+                  '[class*="profile-header"] [class*="name"]',
+                  '[class*="user-info"] [class*="name"]',
+                  '[class*="author-info"] [class*="name"]',
+                  '[class*="nickname"]',
+                  'main h1',
+                  'main h2'
+                ];
+                let name = '';
+                for (const selector of selectors) {
+                  const element = document.querySelector(selector);
+                  const text = (element?.innerText || element?.textContent || '').trim();
+                  if (text && text.length <= 100) { name = text; break; }
+                }
+                return {
+                  name,
+                  body: (document.body?.innerText || '').slice(0, 5000)
+                };
+            }"""
+        )
+    except Exception:
+        return
+    detected = _identity_key(str(identity.get("name") or ""))
+    expected = _identity_key(expected_name or "")
+    body = _identity_key(str(identity.get("body") or ""))
+    identifier = _identity_key(expected_id or "")
+    if identifier and identifier in body:
+        return
+    # A detected profile-header name is stronger evidence than arbitrary body
+    # text.  Navigation bars, recommendations and sidebars commonly repeat
+    # other publisher names; accepting a body-only match when the header names
+    # somebody else produced false author screenshots in the real URL batch.
+    if expected and detected:
+        if expected in detected or detected in expected:
+            return
+        raise AuthorScreenshotError(
+            "AUTHOR_IDENTITY_MISMATCH",
+            (
+                f"作者主页身份不一致：正文作者为 {expected_name!r}，"
+                f"主页显示为 {identity.get('name')!r}"
+            ),
+        )
+    if expected and expected in body:
+        return
+
+
+def _identity_key(value: str) -> str:
+    return "".join(
+        character.casefold()
+        for character in value
+        if character.isalnum()
+    )
 
 
 async def _has_author_content(page: Any) -> bool:

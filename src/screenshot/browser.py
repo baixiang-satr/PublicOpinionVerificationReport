@@ -10,13 +10,17 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, AsyncIterator
-from urllib.parse import urlparse
 
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.registry import auth_policy_for_key, auth_policy_for_url
 from src.auth.state_filter import filter_state_for_policy
 from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
+from src.screenshot.browser_runtime import (
+    close_quietly,
+    connection_closed,
+    mask_proxy,
+)
 from src.screenshot.stealth import apply_extra_stealth
 
 
@@ -66,7 +70,7 @@ def browser_launch_options(config: TaskConfig) -> dict[str, Any]:
     }
     if config.proxy_url:
         options["proxy"] = {"server": config.proxy_url}
-        logger.info("Browser configured with proxy: %s", _mask_proxy(config.proxy_url))
+        logger.info("Browser configured with proxy: %s", mask_proxy(config.proxy_url))
     return options
 
 
@@ -157,26 +161,59 @@ class BrowserPool:
                     "Unable to start owned Chromium. Install it with: python -m playwright install chromium"
                 ) from error
 
-    async def close(self) -> None:
+    async def close(self, *, persist_login_state: bool = True) -> None:
         slots = tuple(self._contexts.values())
         self._contexts.clear()
         self._context_ids.clear()
+        if slots and persist_login_state and self._driver_is_connected():
+            try:
+                await asyncio.wait_for(
+                    self._save_login_states(slots),
+                    timeout=5.0,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Timed out refreshing authentication profiles during shutdown; "
+                    "continuing browser cleanup."
+                )
+            except Exception as error:
+                logger.warning(
+                    "Unable to refresh authentication profiles during shutdown: %s",
+                    error,
+                )
         if slots:
-            await self._save_login_states(slots)
             await asyncio.gather(
-                *(_close_quietly(slot.context) for slot in slots),
+                *(close_quietly(slot.context, timeout=2.0) for slot in slots),
                 return_exceptions=True,
             )
         if self._browser is not None:
             try:
-                await self._browser.close()
+                await close_quietly(self._browser, timeout=3.0)
             finally:
                 self._browser = None
         if self._playwright is not None:
             try:
-                await self._playwright.stop()
+                await asyncio.wait_for(self._playwright.stop(), timeout=3.0)
+            except Exception:
+                pass
             finally:
                 self._playwright = None
+
+    async def close_for_cancellation(self) -> None:
+        """Fast shutdown that never persists state from a cancelled task."""
+
+        await self.close(persist_login_state=False)
+
+    def _driver_is_connected(self) -> bool:
+        if self._browser is None:
+            return False
+        checker = getattr(self._browser, "is_connected", None)
+        if not callable(checker):
+            return True
+        try:
+            return bool(checker())
+        except Exception:
+            return False
 
     async def __aenter__(self) -> "BrowserPool":
         await self.start()
@@ -212,7 +249,7 @@ class BrowserPool:
             yield page
         finally:
             if page is not None:
-                await _close_quietly(page)
+                await close_quietly(page)
             if slot_acquired:
                 self._semaphore.release()
 
@@ -379,8 +416,13 @@ class BrowserPool:
                 or slot.platform_key is None
             ):
                 continue
+            if not self._driver_is_connected():
+                break
             try:
-                state = await slot.context.storage_state(indexed_db=True)
+                state = await asyncio.wait_for(
+                    slot.context.storage_state(indexed_db=True),
+                    timeout=2.0,
+                )
                 profile = self._auth_store.profile_for(slot.platform_key)
                 validation_url = (
                     profile.validation_url
@@ -405,6 +447,8 @@ class BrowserPool:
                     slot.platform_key,
                     error,
                 )
+                if connection_closed(error):
+                    break
 
     async def _save_legacy_login_state(self, context: Any) -> None:
         """Persist the legacy combined state for backward-compatible callers."""
@@ -446,18 +490,3 @@ class BrowserPool:
                 self._semaphore.release()
             raise asyncio.CancelledError
         await acquire_task
-
-
-async def _close_quietly(resource: Any) -> None:
-    try:
-        await resource.close()
-    except Exception:
-        pass
-
-
-def _mask_proxy(proxy_url: str) -> str:
-    """Mask password in proxy URL for safe logging."""
-    parsed = urlparse(proxy_url)
-    if parsed.password:
-        return proxy_url.replace(parsed.password, "****")
-    return proxy_url

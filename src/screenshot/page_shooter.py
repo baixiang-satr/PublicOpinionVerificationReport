@@ -47,6 +47,7 @@ class PageShooter:
         cancel_event: asyncio.Event | None = None,
         *,
         definition: Any = None,
+        focus_selectors: tuple[str, ...] = (),
     ) -> Path:
         _raise_if_cancelled(cancel_event)
         extension = "jpg" if self._config.screenshot_format == "jpeg" else "png"
@@ -68,7 +69,11 @@ class PageShooter:
         await _hide_obstructive_login_overlays(page)
         is_long_page = False
         if self._config.full_page_screenshot:
-            dimensions = await _page_dimensions(page, definition)
+            dimensions = await _page_dimensions(
+                page,
+                definition,
+                focus_selectors,
+            )
             if dimensions is not None:
                 is_long_page = (
                     dimensions["height"]
@@ -298,14 +303,18 @@ async def _hide_obstructive_login_overlays(page: Any) -> None:
 async def _page_dimensions(
     page: Any,
     definition: Any = None,
+    focus_selectors: tuple[str, ...] = (),
 ) -> dict[str, int] | None:
     if not hasattr(page, "evaluate"):
         return None
-    selectors = [
+    selectors = [*focus_selectors]
+    selectors.extend(
+        [
         selector
         for field in ("content_text", "title")
         for selector in (definition.selectors.get(field, ()) if definition else ())
-    ]
+        ]
+    )
     selectors.extend(("article", "main", "[role='main']"))
     selector_json = json.dumps(list(dict.fromkeys(selectors)), ensure_ascii=False)
     try:
