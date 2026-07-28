@@ -18,19 +18,19 @@ from pathlib import Path
 from src.domain.models import RecordResult, RecordStatus
 from src.utils.time_utils import DEFAULT_TIMEZONE
 
-REPORT_FILE = Path(__file__).resolve().parents[2] / "output" / "crawl_run_report.md"
+REPORT_FILE = Path(__file__).resolve().parents[2] / "docs" / "crawl_run_report.md"
 
 # ── 失败原因与解决建议对照表 ──────────────────────────────────────────────
 _FAILURE_ADVICE: dict[str, str] = {
     # 验证码
     "CAPTCHA_REQUIRED": (
-        "遇到验证码拦截。请在运行时**取消勾选「后台运行浏览器」**，"
-        "在弹出浏览器窗口中手动完成验证码后，工具会自动继续。"
+        "遇到验证码拦截。请打开**「管理平台登录态」**，选择对应平台后，"
+        "在平台官方页面中人工完成验证码并等待复验。"
     ),
     # 登录
     "LOGIN_REQUIRED": (
-        "页面需要登录才能访问。请先使用 Playwright 导出登录态 JSON 文件，"
-        "然后在「登录态文件」中选择该文件；或取消「后台运行」手动登录。"
+        "页面需要登录才能访问。请打开**「管理平台登录态」**，选择对应平台，"
+        "人工登录并等待新 context 复验通过。"
     ),
     # 风控 / 访问限制
     "ACCESS_CHALLENGE": (
@@ -61,9 +61,9 @@ _FAILURE_ADVICE: dict[str, str] = {
     # 空页面
     "EMPTY_RENDERED_PAGE": (
         "页面渲染后仍为空。可能需要：\n"
-        "1. 提供登录态 JSON 文件；\n"
-        "2. 取消「后台运行」，在可视浏览器中查看；\n"
-        "3. 增大稳定等待时间。"
+        "1. 核对并更换仍然有效的真实内容 URL；\n"
+        "2. 增大稳定等待时间后重试；\n"
+        "3. 仅在平台明确要求登录时使用「管理平台登录态」。"
     ),
     # 导航超时 / 失败
     "NAVIGATION_TIMEOUT": "页面加载超时，可增大「单个页面最长等待时间」参数后重试。",

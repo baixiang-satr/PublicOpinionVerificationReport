@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
+from src.crawler.platform_router import PlatformRouter
 from src.domain.models import AssetSet, PageData, RecordResult, RecordStatus, RouteDecision, UrlTask
 from src.export.row_mapper import TemplateRowMapper
 
@@ -45,3 +46,26 @@ def test_row_mapper_keeps_partial_record_and_leaves_unknown_fields_blank() -> No
     assert row.values_by_column["G"] == "002.jpg"
     assert "B" not in row.values_by_column
     assert "F" not in row.values_by_column
+
+
+def test_row_mapper_accepts_commerce_product_as_merchant() -> None:
+    page = PageData(
+        final_url="https://item.jd.com/100.html",
+        title="商品标题",
+        content_summary="商品描述",
+        store_name="示例店铺",
+    )
+    route = PlatformRouter().route(page.final_url, page)
+    assert route is not None
+    result = RecordResult(
+        task=UrlTask(3, page.final_url, page.final_url),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=route,
+        page=page,
+        assets=AssetSet(page_screenshot=Path("003.jpg")),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["D"] == "商家"
+    assert row.values_by_column["F"] == "示例店铺"

@@ -301,7 +301,7 @@ def _captcha_barrier() -> AccessBarrier:
     return AccessBarrier(
         AccessKind.CAPTCHA,
         "CAPTCHA_REQUIRED",
-        "页面要求人工验证码；请取消“后台运行浏览器”，在可视窗口完成验证后重试。",
+        "页面要求人工验证码；请在“管理平台登录态”中打开该平台，并在官方页面人工完成验证。",
         RecordStatus.NEEDS_REVIEW,
         manual_recoverable=True,
     )
@@ -311,7 +311,7 @@ def _login_barrier() -> AccessBarrier:
     return AccessBarrier(
         AccessKind.LOGIN,
         "LOGIN_REQUIRED",
-        "页面要求登录；请选择您有权使用的登录态 JSON，或用可视浏览器人工登录。",
+        "页面明确要求登录；请在“管理平台登录态”中选择该平台，人工登录并等待新 context 复验。",
         RecordStatus.NEEDS_REVIEW,
         manual_recoverable=True,
     )
@@ -321,7 +321,7 @@ def _restricted_barrier() -> AccessBarrier:
     return AccessBarrier(
         AccessKind.ACCESS_RESTRICTED,
         "ACCESS_CHALLENGE",
-        "平台显示访问风控页；请在可视窗口确认访问权限，无法恢复时稍后重试。",
+        "平台显示访问风控页；请在“管理平台登录态”的官方页面人工处理，无法恢复时稍后重试。",
         RecordStatus.NEEDS_REVIEW,
         manual_recoverable=True,
     )

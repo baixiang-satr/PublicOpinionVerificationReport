@@ -50,10 +50,10 @@ _PARAM_HELP: dict[str, tuple[str, str]] = {
         "取消勾选则会显示浏览器窗口，便于您手工登录或处理验证码。",
     ),
     "storage_state": (
-        "登录态文件（可选）",
-        "如果您要抓取的页面需要登录才能访问，\n"
-        "可以先用 Playwright 导出登录态 JSON 文件，然后在这里选择。\n"
-        "普通公开页面无需此设置。",
+        "旧版综合登录态（兼容）",
+        "仅用于兼容已有 Playwright storage state JSON。\n"
+        "新登录态请使用“管理平台登录态”，按平台加密保存并单独复验。\n"
+        "登录态仅保存在本机，不会写入 template.zip。",
     ),
 }
 
@@ -80,7 +80,7 @@ class TaskOptionsWidget(QWidget):
         self.storage_state = QLineEdit()
         self.storage_state.setObjectName("storageStatePath")
         self.storage_state.setReadOnly(True)
-        self.storage_state.setPlaceholderText("未选择 — 普通公开页面无需登录态")
+        self.storage_state.setPlaceholderText("未启用登录态保存")
         if defaults.storage_state_path:
             self.storage_state.setText(str(defaults.storage_state_path))
         self.storage_button = QPushButton("浏览…")
@@ -122,7 +122,7 @@ class TaskOptionsWidget(QWidget):
         self.headless.setToolTip(_PARAM_HELP["headless"][1])
         layout.addWidget(self.headless)
 
-        storage_label = QLabel("登录态文件（可选）")
+        storage_label = QLabel("旧版综合登录态（兼容）")
         storage_label.setToolTip(_PARAM_HELP["storage_state"][1])
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -136,8 +136,8 @@ class TaskOptionsWidget(QWidget):
     def task_config(self) -> TaskConfig:
         storage_text = self.storage_state.text().strip()
         storage_path = Path(storage_text) if storage_text else None
-        if storage_path is not None and not storage_path.is_file():
-            raise ValueError("选择的登录态 JSON 文件不存在。")
+        if storage_path is not None and storage_path.suffix.casefold() != ".json":
+            raise ValueError("登录态文件必须使用 .json 扩展名。")
         return TaskConfig(
             max_concurrency=self.concurrency.value(),
             page_timeout_seconds=self.timeout.value(),
@@ -147,6 +147,9 @@ class TaskOptionsWidget(QWidget):
             page_stabilize_milliseconds=self._defaults.page_stabilize_milliseconds,
             screenshot_format=str(self.screenshot_format.currentData()),
             full_page_screenshot=self._defaults.full_page_screenshot,
+            max_full_page_screenshot_height=self._defaults.max_full_page_screenshot_height,
+            screenshot_jpeg_quality=self._defaults.screenshot_jpeg_quality,
+            long_page_jpeg_quality=self._defaults.long_page_jpeg_quality,
             # Page images are bounded, temporary OCR inputs only. They are
             # deleted after recognition and never included in template.zip.
             max_images_per_record=self._defaults.max_images_per_record,
@@ -155,6 +158,7 @@ class TaskOptionsWidget(QWidget):
             timezone=self._defaults.timezone,
             headless=self.headless.isChecked(),
             storage_state_path=storage_path,
+            auth_store_dir=self._defaults.auth_store_dir,
             manual_intervention_timeout_seconds=self._defaults.manual_intervention_timeout_seconds,
             allow_nickname_as_id=self._defaults.allow_nickname_as_id,
             ocr_enabled=self._defaults.ocr_enabled,

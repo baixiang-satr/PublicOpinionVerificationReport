@@ -21,13 +21,15 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from src.config.settings import AppConfig
+from src.auth.store import AuthProfileStore
+from src.config.settings import AppConfig, default_auth_store_dir
 from src.services.models import JobRequest, JobResult, JobSummary
 from src.ui.widgets.file_selector import FileSelector
 from src.ui.widgets.log_viewer import LogViewer
 from src.ui.widgets.progress_panel import ProgressPanel
 from src.ui.widgets.result_table import ResultTable
 from src.ui.widgets.task_options import TaskOptionsWidget
+from src.ui.widgets.auth_manager import AuthManagerDialog
 from src.ui.workers.task_worker import TaskWorker
 
 
@@ -94,6 +96,13 @@ class MainWindow(QMainWindow):
         g2_layout.setContentsMargins(12, 18, 12, 12)
         self.options = TaskOptionsWidget(self._base_config.task)
         g2_layout.addWidget(self.options)
+        self.auth_manager_button = QPushButton("管理平台登录态…")
+        self.auth_manager_button.setObjectName("authManagerButton")
+        self.auth_manager_button.setToolTip(
+            "先验证游客访问，只对确实受限的平台进行人工登录或验证码。"
+        )
+        self.auth_manager_button.clicked.connect(self._open_auth_manager)
+        g2_layout.addWidget(self.auth_manager_button)
         layout.addWidget(g2)
 
         # ── 第 3 步：操作 ──
@@ -204,6 +213,20 @@ class MainWindow(QMainWindow):
         )
         self._start_worker(request, clear_results=True)
 
+    def _open_auth_manager(self) -> None:
+        store_dir = self._base_config.task.auth_store_dir or default_auth_store_dir()
+        try:
+            store = AuthProfileStore(store_dir)
+            dialog = AuthManagerDialog(self._base_config.task, store, self)
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "无法打开登录态管理",
+                f"本机安全存储初始化失败：{error}",
+            )
+            return
+        dialog.exec_()
+
     def _start_worker(self, request: JobRequest, *, clear_results: bool) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
@@ -278,6 +301,7 @@ class MainWindow(QMainWindow):
     def _set_running(self, running: bool) -> None:
         self.file_selector.set_controls_enabled(not running)
         self.options.set_controls_enabled(not running)
+        self.auth_manager_button.setEnabled(not running)
         self.start_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
         self.cancel_button.setText("取消任务")

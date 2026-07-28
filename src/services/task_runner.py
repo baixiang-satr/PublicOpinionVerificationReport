@@ -41,10 +41,6 @@ from src.utils.time_utils import DEFAULT_TIMEZONE
 from src.utils.file_utils import require_safe_file_name
 from src.screenshot.browser import BrowserUnavailableError
 
-# ⚠️ 临时功能：爬取运行报告，项目完成后需删除
-from src.tools.crawl_tracker import append_run_report  # noqa: F811
-
-
 class TaskRunnerError(RuntimeError):
     """A fatal job-level failure suitable for display in the desktop UI."""
 
@@ -98,6 +94,28 @@ class TaskRunner:
             for record in retained:
                 _call(callbacks.record_updated, record)
             tracker.publish(stage="正在启动浏览器")
+            auth_store_dir = self._config.task.auth_store_dir
+            if auth_store_dir is not None:
+                self._log(
+                    callbacks,
+                    "INFO",
+                    f"已启用逐平台加密登录态：{Path(auth_store_dir).expanduser().resolve()}",
+                )
+            login_state = self._config.task.storage_state_path
+            if login_state is not None:
+                login_state = Path(login_state).expanduser().resolve()
+                if login_state.is_file():
+                    self._log(
+                        callbacks,
+                        "INFO",
+                        f"未建立单平台状态时将兼容读取旧版综合登录态：{login_state}",
+                    )
+                elif auth_store_dir is None and not self._config.task.headless:
+                    self._log(
+                        callbacks,
+                        "INFO",
+                        f"旧版模式将在任务结束时保存综合登录态：{login_state}",
+                    )
             engine = self._engine_factory(self._config.task)
             records = await engine.run(
                 list(tasks),
@@ -114,7 +132,6 @@ class TaskRunner:
                 self._template_manager.assert_source_unchanged(prepared)
                 tracker.publish(records, stage="任务已取消")
                 self._log(callbacks, "WARNING", "任务已取消，已完成结果仅供查看，不生成压缩包。")
-                self._write_crawl_report(records, prepared.job_id, request.label, rejected_count)
                 return self._cancelled_result(request, prepared, records, rejected_count)
 
             rows = self._build_rows(records, callbacks)
@@ -126,7 +143,6 @@ class TaskRunner:
                     "WARNING",
                     "没有取得可审计内容和主截图，因此未生成空的 template.zip。",
                 )
-                self._write_crawl_report(records, prepared.job_id, request.label, rejected_count)
                 return JobResult(
                     job_id=prepared.job_id,
                     label=request.label,
@@ -150,7 +166,6 @@ class TaskRunner:
             )
             if cancellation.is_set():
                 self._template_manager.assert_source_unchanged(prepared)
-                self._write_crawl_report(records, prepared.job_id, request.label, rejected_count)
                 return self._cancelled_result(request, prepared, records, rejected_count)
 
             await asyncio.to_thread(
@@ -174,7 +189,6 @@ class TaskRunner:
                     _call(callbacks.record_updated, record)
             tracker.publish(records, stage="已完成")
             self._log(callbacks, "SUCCESS", f"任务完成：{archive_path}")
-            self._write_crawl_report(records, prepared.job_id, request.label, rejected_count)
             return JobResult(
                 job_id=prepared.job_id,
                 label=request.label,
@@ -284,20 +298,6 @@ class TaskRunner:
             job_dir=prepared.job_dir,
             cancelled=True,
         )
-
-    @staticmethod
-    def _write_crawl_report(
-        records: list[RecordResult],
-        job_id: str,
-        label: str,
-        rejected_count: int,
-    ) -> None:
-        """⚠️ 临时功能：将本次运行结果写入爬取报告。项目完成后需删除此方法。"""
-        try:
-            append_run_report(records, job_id, label, rejected_count)
-        except Exception as exc:
-            # 报告写入失败不影响主流程
-            pass
 
     @staticmethod
     def _log(

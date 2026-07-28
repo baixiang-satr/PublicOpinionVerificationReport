@@ -9,6 +9,7 @@ import multiprocessing as mp
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 from src.domain.models import TemplateRow
@@ -18,6 +19,7 @@ from src.utils.file_utils import split_attachment_names
 
 XL_VALIDATE_LIST = 3
 EXCEL_OPERATION_TIMEOUT_SECONDS = 120
+EXCEL_BUSY_RETRY_COUNT = 3
 
 
 class ExcelAutomationUnavailable(RuntimeError):
@@ -210,6 +212,25 @@ class ExcelTemplateWriter:
         workbook_path: Path,
         rows_by_sheet: dict[str, list[TemplateRow]] | None = None,
     ) -> Any:
+        for attempt in range(EXCEL_BUSY_RETRY_COUNT):
+            try:
+                return ExcelTemplateWriter._run_excel_once(
+                    operation,
+                    workbook_path,
+                    rows_by_sheet,
+                )
+            except TemplateIntegrityError as error:
+                if attempt + 1 >= EXCEL_BUSY_RETRY_COUNT or not _is_excel_busy_error(error):
+                    raise
+                time.sleep(0.75 * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def _run_excel_once(
+        operation: str,
+        workbook_path: Path,
+        rows_by_sheet: dict[str, list[TemplateRow]] | None = None,
+    ) -> Any:
         context = mp.get_context("spawn")
         receive_connection, send_connection = context.Pipe(duplex=False)
         process = context.Process(
@@ -244,6 +265,22 @@ class ExcelTemplateWriter:
             if process.is_alive():
                 process.terminate()
                 process.join()
+
+
+def _is_excel_busy_error(error: Exception) -> bool:
+    """Recognize transient RPC failures raised while Excel is briefly busy."""
+
+    message = str(error).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "-2147418111",  # RPC_E_CALL_REJECTED
+            "-2147417846",  # RPC_E_SERVERCALL_RETRYLATER
+            "被呼叫方拒绝接收呼叫",
+            "call was rejected by callee",
+            "retry later",
+        )
+    )
 
 
 def _excel_worker(
