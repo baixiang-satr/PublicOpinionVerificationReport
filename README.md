@@ -37,7 +37,7 @@ python -m playwright install chromium
 python -m src.main
 ```
 
-界面按“选择 URL 文件、检查设置、开始生成”三步操作。成功后会显示 `output/<任务编号>/template.zip` 的绝对路径；取消或全部失败时不会生成空包。
+界面按“选择 URL 文件、检查设置、开始生成”三步操作。成功后会显示 `output/<任务编号>/template.zip` 的绝对路径；同目录还会生成质量报告和待人工补录清单。取消或没有可映射记录时不会生成空包。
 
 ## 处理流程
 
@@ -97,6 +97,8 @@ python -m pytest -m "not excel and not external"
 `references/MediaCrawler-main` 的任务生命周期、资源清理、浏览器上下文和平台适配器设计被吸收；`MediaCrawler-new-main` 提供了保持骨架精简的思路；浏览器插件帮助确认模板字段、示例行和截图附件关联。
 
 登录态采用“游客优先、逐平台隔离”的方式管理：先对 34 个模板平台执行游客探测；只有明确要求登录或触发人工验证的平台，才由用户在平台官方页面完成手机号登录、验证码或扫码。候选会话必须在全新的 Playwright context 中复验成功，才会按平台写入 Windows 当前用户 DPAPI 加密存储。抓取时不同平台不共享 context；旧版综合 `storage_state` JSON 只作为兼容迁移来源。
+
+批量抓取会先读取逐平台健康状态，并让同平台 URL 串行通过同一个登录态门禁。首条记录一旦确认登录失效、验证码或访问验证屏障，当前平台剩余 URL 会暂停并进入待补录/重试清单，其他平台继续并行处理。页面字段依次尝试平台 DOM、JSON-LD、Next/Nuxt 等内嵌状态、内容型 XHR/Fetch JSON、Meta 和可见文本；已知平台还可使用同一官方平台的保守 URL 变体。
 
 手机号输入框只是可选的辅助填写，不会自动发送验证码；验证码、密码和扫码信息只在平台页面中处理。状态索引只记录脱敏手机号、验证时间和错误码，不保存明文 Cookie/Token，也不会进入日志或 `template.zip`。
 
