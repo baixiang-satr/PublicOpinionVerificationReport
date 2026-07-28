@@ -54,6 +54,19 @@ class ErrorAuthorPage(FakeAuthorPage):
         return ErrorBodyLocator()
 
 
+class SparseBodyLocator:
+    async def inner_text(self, **_options: object) -> str:
+        return "页面正在加载，请稍候。" * 4
+
+
+class SparseAuthorPage(FakeAuthorPage):
+    async def title(self) -> str:
+        return "用户主页"
+
+    def locator(self, _selector: str) -> SparseBodyLocator:
+        return SparseBodyLocator()
+
+
 class FakeContext:
     def __init__(self, author_page: FakeAuthorPage) -> None:
         self.author_page = author_page
@@ -158,5 +171,28 @@ async def test_author_shooter_rejects_platform_error_page(tmp_path: Path) -> Non
         )
 
     assert caught.value.code == "AUTHOR_ACCESS_RESTRICTED"
+    assert author_page.closed
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_author_shooter_rejects_page_without_rendered_profile_content(
+    tmp_path: Path,
+) -> None:
+    author_page = SparseAuthorPage(200)
+    shooter = AuthorShooter(
+        TaskConfig(page_stabilize_milliseconds=0),
+        shooter=StubPageShooter(),
+    )
+
+    with pytest.raises(AuthorScreenshotError) as caught:
+        await shooter.capture(
+            FakeSourcePage(author_page),
+            "https://example.test/author/loading",
+            1,
+            tmp_path,
+        )
+
+    assert caught.value.code == "AUTHOR_CONTENT_NOT_READY"
     assert author_page.closed
     assert not list(tmp_path.iterdir())
