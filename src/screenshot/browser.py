@@ -136,10 +136,13 @@ class BrowserPool:
 
     @asynccontextmanager
     async def page(self, cancel_event: asyncio.Event | None = None) -> AsyncIterator[Any]:
-        await self._acquire_slot(cancel_event)
+        slot_acquired = False
         context = None
         page = None
         try:
+            await self._acquire_slot(cancel_event)
+            slot_acquired = True
+
             if not self.is_started:
                 raise BrowserUnavailableError("BrowserPool.start() must be called before opening a page.")
 
@@ -195,7 +198,8 @@ class BrowserPool:
             if context is not None:
                 self._contexts.discard(context)
                 await _close_quietly(context)
-            self._semaphore.release()
+            if slot_acquired:
+                self._semaphore.release()
 
     async def _apply_extra_stealth(self, page: Any) -> None:
         """Apply additional JS patches that supplement stealth.min.js.

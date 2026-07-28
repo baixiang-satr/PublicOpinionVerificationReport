@@ -287,11 +287,6 @@ def _excel_worker(
         connection.send((succeeded, payload))
     finally:
         connection.close()
-        if app is not None:
-            try:
-                app.Quit()
-            except Exception:
-                pass
         # pywin32 312 on Python 3.14 logs RPC_E_DISCONNECTED while releasing
         # an already-exited Excel server. Keep this runtime-only noise inside
         # the disposable worker while still releasing its COM apartment.
@@ -299,6 +294,11 @@ def _excel_worker(
             original_stderr = sys.stderr
             sys.stderr = discarded_errors
             try:
+                if app is not None:
+                    try:
+                        app.Quit()
+                    except Exception:
+                        pass
                 app = None
                 if pythoncom is not None:
                     pythoncom.CoUninitialize()
