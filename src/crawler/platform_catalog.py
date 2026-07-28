@@ -298,7 +298,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         ),
         include_patterns=(r"/c/",),
     ),
-    PlatformDefinition("huyou", "生活资讯", "搜狐_狐友_生活资讯", ExtractorFamily.SOCIAL, ("huyou.sohu.com",)),
+    PlatformDefinition("huyou", "生活资讯", "搜狐_狐友_生活资讯", ExtractorFamily.SOCIAL, ("huyou.sohu.com", "w.sohu.com")),
     PlatformDefinition(
         "sohu_news",
         "生活资讯",
@@ -334,7 +334,13 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
     ),
     PlatformDefinition("uc_browser", "浏览器", "阿里巴巴_UC浏览器_浏览器", ExtractorFamily.ARTICLE, ("sm.cn", "uc.cn")),
     PlatformDefinition("browser_360", "浏览器", "360_360浏览器_浏览器", ExtractorFamily.ARTICLE, ("so.com", "360kuai.com", "browser.360.cn")),
-    PlatformDefinition("huawei_browser", "浏览器", "华为_华为浏览器_浏览器", ExtractorFamily.ARTICLE, ("browser.huawei.com",)),
+    PlatformDefinition(
+        "huawei_browser",
+        "浏览器",
+        "华为_华为浏览器_浏览器",
+        ExtractorFamily.ARTICLE,
+        ("browser.huawei.com", "consumer.huawei.com"),
+    ),
     PlatformDefinition("qq_browser", "浏览器", "腾讯_QQ浏览器_浏览器", ExtractorFamily.ARTICLE, ("browser.qq.com", "mb.qq.com")),
 )
 

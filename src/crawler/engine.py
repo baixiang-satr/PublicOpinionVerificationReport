@@ -146,12 +146,16 @@ class CrawlEngine:
         cancel_event: asyncio.Event,
     ) -> None:
         _raise_if_cancelled(cancel_event)
+        # Add random pre-navigation delay to appear more human-like
+        await wait_with_cancellation(random.uniform(0.3, 1.0), cancel_event)
         await self._rate_limiter.wait(result.task.normalized_url, cancel_event)
         try:
             async with self._browser_pool.page(cancel_event) as page:
+                # ── Smart navigation: networkidle for complete rendering ──
+                # 使用 networkidle 确保所有异步资源加载完成后再继续
                 response = await page.goto(
                     result.task.normalized_url,
-                    wait_until="domcontentloaded",
+                    wait_until="networkidle",
                     timeout=self._config.page_timeout_seconds * 1000,
                 )
                 final_url = str(page.url)
@@ -164,12 +168,18 @@ class CrawlEngine:
                 )
                 self._check_response(status_code)
                 _raise_if_cancelled(cancel_event)
-                if self._config.page_stabilize_milliseconds:
-                    await page.wait_for_timeout(self._config.page_stabilize_milliseconds)
+
+                # ── 页面稳定等待 + 模拟人类滚动行为 ──────────────────────
+                # 滚动页面以触发懒加载内容、图片等
+                await _human_scroll(page, self._config.page_stabilize_milliseconds)
                 _raise_if_cancelled(cancel_event)
+
+                # ── 额外等待平台特定内容加载 ─────────────────────────────
                 definition = self._router.definition_for(final_url)
                 await _wait_for_platform_marker(page, definition)
                 _raise_if_cancelled(cancel_event)
+
+                # ── 检测访问屏障（验证码、登录等）────────────────────────
                 barrier = await inspect_page_access(
                     page,
                     final_url,
@@ -196,7 +206,7 @@ class CrawlEngine:
                     await _wait_for_platform_marker(page, definition)
                 if barrier is not None:
                     raise CrawlFailure(
-                        TaskError("access", barrier.code, barrier.message, retryable=False),
+                        TaskError("access", barrier.code, barrier.message, retryable=True),
                         barrier.status,
                     )
                 _raise_if_cancelled(cancel_event)
@@ -361,9 +371,13 @@ class CrawlEngine:
             )
 
     async def _backoff(self, attempt: int, cancel_event: asyncio.Event) -> None:
+        # Exponential backoff with full jitter (AWS-recommended strategy)
+        # 指数退避 + 全抖动，比固定退避更难被风控检测
         base = self._config.retry_base_delay_seconds * (2**attempt)
-        jitter = random.uniform(0, min(0.25, base / 4)) if base else 0
-        await wait_with_cancellation(base + jitter, cancel_event)
+        cap = min(base, 30.0)  # Cap at 30 seconds max
+        sleep = random.uniform(0, cap)
+        logger.info("Backoff attempt %d: sleeping %.1fs (base=%.1f)", attempt + 1, sleep, base)
+        await wait_with_cancellation(sleep, cancel_event)
 
     @staticmethod
     def _emit(
@@ -441,6 +455,32 @@ async def _wait_for_platform_marker(page: Any, definition: Any) -> None:
     if not selectors:
         return
     try:
-        await page.locator(", ".join(selectors)).first.wait_for(state="attached", timeout=1_500)
+        await page.locator(", ".join(selectors)).first.wait_for(state="attached", timeout=3_000)
     except Exception:
         return
+
+
+async def _human_scroll(page: Any, stabilize_ms: int) -> None:
+    """模拟人类滚动以触发懒加载图片等资源，参考 MediaCrawler."""
+    try:
+        scroll_height = await page.evaluate("document.body.scrollHeight")
+        viewport_height = await page.evaluate("window.innerHeight")
+        if scroll_height <= viewport_height:
+            if stabilize_ms:
+                await page.wait_for_timeout(stabilize_ms)
+            return
+        steps = min(5, max(3, scroll_height // viewport_height))
+        for i in range(1, steps + 1):
+            scroll_to = int(viewport_height * i * 0.8)
+            await page.evaluate(f"window.scrollTo(0, {scroll_to})")
+            await page.wait_for_timeout(random.randint(200, 500))
+        pause = max(stabilize_ms, 800) if stabilize_ms else 800
+        await page.wait_for_timeout(pause)
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.wait_for_timeout(random.randint(100, 300))
+    except Exception:
+        if stabilize_ms:
+            try:
+                await page.wait_for_timeout(stabilize_ms)
+            except Exception:
+                pass
