@@ -32,7 +32,9 @@ def test_platform_catalog_exactly_covers_url_supported_template_enums() -> None:
         ("https://news.sohu.com/a/123", "生活资讯", "搜狐_搜狐新闻_生活资讯"),
         ("https://news.163.com/24/0728/10/ABC.html", "生活资讯", "网易_网易新闻_生活资讯"),
         ("https://bbs.hupu.com/62820345-1.html", "生活资讯", "虎扑_虎扑_生活资讯"),
+        ("https://w.sohu.com/", "生活资讯", "搜狐_狐友_生活资讯"),
         ("https://m.sm.cn/article/123", "浏览器", "阿里巴巴_UC浏览器_浏览器"),
+        ("https://consumer.huawei.com/cn/mobileservices/browser/", "浏览器", "华为_华为浏览器_浏览器"),
     ],
 )
 def test_platform_router_uses_final_domain_and_specific_path(
