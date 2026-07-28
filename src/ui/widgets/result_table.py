@@ -23,21 +23,21 @@ HEADERS = (
     "作者主页",
     "工作表",
     "状态码",
-    "状态",
+    "处理状态",
     "错误与提醒",
 )
 
 STATUS_TEXT = {
-    RecordStatus.PENDING: "等待中",
-    RecordStatus.RUNNING: "处理中",
-    RecordStatus.CRAWLED: "已抓取",
-    RecordStatus.ROUTED: "已路由",
-    RecordStatus.ASSETS_READY: "资产就绪",
-    RecordStatus.READY_FOR_EXPORT: "可导出",
-    RecordStatus.NEEDS_REVIEW: "待人工补录",
-    RecordStatus.FAILED: "失败",
-    RecordStatus.CANCELLED: "已取消",
-    RecordStatus.EXPORTED: "已导出",
+    RecordStatus.PENDING: "⏳ 等待中",
+    RecordStatus.RUNNING: "▶ 处理中",
+    RecordStatus.CRAWLED: "✓ 已抓取",
+    RecordStatus.ROUTED: "✓ 已路由",
+    RecordStatus.ASSETS_READY: "✓ 资产就绪",
+    RecordStatus.READY_FOR_EXPORT: "✓ 可导出",
+    RecordStatus.NEEDS_REVIEW: "⚠ 待人工补录",
+    RecordStatus.FAILED: "✗ 失败",
+    RecordStatus.CANCELLED: "– 已取消",
+    RecordStatus.EXPORTED: "✓ 已导出",
 }
 
 STATUS_COLORS = {
@@ -61,12 +61,13 @@ class ResultTable(QTableWidget):
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.setWordWrap(False)
         self.verticalHeader().setVisible(False)
-        self.verticalHeader().setDefaultSectionSize(34)
+        self.verticalHeader().setDefaultSectionSize(38)
         self.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate((58, 210, 210, 170, 110, 190, 90, 68, 90)):
+        for column, width in enumerate((60, 220, 220, 180, 120, 200, 100, 70, 90)):
             self.setColumnWidth(column, width)
         self.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.horizontalHeader().setSectionResizeMode(9, QHeaderView.Stretch)
+        self.horizontalHeader().setMinimumSectionSize(50)
         self._rows: dict[int, int] = {}
         self._records: dict[int, RecordResult] = {}
 
