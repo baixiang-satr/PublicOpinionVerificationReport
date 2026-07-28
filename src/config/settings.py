@@ -60,6 +60,10 @@ class TaskConfig:
 
     # ── Content extraction ────────────────────────────────────────────
     summary_max_chars: int = 2_000
+    capture_network_json: bool = True
+    max_structured_payload_bytes: int = 2_000_000
+    max_structured_payloads: int = 24
+    enable_platform_fallbacks: bool = True
 
     # ── Locale & timezone ─────────────────────────────────────────────
     timezone: str = "Asia/Shanghai"
@@ -71,6 +75,8 @@ class TaskConfig:
     storage_state_path: Path | None = None
     auth_store_dir: Path | None = None
     manual_intervention_timeout_seconds: int = 90
+    enable_auth_health_gate: bool = True
+    pause_platform_on_auth_failure: bool = True
 
     # ── Author / OCR ──────────────────────────────────────────────────
     allow_nickname_as_id: bool = True
@@ -138,6 +144,10 @@ class TaskConfig:
             raise ValueError("Image limits must be non-negative and positive respectively.")
         if not 1 <= self.summary_max_chars <= 32_767:
             raise ValueError("summary_max_chars must be between 1 and 32767.")
+        if self.max_structured_payload_bytes < 1_024:
+            raise ValueError("max_structured_payload_bytes must be at least 1024.")
+        if not 1 <= self.max_structured_payloads <= 100:
+            raise ValueError("max_structured_payloads must be between 1 and 100.")
         if not 0 <= self.manual_intervention_timeout_seconds <= 600:
             raise ValueError("manual_intervention_timeout_seconds must be between 0 and 600.")
         if not 0.0 <= self.ocr_confidence_threshold <= 1.0:
@@ -210,6 +220,34 @@ class AppConfig:
                     "POR_MANUAL_INTERVENTION_TIMEOUT_SECONDS",
                     defaults.task.manual_intervention_timeout_seconds,
                 )
+            ),
+            enable_auth_health_gate=_bool_env(
+                "POR_ENABLE_AUTH_HEALTH_GATE",
+                defaults.task.enable_auth_health_gate,
+            ),
+            pause_platform_on_auth_failure=_bool_env(
+                "POR_PAUSE_PLATFORM_ON_AUTH_FAILURE",
+                defaults.task.pause_platform_on_auth_failure,
+            ),
+            capture_network_json=_bool_env(
+                "POR_CAPTURE_NETWORK_JSON",
+                defaults.task.capture_network_json,
+            ),
+            max_structured_payload_bytes=int(
+                os.getenv(
+                    "POR_MAX_STRUCTURED_PAYLOAD_BYTES",
+                    defaults.task.max_structured_payload_bytes,
+                )
+            ),
+            max_structured_payloads=int(
+                os.getenv(
+                    "POR_MAX_STRUCTURED_PAYLOADS",
+                    defaults.task.max_structured_payloads,
+                )
+            ),
+            enable_platform_fallbacks=_bool_env(
+                "POR_ENABLE_PLATFORM_FALLBACKS",
+                defaults.task.enable_platform_fallbacks,
             ),
             allow_nickname_as_id=_bool_env("POR_ALLOW_NICKNAME_AS_ID", defaults.task.allow_nickname_as_id),
             ocr_enabled=_bool_env("POR_OCR_ENABLED", defaults.task.ocr_enabled),

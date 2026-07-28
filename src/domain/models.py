@@ -24,6 +24,8 @@ class RecordStatus(StrEnum):
 class ExtractionSource(StrEnum):
     PLATFORM_DOM = "platform_dom"
     JSON_LD = "json_ld"
+    EMBEDDED_JSON = "embedded_json"
+    NETWORK_JSON = "network_json"
     META = "meta"
     GENERIC_DOM = "generic_dom"
     VISIBLE_TEXT = "visible_text"
@@ -132,11 +134,15 @@ class TemplateRow:
     sheet_name: str
     evidence_id: int
     values_by_column: dict[str, object]
-    primary_screenshot_name: str
+    primary_screenshot_name: str | None = None
     attachment_names: tuple[str, ...] = ()
 
     def all_asset_names(self) -> tuple[str, ...]:
-        return (self.primary_screenshot_name, *self.attachment_names)
+        return tuple(
+            name
+            for name in (self.primary_screenshot_name, *self.attachment_names)
+            if name
+        )
 
 
 @dataclass(frozen=True)
