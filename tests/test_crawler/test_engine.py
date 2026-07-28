@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from src.auth.models import AuthStatus
 from src.config.settings import TaskConfig
 from src.crawler.engine import CrawlEngine
-from src.domain.models import PageData, RecordStatus, TaskError, UrlTask
+from src.domain.models import PageData, RecordStatus, UrlTask
 from src.screenshot.asset_collector import AssetCollectionResult
 from src.screenshot.author_shooter import AuthorScreenshotError
 
@@ -66,6 +67,29 @@ class FakeBrowserPool:
         message: str,
     ) -> None:
         return None
+
+
+class FallbackPage(FakePage):
+    def __init__(self, statuses: list[int], url: str) -> None:
+        super().__init__(statuses[0], url)
+        self._statuses = statuses
+        self.visited: list[str] = []
+
+    async def goto(self, url: str, **_options: object) -> FakeResponse:
+        self.url = url
+        self.visited.append(url)
+        return FakeResponse(self._statuses.pop(0), url)
+
+
+class FallbackBrowserPool(FakeBrowserPool):
+    def __init__(self, statuses: list[int], url: str) -> None:
+        super().__init__([], url)
+        self.fallback_page = FallbackPage(statuses, url)
+
+    @asynccontextmanager
+    async def page(self, _cancel_event: object, _url: str | None = None):
+        self.page_count += 1
+        yield self.fallback_page
 
 
 class StubParser:
@@ -254,3 +278,108 @@ async def test_partial_content_is_assets_ready_with_missing_field_warning(tmp_pa
     assert result.status == RecordStatus.ASSETS_READY
     assert result.assets.page_screenshot == tmp_path / "001.jpg"
     assert "PARTIAL_FIELDS_MISSING" in [error.code for error in result.errors]
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_pauses_remaining_tasks_for_same_platform(tmp_path: Path) -> None:
+    pool = FakeBrowserPool([401], "https://www.zhihu.com/question/1")
+    engine = CrawlEngine(
+        TaskConfig(
+            max_retries=0,
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+        ),
+        browser_pool=pool,
+        parser=StubParser(),
+        shooter=StubShooter(),
+    )
+    tasks = [
+        UrlTask(
+            evidence_id,
+            f"https://www.zhihu.com/question/{evidence_id}",
+            f"https://www.zhihu.com/question/{evidence_id}",
+        )
+        for evidence_id in (1, 2, 3)
+    ]
+
+    results = await engine.run(tasks, tmp_path)
+
+    assert pool.page_count == 1
+    assert [result.status for result in results] == [
+        RecordStatus.NEEDS_REVIEW,
+        RecordStatus.NEEDS_REVIEW,
+        RecordStatus.NEEDS_REVIEW,
+    ]
+    assert [error.code for error in results[1].errors] == ["PLATFORM_AUTH_PAUSED"]
+    assert [error.code for error in results[2].errors] == ["PLATFORM_AUTH_PAUSED"]
+
+
+@pytest.mark.asyncio
+async def test_known_expired_auth_state_blocks_platform_before_navigation(
+    tmp_path: Path,
+) -> None:
+    class ExpiredAuthStore:
+        @staticmethod
+        def profile_for(_platform_key: str):
+            return type("Profile", (), {"status": AuthStatus.EXPIRED})()
+
+    pool = FakeBrowserPool([], "https://www.zhihu.com/question/1")
+    engine = CrawlEngine(
+        TaskConfig(
+            auth_store_dir=tmp_path / "auth",
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+        ),
+        browser_pool=pool,
+        parser=StubParser(),
+        shooter=StubShooter(),
+        auth_store=ExpiredAuthStore(),
+    )
+
+    results = await engine.run(
+        [
+            UrlTask(
+                1,
+                "https://www.zhihu.com/question/1",
+                "https://www.zhihu.com/question/1",
+            )
+        ],
+        tmp_path,
+    )
+
+    assert pool.page_count == 0
+    assert results[0].status == RecordStatus.NEEDS_REVIEW
+    assert [error.code for error in results[0].errors] == [
+        "PLATFORM_AUTH_PAUSED"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_known_http_failure_uses_same_platform_official_fallback(
+    tmp_path: Path,
+) -> None:
+    original = "https://m.hupu.com/bbs/641349741.html"
+    pool = FallbackBrowserPool([405, 200], original)
+    engine = CrawlEngine(
+        TaskConfig(
+            max_retries=0,
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+        ),
+        browser_pool=pool,
+        parser=StubParser(),
+        shooter=StubShooter(),
+    )
+
+    [result] = await engine.run([UrlTask(1, original, original)], tmp_path)
+
+    assert result.status == RecordStatus.ASSETS_READY
+    assert pool.fallback_page.visited == [
+        original,
+        "https://bbs.hupu.com/bbs/641349741.html",
+    ]
+    assert "PLATFORM_FALLBACK_USED" in [
+        error.code for error in result.errors
+    ]
+    assert result.route is not None
+    assert result.route.platform_value == "虎扑_虎扑_生活资讯"

@@ -69,3 +69,24 @@ def test_row_mapper_accepts_commerce_product_as_merchant() -> None:
 
     assert row.values_by_column["D"] == "商家"
     assert row.values_by_column["F"] == "示例店铺"
+
+
+def test_row_mapper_preserves_failed_record_without_a_screenshot() -> None:
+    result = RecordResult(
+        task=UrlTask(
+            4,
+            "https://item.jd.com/100.html?from=input",
+            "https://item.jd.com/100.html?from=input",
+        ),
+        status=RecordStatus.FAILED,
+        route=RouteDecision("电商平台", "京东_京东商城_电商平台", "商家"),
+        page=PageData(final_url="https://passport.jd.com/login"),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["A"] == "https://item.jd.com/100.html?from=input"
+    assert row.values_by_column["B"] == "京东_京东商城_电商平台"
+    assert "G" not in row.values_by_column
+    assert row.primary_screenshot_name is None
+    assert row.all_asset_names() == ()

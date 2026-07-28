@@ -14,8 +14,11 @@ def test_read_url_input_supports_text_and_csv(tmp_path: Path) -> None:
     text_result = read_url_input(text_path)
     csv_result = read_url_input(csv_path)
 
-    assert [task.normalized_url for task in text_result.tasks] == ["https://example.com/a"]
-    assert text_result.duplicate_or_invalid_count == 1
+    assert [task.normalized_url for task in text_result.tasks] == [
+        "https://example.com/a",
+        "https://example.com/a",
+    ]
+    assert text_result.duplicate_or_invalid_count == 0
     assert [task.normalized_url for task in csv_result.tasks] == ["https://example.com/b"]
 
 
@@ -35,9 +38,10 @@ def test_read_url_input_supports_standard_xlsx_and_selected_sheet(tmp_path: Path
     result = read_url_input(input_path, sheet_name="Links")
 
     assert list_xlsx_sheets(input_path) == ["Skip", "Links"]
-    assert [task.evidence_id for task in result.tasks] == [1, 2]
+    assert [task.evidence_id for task in result.tasks] == [1, 2, 3]
     assert [task.normalized_url for task in result.tasks] == [
+        "https://example.com/a",
         "https://example.com/a",
         "https://example.com/b?z=2&y=1",
     ]
-    assert result.duplicate_or_invalid_count == 1
+    assert result.duplicate_or_invalid_count == 0

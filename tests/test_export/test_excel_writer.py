@@ -1,7 +1,15 @@
 from pathlib import Path
 
 import src.export.excel_writer as excel_writer_module
-from src.domain.models import AssetSet, PageData, RecordResult, RecordStatus, RouteDecision, UrlTask
+from src.domain.models import (
+    AssetSet,
+    PageData,
+    RecordResult,
+    RecordStatus,
+    RouteDecision,
+    TemplateRow,
+    UrlTask,
+)
 from src.domain.template_schema import get_sheet_layout
 from src.export.excel_writer import ExcelTemplateWriter, TemplateIntegrityError
 from src.export.row_mapper import TemplateRowMapper
@@ -18,6 +26,59 @@ def test_excel_writer_accepts_partial_row_with_primary_screenshot() -> None:
     row = TemplateRowMapper().map(result)
 
     ExcelTemplateWriter._validate_row(get_sheet_layout("微博博客"), row)
+
+
+def test_excel_writer_accepts_placeholder_row_without_screenshot() -> None:
+    result = RecordResult(
+        task=UrlTask(4, "https://item.jd.com/4.html", "https://item.jd.com/4.html"),
+        status=RecordStatus.FAILED,
+        route=RouteDecision("电商平台", "京东_京东商城_电商平台", "商家"),
+    )
+    row = TemplateRowMapper().map(result)
+
+    ExcelTemplateWriter._validate_row(get_sheet_layout("电商平台"), row)
+
+
+class _FakeCell:
+    def __init__(self, *, locked: bool = True) -> None:
+        self.Locked = locked
+        self.Value: object | None = None
+
+
+class _FakeDynamicSheet:
+    def __init__(self) -> None:
+        self.ProtectContents = True
+        self._cells: dict[tuple[int, int], _FakeCell] = {}
+
+    def Unprotect(self) -> None:
+        self.ProtectContents = False
+
+    def Cells(self, row: int, column: int) -> _FakeCell:
+        return self._cells.setdefault((row, column), _FakeCell())
+
+
+def test_excel_writer_extends_short_sheet_without_dropping_rows() -> None:
+    layout = get_sheet_layout("电商平台")
+    sheet = _FakeDynamicSheet()
+    last_row = ExcelTemplateWriter._ensure_sheet_capacity(sheet, layout, 3)
+    rows = [
+        TemplateRow(
+            "电商平台",
+            evidence_id,
+            {
+                "A": f"https://item.jd.com/{evidence_id}.html",
+                "B": "京东_京东商城_电商平台",
+                "D": "商家",
+            },
+        )
+        for evidence_id in range(1, 4)
+    ]
+
+    ExcelTemplateWriter._write_sheet_rows(sheet, layout, rows)
+
+    assert last_row == 5
+    assert sheet.ProtectContents is False
+    assert sheet.Cells(5, 1).Value == "https://item.jd.com/3.html"
 
 
 def test_excel_writer_retries_transient_com_busy_error(monkeypatch) -> None:

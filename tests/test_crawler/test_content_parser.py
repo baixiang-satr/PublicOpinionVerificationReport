@@ -56,6 +56,61 @@ def test_generic_extractor_prioritizes_json_ld_and_filters_images() -> None:
     assert data.published_at.strftime("%Y-%m-%d %H:%M:%S") == "2026-07-28 09:00:00"
 
 
+def test_generic_extractor_reads_framework_hydration_before_visible_text() -> None:
+    document = RenderedDocument(
+        url="https://www.kuaishou.com/short-video/example",
+        visible_text="页面外壳",
+        embedded_payloads=(
+            {
+                "props": {
+                    "pageProps": {
+                        "photo": {
+                            "title": "内嵌标题",
+                            "caption": "来自 hydration 的正文",
+                            "author": {
+                                "name": "内嵌作者",
+                                "id": "author-88",
+                                "url": "/profile/author-88",
+                            },
+                            "publishTime": "2026-07-28T12:00:00+08:00",
+                        }
+                    }
+                }
+            },
+        ),
+    )
+
+    data = GenericExtractor().extract(document)
+
+    assert data.title == "内嵌标题"
+    assert data.content_text == "来自 hydration 的正文"
+    assert data.author_name == "内嵌作者"
+    assert data.author_id == "author-88"
+    assert data.field_sources["content_text"] == ExtractionSource.EMBEDDED_JSON
+
+
+def test_generic_extractor_uses_network_json_before_visible_text() -> None:
+    document = RenderedDocument(
+        url="https://example.test/article/1",
+        visible_text="网页正在加载",
+        network_payloads=(
+            {
+                "data": {
+                    "headline": "接口标题",
+                    "articleBody": "接口正文",
+                    "authorName": "接口作者",
+                }
+            },
+        ),
+    )
+
+    data = GenericExtractor().extract(document)
+
+    assert data.title == "接口标题"
+    assert data.content_text == "接口正文"
+    assert data.field_sources["title"] == ExtractionSource.NETWORK_JSON
+
+
 class FakePage:
     url = "https://mp.weixin.qq.com/s/test"
 

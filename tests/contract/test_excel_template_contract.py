@@ -53,8 +53,30 @@ def test_excel_writer_preserves_template_contract_and_references_assets(tmp_path
     )
     from src.export.row_mapper import TemplateRowMapper
 
+    placeholder_results = [
+        RecordResult(
+            task=UrlTask(
+                evidence_id,
+                f"https://item.jd.com/{evidence_id}.html",
+                f"https://item.jd.com/{evidence_id}.html",
+            ),
+            status=RecordStatus.FAILED,
+            route=RouteDecision(
+                "电商平台",
+                "京东_京东商城_电商平台",
+                "商家",
+            ),
+        )
+        for evidence_id in range(2, 5)
+    ]
+    rows = [
+        TemplateRowMapper().map(result),
+        *(TemplateRowMapper().map(item) for item in placeholder_results),
+    ]
     try:
-        write_result = writer.write(prepared.template_dir, [TemplateRowMapper().map(result)])
+        # Three commerce rows exceed the two writable seed rows in the source
+        # template and exercise protected-row expansion.
+        write_result = writer.write(prepared.template_dir, rows)
     except ExcelAutomationUnavailable as error:
         pytest.skip(str(error))
 

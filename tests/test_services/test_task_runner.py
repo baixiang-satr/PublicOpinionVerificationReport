@@ -66,9 +66,11 @@ class FakeEngine:
 class FakeWriter:
     def __init__(self) -> None:
         self.calls = 0
+        self.rows: list[object] = []
 
     def write(self, _template_dir: Path, rows: list[object]):
         self.calls += 1
+        self.rows = list(rows)
         assets = tuple(
             sorted(
                 name
@@ -117,6 +119,12 @@ async def test_runner_exports_valid_records_and_reports_progress(tmp_path: Path)
 
     assert writer.calls == 1
     assert result.archive_path is not None and result.archive_path.is_file()
+    assert result.quality_report_path is not None
+    assert result.quality_report_path.is_file()
+    assert result.quality_summary_path is not None
+    assert result.quality_summary_path.is_file()
+    assert result.manual_entry_path is not None
+    assert result.manual_entry_path.is_file()
     assert [record.status for record in result.records] == [
         RecordStatus.EXPORTED,
         RecordStatus.EXPORTED,
@@ -133,7 +141,7 @@ async def test_runner_exports_valid_records_and_reports_progress(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_runner_does_not_create_empty_archive_when_all_records_fail(tmp_path: Path) -> None:
+async def test_runner_exports_placeholder_rows_when_all_records_fail(tmp_path: Path) -> None:
     config = _config(tmp_path)
     writer = FakeWriter()
     runner = TaskRunner(
@@ -149,10 +157,15 @@ async def test_runner_does_not_create_empty_archive_when_all_records_fail(tmp_pa
         )
     )
 
-    assert writer.calls == 0
-    assert result.archive_path is None
-    assert not (result.job_dir / "template.zip").exists()
+    assert writer.calls == 1
+    assert [row.evidence_id for row in writer.rows] == [1]
+    assert result.archive_path is not None
+    assert (result.job_dir / "template.zip").is_file()
+    assert result.manual_entry_path is not None
+    assert "001" in result.manual_entry_path.read_text(encoding="utf-8-sig")
     assert result.retryable_tasks == (result.records[0].task,)
+    with ZipFile(result.archive_path) as archive:
+        assert archive.namelist() == ["template/template.xlsx"]
 
 
 @pytest.mark.asyncio
@@ -202,9 +215,9 @@ async def test_runner_reads_input_and_reports_rejected_values(tmp_path: Path) ->
         callbacks=RunnerCallbacks(started=summaries.append),
     )
 
-    assert summaries[0].total == 1
-    assert summaries[0].rejected_count == 2
-    assert result.rejected_count == 2
+    assert summaries[0].total == 2
+    assert summaries[0].rejected_count == 1
+    assert result.rejected_count == 1
 
 
 @pytest.mark.asyncio
@@ -242,7 +255,7 @@ async def test_retry_keeps_previous_exports_and_adds_recovered_record(tmp_path: 
         ]
 
 
-def test_build_rows_exports_up_to_sheet_capacity_without_failing_batch(tmp_path: Path) -> None:
+def test_build_rows_preserves_all_records_beyond_seeded_sheet_rows(tmp_path: Path) -> None:
     runner = TaskRunner(
         _config(tmp_path),
         engine_factory=lambda _task_config: FakeEngine(),
@@ -265,6 +278,36 @@ def test_build_rows_exports_up_to_sheet_capacity_without_failing_batch(tmp_path:
 
     rows = runner._build_rows(records, RunnerCallbacks())
 
-    assert [row.evidence_id for row in rows] == [1, 2]
-    assert records[2].status == RecordStatus.NEEDS_REVIEW
-    assert records[2].errors[-1].code == "TEMPLATE_CAPACITY_EXCEEDED"
+    assert [row.evidence_id for row in rows] == [1, 2, 3]
+    assert all(record.status == RecordStatus.READY_FOR_EXPORT for record in records)
+    assert all(
+        error.code != "TEMPLATE_CAPACITY_EXCEEDED"
+        for record in records
+        for error in record.errors
+    )
+
+
+def test_build_rows_routes_failed_record_from_submitted_url(tmp_path: Path) -> None:
+    runner = TaskRunner(
+        _config(tmp_path),
+        engine_factory=lambda _task_config: FakeEngine(),
+        excel_writer=FakeWriter(),
+    )
+    record = RecordResult(
+        task=UrlTask(
+            1,
+            "https://item.jd.com/100033296948.html",
+            "https://item.jd.com/100033296948.html",
+        ),
+        status=RecordStatus.NEEDS_REVIEW,
+        page=PageData(final_url="https://www.jd.com/"),
+    )
+
+    rows = runner._build_rows([record], RunnerCallbacks())
+
+    assert len(rows) == 1
+    assert rows[0].sheet_name == "电商平台"
+    assert rows[0].values_by_column["A"] == record.task.original_url
+    assert rows[0].values_by_column["B"] == "京东_京东商城_电商平台"
+    assert rows[0].primary_screenshot_name is None
+    assert record.status == RecordStatus.NEEDS_REVIEW

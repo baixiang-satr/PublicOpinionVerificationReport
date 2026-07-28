@@ -2,7 +2,7 @@ from src.input.url_parser import build_url_tasks
 from src.utils.url_utils import UrlNormalizationError, normalize_url
 
 
-def test_build_url_tasks_keeps_first_seen_order_and_removes_fragments() -> None:
+def test_build_url_tasks_keeps_source_order_duplicates_and_removes_fragments() -> None:
     tasks, rejected = build_url_tasks(
         [
             "First: https://Example.com/a#section.",
@@ -11,9 +11,13 @@ def test_build_url_tasks_keeps_first_seen_order_and_removes_fragments() -> None:
         ]
     )
 
-    assert [task.evidence_id for task in tasks] == [1, 2]
-    assert [task.normalized_url for task in tasks] == ["https://example.com/a", "https://example.com/b?x=1"]
-    assert rejected == ["https://example.com/a"]
+    assert [task.evidence_id for task in tasks] == [1, 2, 3]
+    assert [task.normalized_url for task in tasks] == [
+        "https://example.com/a",
+        "https://example.com/a",
+        "https://example.com/b?x=1",
+    ]
+    assert rejected == []
 
 
 def test_normalize_url_rejects_invalid_ports() -> None:

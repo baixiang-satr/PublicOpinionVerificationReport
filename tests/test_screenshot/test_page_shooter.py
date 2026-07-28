@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from src.config.settings import TaskConfig
 from src.crawler.platform_catalog import find_platform
@@ -8,9 +9,18 @@ from src.screenshot.page_shooter import PageShooter, PageScreenshotError
 
 
 class FakeScreenshotPage:
-    def __init__(self, *, width: int = 1_440, height: int = 900) -> None:
+    def __init__(
+        self,
+        *,
+        width: int = 1_440,
+        document_width: int | None = None,
+        height: int = 900,
+        focus_x: int = 0,
+    ) -> None:
         self.width = width
+        self.document_width = document_width or width
         self.height = height
+        self.focus_x = focus_x
         self.options: dict[str, object] | None = None
         self.wait_scripts: list[str] = []
 
@@ -21,13 +31,36 @@ class FakeScreenshotPage:
         return None
 
     async def evaluate(self, script: str) -> object:
-        if "root?.scrollHeight" in script:
-            return {"width": self.width, "height": self.height}
+        if "documentWidth" in script and "viewportWidth" in script:
+            return {
+                "viewportWidth": self.width,
+                "documentWidth": self.document_width,
+                "height": self.height,
+                "focusX": self.focus_x,
+            }
         return None
 
     async def screenshot(self, **options: object) -> None:
         self.options = options
-        Path(str(options["path"])).write_bytes(b"image")
+        clip = options.get("clip")
+        width = int(clip["width"]) if isinstance(clip, dict) else self.width
+        height = int(clip["height"]) if isinstance(clip, dict) else min(self.height, 2_000)
+        image = Image.new("RGB", (width, height), "#f4f5f6")
+        for x in range(0, width, 32):
+            image.paste("#2f6f9f", (x, 0, min(width, x + 16), height))
+        image.save(
+            str(options["path"]),
+            format="JPEG" if options.get("type") == "jpeg" else "PNG",
+        )
+
+
+class BlankOutputPage(FakeScreenshotPage):
+    async def screenshot(self, **options: object) -> None:
+        self.options = options
+        Image.new("RGB", (self.width, self.height), "#f4f5f6").save(
+            str(options["path"]),
+            format="JPEG" if options.get("type") == "jpeg" else "PNG",
+        )
 
 
 class EmptyScreenshotPage(FakeScreenshotPage):
@@ -90,6 +123,33 @@ async def test_normal_page_keeps_full_page_mode_and_waits_for_platform_content(
 
 
 @pytest.mark.asyncio
+async def test_horizontal_overflow_is_cropped_around_substantive_content(
+    tmp_path: Path,
+) -> None:
+    page = FakeScreenshotPage(
+        width=1_440,
+        document_width=4_000,
+        height=1_100,
+        focus_x=1_180,
+    )
+
+    await PageShooter(TaskConfig(full_page_screenshot=True)).capture(
+        page,
+        3,
+        tmp_path,
+    )
+
+    assert page.options is not None
+    assert page.options["full_page"] is False
+    assert page.options["clip"] == {
+        "x": 1_180,
+        "y": 0,
+        "width": 1_440,
+        "height": 1_100,
+    }
+
+
+@pytest.mark.asyncio
 async def test_screenshot_rejects_page_without_visible_content(tmp_path: Path) -> None:
     page = EmptyScreenshotPage()
 
@@ -97,4 +157,14 @@ async def test_screenshot_rejects_page_without_visible_content(tmp_path: Path) -
         await PageShooter(TaskConfig()).capture(page, 3, tmp_path)
 
     assert page.options is None
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_screenshot_rejects_near_uniform_image(tmp_path: Path) -> None:
+    page = BlankOutputPage()
+
+    with pytest.raises(PageScreenshotError, match="blank or near-uniform"):
+        await PageShooter(TaskConfig()).capture(page, 4, tmp_path)
+
     assert not list(tmp_path.iterdir())

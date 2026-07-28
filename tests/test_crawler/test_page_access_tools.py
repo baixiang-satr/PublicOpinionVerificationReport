@@ -43,6 +43,12 @@ class SnapshotPage:
             "CONTENT_UNAVAILABLE",
         ),
         (
+            "https://www.ixigua.com/1234567890",
+            {"title": "西瓜视频", "body": "打开 App 看完整内容，内容可能已删除"},
+            AccessKind.CONTENT_UNAVAILABLE,
+            "CONTENT_UNAVAILABLE",
+        ),
+        (
             "https://www.kuaishou.com/short-video/example",
             {"title": "", "body": '{"result": 1}'},
             AccessKind.API_RESPONSE,
@@ -107,6 +113,25 @@ async def test_normal_article_has_no_access_barrier() -> None:
     page = SnapshotPage(
         url,
         [{"title": "正文标题", "body": "这是正常、足够长且可以审计的文章正文内容。"}],
+    )
+
+    assert await inspect_page_access(page, url, url) is None
+
+
+@pytest.mark.asyncio
+async def test_content_shaped_json_is_allowed_for_structured_extraction() -> None:
+    url = "https://www.kuaishou.com/short-video/example"
+    page = SnapshotPage(
+        url,
+        [
+            {
+                "title": "",
+                "body": (
+                    '{"data":{"title":"视频标题","caption":"视频正文",'
+                    '"authorName":"作者"}}'
+                ),
+            }
+        ],
     )
 
     assert await inspect_page_access(page, url, url) is None
