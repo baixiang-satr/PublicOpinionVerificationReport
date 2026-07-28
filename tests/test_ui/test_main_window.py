@@ -75,6 +75,8 @@ def test_progress_and_audit_record_fit_without_changing_layout(
     window: MainWindow,
     app: QApplication,
 ) -> None:
+    window.resize(1100, 1300)
+    app.processEvents()
     window.progress_panel.set_snapshot(
         ProgressSnapshot(
             completed=1,
@@ -104,5 +106,5 @@ def test_progress_and_audit_record_fit_without_changing_layout(
 
     assert window.progress_panel.progress_bar.value() == 33
     assert window.result_table.rowCount() == 1
-    assert window.result_table.item(0, 8).text() == "待人工补录"
+    assert window.result_table.item(0, 8).text() == "⚠ 待人工补录"
     assert window.tabs.geometry().bottom() <= window.centralWidget().height()

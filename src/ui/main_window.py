@@ -108,7 +108,7 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton()
         self.start_button.setObjectName("primaryButton")
         self.start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.start_button.setText("  开始生成")
+        self.start_button.setText("开始生成")
         self.start_button.setMinimumWidth(130)
         self.start_button.clicked.connect(self._start_from_file)
 
@@ -121,13 +121,13 @@ class MainWindow(QMainWindow):
         self.retry_button = QPushButton()
         self.retry_button.setObjectName("retryButton")
         self.retry_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.retry_button.setText("  重试失败项")
+        self.retry_button.setText("重试失败项")
         self.retry_button.clicked.connect(self._retry_failed)
 
         self.open_output_button = QPushButton()
         self.open_output_button.setObjectName("openOutputButton")
         self.open_output_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
-        self.open_output_button.setText("  打开输出位置")
+        self.open_output_button.setText("打开输出位置")
         self.open_output_button.clicked.connect(self._open_output)
 
         action_row.addWidget(self.start_button)
@@ -259,7 +259,7 @@ class MainWindow(QMainWindow):
         self.options.set_controls_enabled(not running)
         self.start_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
-        self.cancel_button.setText("  取消任务")
+        self.cancel_button.setText("取消任务")
         has_retry = self._last_result is not None and bool(self._last_result.retryable_tasks)
         self.retry_button.setEnabled(not running and has_retry)
         self.open_output_button.setEnabled(not running and self._last_output is not None)
