@@ -141,6 +141,7 @@ class TaskOptionsWidget(QWidget):
         return TaskConfig(
             max_concurrency=self.concurrency.value(),
             page_timeout_seconds=self.timeout.value(),
+            page_processing_timeout_seconds=self._defaults.page_processing_timeout_seconds,
             max_retries=self.retries.value(),
             retry_base_delay_seconds=self._defaults.retry_base_delay_seconds,
             min_host_interval_seconds=self._defaults.min_host_interval_seconds,
@@ -155,6 +156,7 @@ class TaskOptionsWidget(QWidget):
             max_images_per_record=self._defaults.max_images_per_record,
             max_image_bytes=self._defaults.max_image_bytes,
             summary_max_chars=self._defaults.summary_max_chars,
+            export_content_max_chars=self._defaults.export_content_max_chars,
             timezone=self._defaults.timezone,
             headless=self.headless.isChecked(),
             storage_state_path=storage_path,
@@ -163,6 +165,11 @@ class TaskOptionsWidget(QWidget):
             allow_nickname_as_id=self._defaults.allow_nickname_as_id,
             ocr_enabled=self._defaults.ocr_enabled,
             ocr_confidence_threshold=self._defaults.ocr_confidence_threshold,
+            ocr_python_executable=self._defaults.ocr_python_executable,
+            ocr_worker_timeout_seconds=self._defaults.ocr_worker_timeout_seconds,
+            ocr_max_restarts=self._defaults.ocr_max_restarts,
+            ocr_min_image_width=self._defaults.ocr_min_image_width,
+            ocr_min_image_height=self._defaults.ocr_min_image_height,
             # ── Anti-detection (use defaults, configurable via env) ──
             enable_stealth=self._defaults.enable_stealth,
             enable_extra_stealth=self._defaults.enable_extra_stealth,

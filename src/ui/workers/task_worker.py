@@ -40,10 +40,20 @@ class TaskWorker(QThread):
         self._request = request
         self._runner_factory = runner_factory or TaskRunner
         self._cancel_requested = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._async_cancel_event: asyncio.Event | None = None
 
     def cancel(self) -> None:
         self._cancel_requested.set()
         self.requestInterruption()
+        loop = self._loop
+        cancel_event = self._async_cancel_event
+        if loop is not None and cancel_event is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(cancel_event.set)
+            except RuntimeError:
+                # The worker loop may close between is_running() and this call.
+                pass
 
     def run(self) -> None:
         try:
@@ -54,6 +64,10 @@ class TaskWorker(QThread):
 
     async def _execute(self) -> None:
         cancel_event = asyncio.Event()
+        self._loop = asyncio.get_running_loop()
+        self._async_cancel_event = cancel_event
+        if self._cancel_requested.is_set():
+            cancel_event.set()
         monitor = asyncio.create_task(self._monitor_cancellation(cancel_event))
         callbacks = RunnerCallbacks(
             started=self.job_started.emit,
@@ -81,6 +95,8 @@ class TaskWorker(QThread):
             monitor.cancel()
             with suppress(asyncio.CancelledError):
                 await monitor
+            self._async_cancel_event = None
+            self._loop = None
 
     def _write_success_report(self, result: JobResult) -> None:
         """⚠️ 临时功能：任务成功后写入爬取报告。"""
@@ -100,17 +116,17 @@ class TaskWorker(QThread):
             now = datetime.now(DEFAULT_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
             label = getattr(self._request, "label", "批量抓取")
             report_lines = [
-                f"\n\n---\n",
+                "\n\n---\n",
                 f"## 运行报告：{now}\n",
-                f"| 项目 | 数值 |",
-                f"|------|------|",
+                "| 项目 | 数值 |",
+                "|------|------|",
                 f"| **任务名称** | {label} |",
                 f"| **处理时间** | {now} |",
-                f"| **状态** | ❌ 任务失败 |",
+                "| **状态** | ❌ 任务失败 |",
                 f"| **错误信息** | {error_message} |",
-                f"\n### ❌ 任务执行失败\n",
+                "\n### ❌ 任务执行失败\n",
                 f"任务未能完成执行，错误原因：{error_message}\n\n",
-                f"请检查输入文件和配置后重试。\n",
+                "请检查输入文件和配置后重试。\n",
             ]
             from pathlib import Path
             report_file = Path(__file__).resolve().parents[3] / "docs" / "crawl_run_report.md"

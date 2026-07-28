@@ -7,7 +7,7 @@ from threading import Event
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from src.auth.models import AuthProbeResult, AuthStatus
+from src.auth.models import AuthStatus
 from src.auth.service import AuthManagerService
 from src.auth.store import AuthProfileStore
 from src.config.settings import TaskConfig
