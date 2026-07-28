@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
-    QGridLayout,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -112,49 +112,43 @@ class TaskOptionsWidget(QWidget):
         storage_row.addWidget(self.storage_button)
         storage_row.addWidget(self.clear_storage_button)
 
-        # ── 用垂直布局 + 网格行来组织，每行都带说明 ──
+        # ── 用 QFormLayout 组织，简洁清晰 ──
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(6)
 
-        # 第 1 行：并发 / 超时 / 重试
-        row1 = QGridLayout()
-        row1.setContentsMargins(0, 0, 0, 0)
-        row1.setHorizontalSpacing(16)
-        row1.setVerticalSpacing(4)
-        _add_option_row(row1, 0, "同时处理", self.concurrency, _PARAM_HELP["concurrency"])
-        _add_option_row(row1, 0, "单页超时", self.timeout, _PARAM_HELP["timeout"])
-        _add_option_row(row1, 0, "失败重试", self.retries, _PARAM_HELP["retries"])
-        layout.addLayout(row1)
+        form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
+        form.setContentsMargins(0, 0, 0, 0)
 
-        # 第 2 行：图片数量 / 图片大小 / 截图格式
-        row2 = QGridLayout()
-        row2.setContentsMargins(0, 0, 0, 0)
-        row2.setHorizontalSpacing(16)
-        row2.setVerticalSpacing(4)
-        _add_option_row(row2, 0, "每页图片", self.image_count, _PARAM_HELP["image_count"])
-        _add_option_row(row2, 0, "单图上限", self.image_size, _PARAM_HELP["image_size"])
-        _add_option_row(row2, 0, "截图格式", self.screenshot_format, _PARAM_HELP["screenshot_format"])
-        layout.addLayout(row2)
+        def add(label: str, widget: QWidget, help_key: str) -> None:
+            lbl = QLabel(label)
+            lbl.setToolTip(_PARAM_HELP[help_key][1])
+            widget.setToolTip(_PARAM_HELP[help_key][1])
+            form.addRow(lbl, widget)
 
-        # 第 3 行：后台运行
-        row3 = QHBoxLayout()
-        row3.setContentsMargins(0, 0, 0, 0)
-        row3.setSpacing(8)
+        add("同时处理", self.concurrency, "concurrency")
+        add("单页超时", self.timeout, "timeout")
+        add("失败重试", self.retries, "retries")
+        add("每页图片", self.image_count, "image_count")
+        add("单图上限", self.image_size, "image_size")
+        add("截图格式", self.screenshot_format, "screenshot_format")
+        layout.addLayout(form)
+
         self.headless.setToolTip(_PARAM_HELP["headless"][1])
-        row3.addWidget(self.headless)
-        row3.addStretch()
-        layout.addLayout(row3)
+        layout.addWidget(self.headless)
 
-        # 第 4 行：登录态
-        storage_label = QLabel("登录态 JSON（可选）")
+        storage_label = QLabel("登录态文件（可选）")
         storage_label.setToolTip(_PARAM_HELP["storage_state"][1])
-        row4 = QHBoxLayout()
-        row4.setContentsMargins(0, 0, 0, 0)
-        row4.setSpacing(8)
-        row4.addWidget(storage_label)
-        row4.addLayout(storage_row, 1)
-        layout.addLayout(row4)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(storage_label)
+        row.addWidget(self.storage_state, 1)
+        row.addWidget(self.storage_button)
+        row.addWidget(self.clear_storage_button)
+        layout.addLayout(row)
 
     def task_config(self) -> TaskConfig:
         storage_text = self.storage_state.text().strip()

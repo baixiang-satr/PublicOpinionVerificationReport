@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QTextCharFormat, QColor, QTextCursor
+from PyQt5.QtGui import QColor, QTextCharFormat
 from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -20,27 +19,30 @@ from src.services.models import LogEvent
 from src.utils.time_utils import DEFAULT_TIMEZONE
 
 
-# 日志级别颜色
-_LEVEL_COLORS = {
-    "INFO":    ("#8ab4d6", "ℹ"),
-    "WARNING": ("#e8b84a", "⚠"),
-    "ERROR":   ("#e86a5a", "✗"),
-    "SUCCESS": ("#5fc87a", "✓"),
-    "DEBUG":   ("#7a8898", "·"),
+_LEVEL_LABEL = {
+    "INFO": "[I]",
+    "WARNING": "[W]",
+    "ERROR": "[E]",
+    "SUCCESS": "[O]",
+}
+_LEVEL_COLOR = {
+    "INFO": QColor("#7ec6e0"),
+    "WARNING": QColor("#e8c84a"),
+    "ERROR": QColor("#e86a5a"),
+    "SUCCESS": QColor("#5fc87a"),
 }
 
 
 class LogViewer(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        title = QLabel("运行日志只保存在本机，不会写入 template.zip")
+        title = QLabel("日志仅保存在本机，不会写入压缩包")
         title.setProperty("muted", True)
-        title.setStyleSheet("font-size: 13px;")
         clear_button = QToolButton()
-        clear_button.setObjectName("clearLogButton")
         clear_button.setIcon(self.style().standardIcon(QStyle.SP_DialogDiscardButton))
-        clear_button.setToolTip("清空当前日志")
+        clear_button.setToolTip("清空")
         clear_button.clicked.connect(self.clear)
+
         heading = QHBoxLayout()
         heading.setContentsMargins(0, 0, 0, 0)
         heading.addWidget(title, 1)
@@ -49,30 +51,32 @@ class LogViewer(QWidget):
         self.text = QPlainTextEdit()
         self.text.setObjectName("logText")
         self.text.setReadOnly(True)
-        self.text.document().setMaximumBlockCount(5_000)
-        # 暗色背景的默认格式
-        self._default_fmt = QTextCharFormat()
-        self._default_fmt.setForeground(QColor("#dce4e9"))
+        self.text.document().setMaximumBlockCount(2_000)
+
+        # 基础格式
+        self._base_fmt = QTextCharFormat()
+        self._base_fmt.setForeground(QColor("#dce4e9"))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
         layout.addLayout(heading)
         layout.addWidget(self.text, 1)
 
     def append_event(self, event: LogEvent) -> None:
-        level_upper = event.level.upper()
-        color_hex, icon = _LEVEL_COLORS.get(level_upper, ("#7a8898", "·"))
-        timestamp = event.timestamp.strftime("%H:%M:%S")
+        ts = event.timestamp.strftime("%H:%M:%S")
+        tag = _LEVEL_LABEL.get(event.level.upper(), "[?]")
+        color = _LEVEL_COLOR.get(event.level.upper(), QColor("#7a8898"))
+        line = f"{ts} {tag} {event.message}"
 
-        # 使用 HTML 片段实现颜色
-        html = (
-            f'<span style="color:#5a6a7a;">[{timestamp}]</span> '
-            f'<span style="color:{color_hex};font-weight:600;">[{icon} {event.level}]</span> '
-            f'<span style="color:#dce4e9;">{_escape_html(event.message)}</span>'
-        )
-        self.text.appendHtml(html)
-        # 自动滚动到底部
+        cursor = self.text.textCursor()
+        cursor.movePosition(cursor.End)
+        self.text.setTextCursor(cursor)
+
+        fmt = QTextCharFormat(self._base_fmt)
+        fmt.setForeground(color)
+        cursor.insertText(line + "\n", fmt)
+
         scrollbar = self.text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -81,13 +85,3 @@ class LogViewer(QWidget):
 
     def clear(self) -> None:
         self.text.clear()
-
-
-def _escape_html(text: str) -> str:
-    """转义 HTML 特殊字符。"""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
