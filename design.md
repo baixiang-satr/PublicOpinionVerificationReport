@@ -12,7 +12,7 @@
 
 ### 2.1 目标
 
-系统接收批量网页 URL，使用浏览器完成动态页面访问、内容抽取、截图和图片附件下载，再依照固定的 `template/` 交付契约生成 `template.zip`。
+系统接收批量网页 URL，使用浏览器完成动态页面访问、内容抽取，以及内容页/作者主页截图，再依照固定的 `template/` 交付契约生成 `template.zip`。正文图片只可作为临时 OCR 输入，不进入交付包。
 
 实现必须优先保证三件事：
 
@@ -55,8 +55,8 @@ flowchart LR
     C --> D["CrawlEngine\n并发、重试、限速"]
     D --> E["Playwright BrowserPool\n页面访问、HTML、状态码"]
     E --> F["PlatformRouter + Extractors\n路由、标题、正文、作者、时间、图片"]
-    F --> G["AssetCollector\n页面截图、主页截图、图片附件"]
-    G --> H["RecordValidator\n模板必填项与附件校验"]
+    F --> G["AssetCollector\n页面截图、主页截图、临时 OCR"]
+    G --> H["RecordValidator\n部分字段与截图校验"]
     H --> I["TemplateManager\n复制基准目录、清理副本"]
     I --> J["ExcelTemplateWriter\nExcel COM 写入与验证"]
     J --> K["PackageValidator\n引用完整性、ZIP 清单"]
@@ -102,15 +102,15 @@ PENDING
   -> EXPORTED
 
 任意阶段可转入：
-  -> NEEDS_REVIEW  （可访问但缺少模板必填字段或平台未匹配）
+  -> NEEDS_REVIEW  （未取得标题/正文、平台未匹配或访问受限）
   -> FAILED        （访问、解析、截图或导出失败）
   -> CANCELLED     （任务被用户取消）
 ```
 
 - `CRAWLED`：已记录最终 URL、状态码、原始 HTML/DOM 提取结果，但不代表可导出。
 - `ROUTED`：已确定模板工作表、标准发布平台和文本类型。
-- `ASSETS_READY`：主截图已生成；作者主页截图和页面图片附件可部分失败。
-- `READY_FOR_EXPORT`：所选工作表全部必填字段和主截图均满足，且引用附件均存在。
+- `ASSETS_READY`：已取得标题或正文且主截图已生成；作者主页截图可失败。
+- `READY_FOR_EXPORT`：主截图存在、平台枚举有效；其他无法公开取得的字段允许为空。
 - `NEEDS_REVIEW`：不向 Excel 写入，保留给 GUI 查看或未来人工补录。
 - `FAILED`：保存阶段、错误码、可重试标记和用户可读错误信息；不影响其他任务。
 
@@ -280,8 +280,7 @@ src/
 | 浏览器 | `manual_intervention_timeout_seconds` | 90 | 仅可视模式下等待用户完成登录/验证，范围 0-600 秒。 |
 | 截图 | `screenshot_format` | `jpeg` | 仅 `jpeg` 或 `png`。 |
 | 截图 | `full_page` | `True` | 全页截图开关。 |
-| 图片 | `download_page_images` | `True` | 是否将页面图片纳入附件。 |
-| 图片 | `max_images_per_record` | 20 | 防止单页产生大量附件。 |
+| OCR | `max_images_per_record` | 6 | HTML 正文为空时，最多临时读取的页面图片数；识别后删除。 |
 | 图片 | `max_image_bytes` | 10 MiB | 单个图片下载上限。 |
 | 内容 | `summary_max_chars` | 2,000 | 保证可读且不超过 Excel 单元格上限。 |
 | 时间 | `timezone` | `Asia/Shanghai` | 解析相对发布时间时的基准时区。 |
@@ -297,7 +296,7 @@ src/
 3. 返回模板允许的 `sheet_name`、`platform_value`、`text_type`。
 4. 没有确定结果时返回 `None`，记录 `ROUTE_UNSUPPORTED`，不写入 Excel。
 
-`TemplateRowMapper.map(result)` 只接受 `READY_FOR_EXPORT` 记录，并按 `template_schema.py` 校验必填字段。例如：
+`TemplateRowMapper.map(result)` 只接受 `READY_FOR_EXPORT` 记录，并按 `template_schema.py` 校验主截图和枚举；其余缺失字段保持空白。例如：
 
 | 路由工作表 | 主截图列 | 附件列 | 特有必填字段 |
 | --- | --- | --- | --- |
@@ -332,7 +331,7 @@ class CrawlEngine:
 3. 调用 `tools.page_access` 检查登录墙、验证码、空白页、API 响应、内容失效和跳回首页；命中时先阻止截图。
 4. 可视模式下仅对登录/验证码开放有界人工处理窗口；处理成功后重新检查页面，不自动破解验证。
 5. 获取 `page.url`、页面标题、可见文本、结构化数据和 DOM 中的图片候选。
-6. 仅通过访问诊断和必填字段校验的页面写入主截图；之后再尝试作者主页。
+6. 通过访问诊断后生成主截图；取得标题或正文即可导出，其他缺失字段记录提醒；之后再尝试作者主页。
 7. 每次导航、截图和文件下载均检查 `cancel_event`。
 
 重试仅针对 DNS/连接失败、超时、429 和 5xx；401/403/405、验证码、登录墙和平台结构变化应直接进入 `NEEDS_REVIEW` 或 `FAILED`，不应高频重试。404 和明确的“内容不存在/已删除”进入 `FAILED`。退避策略为 `base_delay * 2^attempt + 随机抖动`，并受域名限速器约束。
@@ -352,16 +351,16 @@ class PlatformExtractor(Protocol):
 
 `platform_catalog.py` 枚举所有适用 URL 抓取的模板平台、域名、路径优先级、提取器类别和平台选择器；群聊与朋友圈不注册 URL 路由。提取优先级固定为：平台专用 DOM -> JSON-LD -> Open Graph/meta -> 通用 DOM -> 可见文本。每个字段记录来源标签，例如 `platform_dom`、`json_ld`、`generic_dom` 或 `nickname_fallback`，用于 GUI 审计而非 Excel 导出。
 
-`AuthorShooter` 在主记录必填字段校验通过后，使用原页面的隔离 browser context 新建短生命周期页面访问作者主页。主页返回错误状态、出现登录/访问验证页或截图失败时，关闭页面并追加运行态警告，不改变主记录的 `ASSETS_READY` 状态，也不产生附件引用。
+`AuthorShooter` 在主页面截图成功后，使用原页面的隔离 browser context 新建短生命周期页面访问作者主页。主页返回错误状态、出现登录/访问验证页或截图失败时，关闭页面并追加运行态警告，不改变主记录的 `ASSETS_READY` 状态，也不产生附件引用。
 
-`AssetCollector` 处理页面图片：
+`AssetCollector` 只在 HTML 正文为空且 OCR 启用时处理临时页面图片：
 
 - 从 `img[src]`、有效 `srcset` 和平台提取器的媒体数据中收集候选 URL。
 - 去除 `data:`、`blob:`、非 HTTP(S)、重复 URL、跟踪像素、明显头像/图标和过小图片。
 - 复用 Playwright browser context 的请求会话下载公开图片，按 `max_images_per_record` 和 `max_image_bytes` 限制数量与体积。
 - 同时核验响应状态、`Content-Type` 与 JPEG/PNG/GIF/WebP/BMP 文件头；类型不一致或无法识别时拒绝附件。
 - 由真实文件头决定扩展名，命名为 `{evidence_id:03d}_{asset_no:02d}.{ext}`，先写 `.part` 再原子替换。
-- 仅将下载成功的文件名写入模板附件列；原始 URL 不进入 ZIP。
+- OCR 完成后删除临时图片；文件名和原始 URL 都不进入模板或 ZIP。
 
 ## 7. 固定模板导出设计
 

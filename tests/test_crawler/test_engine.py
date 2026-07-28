@@ -96,7 +96,7 @@ class FailingAuthorShooter:
         raise AuthorScreenshotError("AUTHOR_HTTP_ERROR", "作者主页返回 HTTP 403")
 
 
-class StubAssetCollector:
+class UnexpectedAssetCollector:
     async def collect(
         self,
         _page: object,
@@ -105,12 +105,7 @@ class StubAssetCollector:
         output_dir: Path,
         _cancel_event: object,
     ) -> AssetCollectionResult:
-        path = output_dir / "001_01.png"
-        path.write_bytes(b"png")
-        return AssetCollectionResult(
-            files=(path,),
-            errors=(TaskError("image_download", "IMAGE_HTTP_ERROR", "另一张图片失败"),),
-        )
+        raise AssertionError(f"正文已经存在，不应下载正文图片：{output_dir}")
 
 
 @pytest.mark.asyncio
@@ -201,7 +196,7 @@ async def test_engine_applies_http_retry_policy(
 
 
 @pytest.mark.asyncio
-async def test_optional_asset_failures_do_not_block_valid_record(tmp_path: Path) -> None:
+async def test_only_author_screenshot_is_collected_when_body_text_exists(tmp_path: Path) -> None:
     pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
     engine = CrawlEngine(
         TaskConfig(min_host_interval_seconds=0, page_stabilize_milliseconds=0),
@@ -209,7 +204,7 @@ async def test_optional_asset_failures_do_not_block_valid_record(tmp_path: Path)
         parser=AssetParser(),
         shooter=StubShooter(),
         author_shooter=FailingAuthorShooter(),
-        asset_collector=StubAssetCollector(),
+        asset_collector=UnexpectedAssetCollector(),
     )
 
     [result] = await engine.run(
@@ -219,5 +214,30 @@ async def test_optional_asset_failures_do_not_block_valid_record(tmp_path: Path)
 
     assert result.status == RecordStatus.ASSETS_READY
     assert result.assets.author_screenshot is None
-    assert [path.name for path in result.assets.downloaded_images] == ["001_01.png"]
-    assert [error.code for error in result.errors] == ["AUTHOR_HTTP_ERROR", "IMAGE_HTTP_ERROR"]
+    assert result.assets.downloaded_images == []
+    assert [error.code for error in result.errors] == ["AUTHOR_HTTP_ERROR"]
+
+
+class PartialParser:
+    async def extract(self, _page: FakePage, _definition: object) -> PageData:
+        return PageData(title="只有标题")
+
+
+@pytest.mark.asyncio
+async def test_partial_content_is_assets_ready_with_missing_field_warning(tmp_path: Path) -> None:
+    pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
+    engine = CrawlEngine(
+        TaskConfig(min_host_interval_seconds=0, page_stabilize_milliseconds=0),
+        browser_pool=pool,
+        parser=PartialParser(),
+        shooter=StubShooter(),
+    )
+
+    [result] = await engine.run(
+        [UrlTask(1, "https://www.zhihu.com/question/1", "https://www.zhihu.com/question/1")],
+        tmp_path,
+    )
+
+    assert result.status == RecordStatus.ASSETS_READY
+    assert result.assets.page_screenshot == tmp_path / "001.jpg"
+    assert "PARTIAL_FIELDS_MISSING" in [error.code for error in result.errors]

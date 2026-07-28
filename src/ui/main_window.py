@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt5.QtCore import QTimer, QUrl, Qt
-from PyQt5.QtGui import QCloseEvent, QDesktopServices
+from PyQt5.QtGui import QCloseEvent, QDesktopServices, QGuiApplication
 from PyQt5.QtWidgets import (
     QFrame,
+    QGridLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -43,9 +43,8 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("舆情验证报告工具")
-        self.resize(960, 740)
-        self.setMinimumSize(860, 660)
         self.setWindowIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        self._fit_to_available_screen()
 
         # 中央滚动区域
         scroll = QScrollArea()
@@ -73,8 +72,8 @@ class MainWindow(QMainWindow):
 
         # ── 提示 ──
         notice = QLabel(
-            "程序只写任务副本，不会修改 template 原件。"
-            "需要登录的页面请取消勾选「后台运行浏览器」，在弹出窗口中手工完成登录。"
+            "每条记录最多输出两张截图：内容页 + 可取得时的作者主页。"
+            "只要已取得标题或正文就会写入表格，缺失字段保留为空。"
         )
         notice.setObjectName("stepNotice")
         notice.setWordWrap(True)
@@ -103,8 +102,9 @@ class MainWindow(QMainWindow):
         g3_layout.setContentsMargins(12, 18, 12, 12)
         g3_layout.setSpacing(8)
 
-        action_row = QHBoxLayout()
-        action_row.setSpacing(8)
+        action_row = QGridLayout()
+        action_row.setHorizontalSpacing(8)
+        action_row.setVerticalSpacing(8)
         self.start_button = QPushButton()
         self.start_button.setObjectName("primaryButton")
         self.start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
@@ -130,11 +130,12 @@ class MainWindow(QMainWindow):
         self.open_output_button.setText("打开输出位置")
         self.open_output_button.clicked.connect(self._open_output)
 
-        action_row.addWidget(self.start_button)
-        action_row.addWidget(self.cancel_button)
-        action_row.addWidget(self.retry_button)
-        action_row.addWidget(self.open_output_button)
-        action_row.addStretch(1)
+        action_row.addWidget(self.start_button, 0, 0)
+        action_row.addWidget(self.cancel_button, 0, 1)
+        action_row.addWidget(self.retry_button, 0, 2)
+        action_row.addWidget(self.open_output_button, 0, 3)
+        for column in range(4):
+            action_row.setColumnStretch(column, 1)
         g3_layout.addLayout(action_row)
 
         hint = QLabel("运行中可随时取消，取消后不会生成不完整压缩包。")
@@ -160,6 +161,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tabs, 1)
 
         self.statusBar().showMessage("就绪 — 请选择 URL 文件后点击「开始生成」")
+
+    def _fit_to_available_screen(self) -> None:
+        """Choose a comfortable initial size that never exceeds usable desktop space."""
+
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.setMinimumSize(760, 540)
+            self.resize(1100, 760)
+            return
+        available = screen.availableGeometry()
+        safe_width = max(640, available.width() - 32)
+        safe_height = max(480, available.height() - 32)
+        self.setMinimumSize(min(800, safe_width), min(560, safe_height))
+        self.resize(
+            min(1180, int(safe_width * 0.96)),
+            min(820, int(safe_height * 0.96)),
+        )
+        frame = self.frameGeometry()
+        frame.moveCenter(available.center())
+        self.move(frame.topLeft())
 
     # ── 动作 ──
     def _start_from_file(self) -> None:

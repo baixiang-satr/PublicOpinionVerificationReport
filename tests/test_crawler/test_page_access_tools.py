@@ -113,6 +113,15 @@ async def test_normal_article_has_no_access_barrier() -> None:
 
 
 @pytest.mark.asyncio
+async def test_article_with_login_modal_text_is_not_rejected_when_content_rendered() -> None:
+    url = "https://example.test/article/123"
+    body = "这是正常文章正文。" * 100 + "\n登录即代表同意相关服务条款"
+    page = SnapshotPage(url, [{"title": "正文标题", "body": body}])
+
+    assert await inspect_page_access(page, url, url) is None
+
+
+@pytest.mark.asyncio
 async def test_manual_access_wait_honors_cancellation() -> None:
     url = "https://example.test/login"
     page = SnapshotPage(url, [{"title": "账号登录", "body": "请先登录"}])

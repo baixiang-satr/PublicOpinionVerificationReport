@@ -27,3 +27,21 @@ def test_row_mapper_builds_a_public_account_template_row() -> None:
     assert row.values_by_column["J"] == "001.jpg"
     assert row.values_by_column["K"] == "001主页.jpg"
     assert row.values_by_column["I"] == datetime(2026, 7, 14, 18, 48)
+
+
+def test_row_mapper_keeps_partial_record_and_leaves_unknown_fields_blank() -> None:
+    result = RecordResult(
+        task=UrlTask(2, "https://www.zhihu.com/question/2", "https://www.zhihu.com/question/2"),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=RouteDecision("微博博客", "知乎_知乎_博客贴吧", "正文"),
+        page=PageData(title="只抓到了标题"),
+        assets=AssetSet(page_screenshot=Path("002.jpg")),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["A"] == "https://www.zhihu.com/question/2"
+    assert row.values_by_column["C"] == "知乎_知乎_博客贴吧"
+    assert row.values_by_column["G"] == "002.jpg"
+    assert "B" not in row.values_by_column
+    assert "F" not in row.values_by_column

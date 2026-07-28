@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import datetime
@@ -21,6 +22,7 @@ from src.domain.models import (
     TemplateRow,
     UrlTask,
 )
+from src.domain.template_schema import get_sheet_layout
 from src.export.excel_writer import ExcelAutomationUnavailable, ExcelTemplateWriter, TemplateIntegrityError
 from src.export.package_validator import validate_template_assets
 from src.export.packager import create_template_archive
@@ -38,6 +40,9 @@ from src.services.models import (
 from src.utils.time_utils import DEFAULT_TIMEZONE
 from src.utils.file_utils import require_safe_file_name
 from src.screenshot.browser import BrowserUnavailableError
+
+# ⚠️ 临时功能：爬取运行报告，项目完成后需删除
+from src.tools.crawl_tracker import append_run_report  # noqa: F811
 
 
 class TaskRunnerError(RuntimeError):
@@ -109,6 +114,7 @@ class TaskRunner:
                 self._template_manager.assert_source_unchanged(prepared)
                 tracker.publish(records, stage="任务已取消")
                 self._log(callbacks, "WARNING", "任务已取消，已完成结果仅供查看，不生成压缩包。")
+                self._write_crawl_report(records, prepared.job_id, request.label, rejected_count)
                 return self._cancelled_result(request, prepared, records, rejected_count)
 
             rows = self._build_rows(records, callbacks)
@@ -118,8 +124,9 @@ class TaskRunner:
                 self._log(
                     callbacks,
                     "WARNING",
-                    "没有记录满足模板必填要求，因此未生成空的 template.zip。",
+                    "没有取得可审计内容和主截图，因此未生成空的 template.zip。",
                 )
+                self._write_crawl_report(records, prepared.job_id, request.label, rejected_count)
                 return JobResult(
                     job_id=prepared.job_id,
                     label=request.label,
@@ -143,6 +150,7 @@ class TaskRunner:
             )
             if cancellation.is_set():
                 self._template_manager.assert_source_unchanged(prepared)
+                self._write_crawl_report(records, prepared.job_id, request.label, rejected_count)
                 return self._cancelled_result(request, prepared, records, rejected_count)
 
             await asyncio.to_thread(
@@ -166,6 +174,7 @@ class TaskRunner:
                     _call(callbacks.record_updated, record)
             tracker.publish(records, stage="已完成")
             self._log(callbacks, "SUCCESS", f"任务完成：{archive_path}")
+            self._write_crawl_report(records, prepared.job_id, request.label, rejected_count)
             return JobResult(
                 job_id=prepared.job_id,
                 label=request.label,
@@ -209,12 +218,27 @@ class TaskRunner:
         callbacks: RunnerCallbacks,
     ) -> list[TemplateRow]:
         rows: list[TemplateRow] = []
+        used_rows: dict[str, int] = defaultdict(int)
         for record in records:
             if record.status != RecordStatus.ASSETS_READY:
                 continue
             record.status = RecordStatus.READY_FOR_EXPORT
             try:
-                rows.append(self._row_mapper.map(record))
+                row = self._row_mapper.map(record)
+                layout = get_sheet_layout(row.sheet_name)
+                if used_rows[row.sheet_name] >= layout.max_rows:
+                    record.status = RecordStatus.NEEDS_REVIEW
+                    record.errors.append(
+                        TaskError(
+                            "export_validation",
+                            "TEMPLATE_CAPACITY_EXCEEDED",
+                            f"{row.sheet_name}最多可写 {layout.max_rows} 条，当前记录未写入。",
+                            retryable=False,
+                        )
+                    )
+                else:
+                    rows.append(row)
+                    used_rows[row.sheet_name] += 1
             except TemplateRowMappingError as error:
                 record.status = RecordStatus.NEEDS_REVIEW
                 record.errors.append(
@@ -260,6 +284,20 @@ class TaskRunner:
             job_dir=prepared.job_dir,
             cancelled=True,
         )
+
+    @staticmethod
+    def _write_crawl_report(
+        records: list[RecordResult],
+        job_id: str,
+        label: str,
+        rejected_count: int,
+    ) -> None:
+        """⚠️ 临时功能：将本次运行结果写入爬取报告。项目完成后需删除此方法。"""
+        try:
+            append_run_report(records, job_id, label, rejected_count)
+        except Exception as exc:
+            # 报告写入失败不影响主流程
+            pass
 
     @staticmethod
     def _log(
@@ -365,11 +403,7 @@ def _copy_retained_records(
             source_record.assets.author_screenshot,
             template_dir,
         )
-        record.assets.downloaded_images = [
-            path
-            for source in source_record.assets.downloaded_images
-            if (path := _copy_asset(source, template_dir)) is not None
-        ]
+        record.assets.downloaded_images = []
         record.status = RecordStatus.ASSETS_READY
         copied.append(record)
     return copied

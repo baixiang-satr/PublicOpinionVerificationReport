@@ -110,7 +110,6 @@ async def test_task_runner_creates_real_fixed_template_archive(tmp_path: Path) -
     with ZipFile(result.archive_path) as archive:
         assert archive.namelist() == [
             "template/001.png",
-            "template/001_01.png",
             "template/001主页.png",
             "template/template.xlsx",
         ]

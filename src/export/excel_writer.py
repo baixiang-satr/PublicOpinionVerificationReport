@@ -187,9 +187,13 @@ class ExcelTemplateWriter:
             raise TemplateIntegrityError(f"Unknown columns for {layout.name}: {', '.join(unknown_columns)}")
         if row.values_by_column.get(layout.primary_screenshot_column) != row.primary_screenshot_name:
             raise TemplateIntegrityError(f"Primary screenshot column does not match row assets: {layout.name}")
-        for column in layout.required_columns:
-            if not row.values_by_column.get(column):
-                raise TemplateIntegrityError(f"Required template column is empty: {layout.name}!{column}")
+        if (
+            layout.primary_screenshot_column
+            and not row.values_by_column.get(layout.primary_screenshot_column)
+        ):
+            raise TemplateIntegrityError(
+                f"Primary screenshot column is empty: {layout.name}!{layout.primary_screenshot_column}"
+            )
         for column, allowed_values in layout.validation_values.items():
             value = row.values_by_column.get(column)
             if value is not None and value not in allowed_values:

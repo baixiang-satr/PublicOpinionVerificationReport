@@ -226,11 +226,20 @@ async def inspect_page_access(
 
     title, body = await _read_page_snapshot(page)
     normalized = f"{title}\n{body}".strip().lower()
-    if any(marker in normalized for marker in _CAPTCHA_TEXT_MARKERS):
+    if (
+        any(marker in normalized for marker in _CAPTCHA_TEXT_MARKERS)
+        and _looks_like_barrier_only_page(title, body, AccessKind.CAPTCHA)
+    ):
         return _captcha_barrier()
-    if any(marker in normalized for marker in _LOGIN_TEXT_MARKERS):
+    if (
+        any(marker in normalized for marker in _LOGIN_TEXT_MARKERS)
+        and _looks_like_barrier_only_page(title, body, AccessKind.LOGIN)
+    ):
         return _login_barrier()
-    if any(marker in normalized for marker in _RESTRICTED_TEXT_MARKERS):
+    if (
+        any(marker in normalized for marker in _RESTRICTED_TEXT_MARKERS)
+        and _looks_like_barrier_only_page(title, body, AccessKind.ACCESS_RESTRICTED)
+    ):
         return _restricted_barrier()
     if any(marker in normalized for marker in _JAVASCRIPT_TEXT_MARKERS):
         return AccessBarrier(
@@ -365,3 +374,38 @@ def _looks_like_json(body: str) -> bool:
         return isinstance(json.loads(candidate), (dict, list))
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
+
+
+def _looks_like_barrier_only_page(title: str, body: str, kind: AccessKind) -> bool:
+    """Avoid rejecting a real article merely because its chrome has a login prompt."""
+
+    normalized_title = title.strip().casefold()
+    exact_titles = {
+        AccessKind.CAPTCHA: {
+            "安全验证",
+            "访问验证",
+            "人机验证",
+            "captcha",
+            "verify you are human",
+        },
+        AccessKind.LOGIN: {
+            "登录",
+            "账号登录",
+            "扫码登录",
+            "sign in",
+            "log in",
+        },
+        AccessKind.ACCESS_RESTRICTED: {
+            "访问异常",
+            "访问受限",
+            "access denied",
+        },
+    }
+    if normalized_title in exact_titles.get(kind, set()):
+        return True
+
+    # Substantial public pages commonly include a login modal or login text in
+    # the header. Treat text markers as a barrier only when little other page
+    # content rendered.
+    visible_length = len("".join(body.split()))
+    return visible_length < 800

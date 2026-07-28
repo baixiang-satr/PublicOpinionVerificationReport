@@ -105,5 +105,28 @@ async def _is_access_restricted(page: Any) -> bool:
         "sign in to continue",
         "log in to continue",
         "verify you are human",
+        "参数错误",
+        "页面不存在",
+        "用户不存在",
+        "账号不存在",
+        "主页不存在",
+        "内容已失效",
+        "访问出错",
     )
-    return title.casefold() in exact_titles or any(marker in normalized for marker in markers)
+    if title.casefold() in exact_titles or any(marker in normalized for marker in markers):
+        return True
+
+    compact_body = "".join(body.split())
+    if len(compact_body) >= 120 or not hasattr(page, "evaluate"):
+        return False
+    try:
+        has_profile_surface = bool(
+            await page.evaluate(
+                """() => Boolean(document.querySelector(
+                    'h1, main h2, [class*="profile"], [class*="user-info"], [class*="author-info"]'
+                ))"""
+            )
+        )
+    except Exception:
+        return False
+    return not has_profile_surface

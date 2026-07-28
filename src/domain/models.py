@@ -81,8 +81,11 @@ class AssetSet:
     downloaded_images: list[Path] = field(default_factory=list)
 
     def attachment_paths(self) -> list[Path]:
-        paths = [path for path in [self.author_screenshot, *self.downloaded_images] if path]
-        return list(dict.fromkeys(paths))
+        # The delivery contract intentionally exposes at most two screenshots:
+        # one content-page screenshot and one optional author-home screenshot.
+        # downloaded_images are transient OCR inputs and must never become ZIP
+        # attachments.
+        return [self.author_screenshot] if self.author_screenshot else []
 
 
 @dataclass(frozen=True)

@@ -240,3 +240,31 @@ async def test_retry_keeps_previous_exports_and_adds_recovered_record(tmp_path: 
             "template/002.jpg",
             "template/template.xlsx",
         ]
+
+
+def test_build_rows_exports_up_to_sheet_capacity_without_failing_batch(tmp_path: Path) -> None:
+    runner = TaskRunner(
+        _config(tmp_path),
+        engine_factory=lambda _task_config: FakeEngine(),
+        excel_writer=FakeWriter(),
+    )
+    records = []
+    for evidence_id in range(1, 4):
+        record = RecordResult(
+            task=UrlTask(
+                evidence_id,
+                f"https://item.jd.com/{evidence_id}.html",
+                f"https://item.jd.com/{evidence_id}.html",
+            ),
+            status=RecordStatus.ASSETS_READY,
+            page=PageData(title=f"商品 {evidence_id}"),
+            route=RouteDecision("电商平台", "京东_京东商城_电商平台", "商家"),
+        )
+        record.assets.page_screenshot = Path(f"{evidence_id:03d}.jpg")
+        records.append(record)
+
+    rows = runner._build_rows(records, RunnerCallbacks())
+
+    assert [row.evidence_id for row in rows] == [1, 2]
+    assert records[2].status == RecordStatus.NEEDS_REVIEW
+    assert records[2].errors[-1].code == "TEMPLATE_CAPACITY_EXCEEDED"

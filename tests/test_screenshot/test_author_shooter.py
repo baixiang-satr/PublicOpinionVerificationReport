@@ -41,6 +41,19 @@ class RestrictedAuthorPage(FakeAuthorPage):
         return FakeBodyLocator()
 
 
+class ErrorBodyLocator:
+    async def inner_text(self, **_options: object) -> str:
+        return "参数错误"
+
+
+class ErrorAuthorPage(FakeAuthorPage):
+    async def title(self) -> str:
+        return "提示"
+
+    def locator(self, _selector: str) -> ErrorBodyLocator:
+        return ErrorBodyLocator()
+
+
 class FakeContext:
     def __init__(self, author_page: FakeAuthorPage) -> None:
         self.author_page = author_page
@@ -119,6 +132,27 @@ async def test_author_shooter_rejects_login_wall_without_creating_evidence(tmp_p
         await shooter.capture(
             FakeSourcePage(author_page),
             "https://example.test/login",
+            1,
+            tmp_path,
+        )
+
+    assert caught.value.code == "AUTHOR_ACCESS_RESTRICTED"
+    assert author_page.closed
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_author_shooter_rejects_platform_error_page(tmp_path: Path) -> None:
+    author_page = ErrorAuthorPage(200)
+    shooter = AuthorShooter(
+        TaskConfig(page_stabilize_milliseconds=0),
+        shooter=StubPageShooter(),
+    )
+
+    with pytest.raises(AuthorScreenshotError) as caught:
+        await shooter.capture(
+            FakeSourcePage(author_page),
+            "https://example.test/author/bad",
             1,
             tmp_path,
         )

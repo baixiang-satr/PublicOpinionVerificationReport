@@ -129,5 +129,5 @@ async def test_real_browser_records_redirect_status_parses_and_screenshots(tmp_p
     assert result.assets.author_screenshot is not None
     assert result.assets.author_screenshot.name == "001主页.png"
     assert result.assets.author_screenshot.read_bytes().startswith(b"\x89PNG")
-    assert [path.name for path in result.assets.downloaded_images] == ["001_01.png"]
-    assert result.assets.downloaded_images[0].read_bytes().startswith(b"\x89PNG")
+    assert result.assets.downloaded_images == []
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["001.png", "001主页.png"]

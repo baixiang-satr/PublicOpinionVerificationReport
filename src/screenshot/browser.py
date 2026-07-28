@@ -6,17 +6,15 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
-import random
 from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
 from src.config.settings import TaskConfig
-from src.utils.user_agent import UserAgentManager
 
 
 logger = logging.getLogger(__name__)
 
-_STEALTH_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "libs" / "stealth.min.js"
+_STEALTH_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "libs" / "stealth.min.js"
 
 # ── Anti-detection Chromium launch arguments ─────────────────────────────
 # Reference: MediaCrawler (https://github.com/NanmiCoder/MediaCrawler)
@@ -64,7 +62,6 @@ class BrowserPool:
         self._contexts: set[Any] = set()
         self._semaphore = asyncio.Semaphore(config.max_concurrency)
         self._lifecycle_lock = asyncio.Lock()
-        self._user_agent_mgr = UserAgentManager()
         self._stealth_loaded = False
 
     @property
@@ -146,27 +143,26 @@ class BrowserPool:
             if not self.is_started:
                 raise BrowserUnavailableError("BrowserPool.start() must be called before opening a page.")
 
-            # ── Rotate User-Agent per context (参考 MediaCrawler 随机 UA) ──
-            user_agent = self._config.user_agent or self._user_agent_mgr.random()
-
-            # ── Randomize viewport slightly to avoid fingerprint lock ──
-            base_w, base_h = 1440, 900
-            viewport_w = base_w + random.randint(-20, 20)
-            viewport_h = base_h + random.randint(-10, 10)
-
             context_options: dict[str, Any] = {
-                "user_agent": user_agent,
-                "viewport": {"width": viewport_w, "height": viewport_h},
+                "viewport": {
+                    "width": self._config.viewport_width,
+                    "height": self._config.viewport_height,
+                },
                 "locale": "zh-CN",
                 "timezone_id": self._config.timezone,
-                # Extra fingerprint randomization
-                "device_scale_factor": random.choice([1, 2]),
+                "device_scale_factor": 1,
                 "is_mobile": False,
                 "has_touch": False,
-                "color_scheme": random.choice(["light", "dark"]),
+                "color_scheme": "light",
                 "reduced_motion": "no-preference",
                 "forced_colors": "none",
             }
+            # When no override is requested, keep Chromium's native User-Agent.
+            # A random mobile/Safari UA paired with desktop Chromium and a
+            # desktop viewport is internally inconsistent and causes more
+            # compatibility failures on modern sites.
+            if self._config.user_agent:
+                context_options["user_agent"] = self._config.user_agent
 
             # ── Storage state (login cookies) ─────────────────────────
             storage_state = self._config.storage_state_path
@@ -189,7 +185,8 @@ class BrowserPool:
             page.set_default_timeout(self._config.page_timeout_seconds * 1000)
 
             # ── Extra JS overrides to hide automation traces ──────────
-            await self._apply_extra_stealth(page)
+            if self._config.enable_extra_stealth:
+                await self._apply_extra_stealth(page)
 
             yield page
         finally:

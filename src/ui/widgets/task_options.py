@@ -39,16 +39,6 @@ _PARAM_HELP: dict[str, tuple[str, str]] = {
         "抓取出错后自动重试几次。0 表示出错就跳过。\n"
         "网络不稳定时建议设为 2~3 次。",
     ),
-    "image_count": (
-        "每页最多保存几张图片",
-        "从当前页面截取几张关键截图作为证据。\n"
-        "0 表示不保存图片，只记录文字信息。",
-    ),
-    "image_size": (
-        "每张图片大小上限",
-        "超过此大小的截图会被压缩，以节省空间和生成速度。\n"
-        "一般 1~2 MB 足够清晰。",
-    ),
     "screenshot_format": (
         "截图文件格式",
         "JPG：体积小（适合大多数情况）\n"
@@ -75,9 +65,6 @@ class TaskOptionsWidget(QWidget):
         self.concurrency = _spin(1, 10, defaults.max_concurrency, " 个")
         self.timeout = _spin(5, 180, defaults.page_timeout_seconds, " 秒")
         self.retries = _spin(0, 5, defaults.max_retries, " 次")
-        self.image_count = _spin(0, 50, defaults.max_images_per_record, " 张")
-        image_mb = max(1, round(defaults.max_image_bytes / 1024 / 1024))
-        self.image_size = _spin(1, 50, image_mb, " MB")
         self.screenshot_format = QComboBox()
         self.screenshot_format.addItem("JPG（体积更小）", "jpeg")
         self.screenshot_format.addItem("PNG（文字更清晰）", "png")
@@ -105,13 +92,6 @@ class TaskOptionsWidget(QWidget):
         self.clear_storage_button.setFixedWidth(36)
         self.clear_storage_button.clicked.connect(self.storage_state.clear)
 
-        storage_row = QHBoxLayout()
-        storage_row.setContentsMargins(0, 0, 0, 0)
-        storage_row.setSpacing(6)
-        storage_row.addWidget(self.storage_state, 1)
-        storage_row.addWidget(self.storage_button)
-        storage_row.addWidget(self.clear_storage_button)
-
         # ── 用 QFormLayout 组织，简洁清晰 ──
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -131,10 +111,13 @@ class TaskOptionsWidget(QWidget):
         add("同时处理", self.concurrency, "concurrency")
         add("单页超时", self.timeout, "timeout")
         add("失败重试", self.retries, "retries")
-        add("每页图片", self.image_count, "image_count")
-        add("单图上限", self.image_size, "image_size")
         add("截图格式", self.screenshot_format, "screenshot_format")
         layout.addLayout(form)
+
+        asset_policy = QLabel("截图规则：每条最多 2 张（内容页 + 作者主页），不输出正文图片附件")
+        asset_policy.setObjectName("assetPolicy")
+        asset_policy.setWordWrap(True)
+        layout.addWidget(asset_policy)
 
         self.headless.setToolTip(_PARAM_HELP["headless"][1])
         layout.addWidget(self.headless)
@@ -164,8 +147,10 @@ class TaskOptionsWidget(QWidget):
             page_stabilize_milliseconds=self._defaults.page_stabilize_milliseconds,
             screenshot_format=str(self.screenshot_format.currentData()),
             full_page_screenshot=self._defaults.full_page_screenshot,
-            max_images_per_record=self.image_count.value(),
-            max_image_bytes=self.image_size.value() * 1024 * 1024,
+            # Page images are bounded, temporary OCR inputs only. They are
+            # deleted after recognition and never included in template.zip.
+            max_images_per_record=self._defaults.max_images_per_record,
+            max_image_bytes=self._defaults.max_image_bytes,
             summary_max_chars=self._defaults.summary_max_chars,
             timezone=self._defaults.timezone,
             headless=self.headless.isChecked(),
@@ -189,8 +174,6 @@ class TaskOptionsWidget(QWidget):
             self.concurrency,
             self.timeout,
             self.retries,
-            self.image_count,
-            self.image_size,
             self.screenshot_format,
             self.headless,
             self.storage_button,
@@ -217,19 +200,3 @@ def _spin(minimum: int, maximum: int, value: int, suffix: str) -> QSpinBox:
     control.setValue(value)
     control.setSuffix(suffix)
     return control
-
-
-def _add_option_row(
-    layout: QGridLayout,
-    row: int,
-    label: str,
-    control: QWidget,
-    help_info: tuple[str, str],
-) -> None:
-    """添加一行：标签 | 控件，并设置 ToolTip。"""
-    lbl = QLabel(label)
-    title_text, help_text = help_info
-    lbl.setToolTip(f"{title_text}\n\n{help_text}")
-    control.setToolTip(help_text)
-    layout.addWidget(lbl, row, 0)
-    layout.addWidget(control, row, 1)

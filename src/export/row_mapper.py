@@ -15,7 +15,7 @@ class TemplateRowMappingError(ValueError):
 
 
 class TemplateRowMapper:
-    """Build rows only from records explicitly marked ready for fixed-template export."""
+    """Build rows from auditable records, preserving any unavailable fields as blank."""
 
     def map(self, result: RecordResult) -> TemplateRow:
         if result.status != RecordStatus.READY_FOR_EXPORT or result.route is None:
@@ -82,9 +82,9 @@ class TemplateRowMapper:
 
     @staticmethod
     def _validate_values(layout: SheetLayout, values: dict[str, object]) -> None:
-        missing = sorted(column for column in layout.required_columns if not values.get(column))
-        if missing:
-            raise TemplateRowMappingError(f"{layout.name} is missing required columns: {', '.join(missing)}")
+        screenshot_column = layout.primary_screenshot_column
+        if screenshot_column and not values.get(screenshot_column):
+            raise TemplateRowMappingError(f"{layout.name} is missing its primary screenshot.")
         for column, allowed_values in layout.validation_values.items():
             value = values.get(column)
             if value is not None and value not in allowed_values:

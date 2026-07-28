@@ -95,3 +95,28 @@ async def test_content_parser_prefers_platform_dom_and_marks_nickname_id_fallbac
     assert data.field_sources["title"] == ExtractionSource.PLATFORM_DOM
     assert data.field_sources["author_id"] == ExtractionSource.NICKNAME_FALLBACK
     assert data.published_at is not None
+
+
+def test_author_extractor_resolves_relative_home_url() -> None:
+    data = GenericExtractor().extract(
+        RenderedDocument(
+            url="https://news.example.test/article/1",
+            title="Title",
+            visible_text="Body",
+            json_ld=(
+                json.dumps(
+                    {
+                        "@type": "Article",
+                        "author": {"name": "Author", "url": "/people/7"},
+                    }
+                ),
+            ),
+        )
+    )
+
+    AuthorExtractor().finalize(
+        data,
+        RouteDecision("微博博客", "知乎_知乎_博客贴吧", "正文"),
+    )
+
+    assert data.author_url == "https://news.example.test/people/7"

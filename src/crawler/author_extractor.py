@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urljoin, urlsplit
+
 from src.domain.models import ExtractionSource, PageData, RouteDecision
 
 
@@ -13,6 +15,8 @@ class AuthorExtractor:
         self._allow_nickname_as_id = allow_nickname_as_id
 
     def finalize(self, page: PageData, route: RouteDecision) -> None:
+        if page.author_url and not urlsplit(page.author_url).scheme and page.final_url:
+            page.author_url = urljoin(page.final_url, page.author_url)
         if route.sheet_name == "电商平台" and not page.store_name:
             page.store_name = page.author_name
         if (

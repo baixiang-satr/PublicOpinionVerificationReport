@@ -26,9 +26,9 @@ QScrollBar::handle:vertical:hover {
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
 
-/* ── Titles ── */
+/* ── Titles (参考 mobile_forensics collector 标题样式) ── */
 QLabel#appTitle {
-    font-size: 22px;
+    font-size: 24px;
     font-weight: 700;
     color: #153438;
 }
@@ -47,6 +47,14 @@ QLabel#stepNotice {
     border-radius: 6px;
     padding: 10px 12px;
     color: #143c38;
+    font-size: 12px;
+}
+QLabel#assetPolicy {
+    background: #f2f8f7;
+    border: 1px solid #cfe1de;
+    border-radius: 5px;
+    padding: 7px 10px;
+    color: #315b58;
     font-size: 12px;
 }
 

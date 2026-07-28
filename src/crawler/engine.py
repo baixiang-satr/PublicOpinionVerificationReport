@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 from src.config.settings import TaskConfig
 from src.crawler.author_extractor import AuthorExtractor
 from src.crawler.content_parser import ContentParser
+from src.crawler.navigation import navigate_page, stabilize_rendered_page
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.rate_limiter import HostRateLimiter, wait_with_cancellation
 from src.domain.models import (
@@ -146,18 +147,23 @@ class CrawlEngine:
         cancel_event: asyncio.Event,
     ) -> None:
         _raise_if_cancelled(cancel_event)
-        # Add random pre-navigation delay to appear more human-like
+        # A small jitter avoids sending all same-host requests at exactly the
+        # same instant; the host limiter remains the primary load control.
         await wait_with_cancellation(random.uniform(0.3, 1.0), cancel_event)
         await self._rate_limiter.wait(result.task.normalized_url, cancel_event)
         try:
             async with self._browser_pool.page(cancel_event) as page:
-                # ── Smart navigation: networkidle for complete rendering ──
-                # 使用 networkidle 确保所有异步资源加载完成后再继续
-                response = await page.goto(
+                # Modern pages often keep analytics/video connections open
+                # forever. Requiring networkidle turned otherwise usable pages
+                # into navigation failures, so use DOM readiness followed by
+                # bounded, best-effort stabilization.
+                response, partial_navigation_error = await navigate_page(
+                    page,
                     result.task.normalized_url,
-                    wait_until="networkidle",
-                    timeout=self._config.page_timeout_seconds * 1000,
+                    self._config.page_timeout_seconds * 1000,
                 )
+                if partial_navigation_error is not None:
+                    result.errors.append(partial_navigation_error)
                 final_url = str(page.url)
                 status_code = int(response.status) if response is not None else None
                 redirect_chain = _redirect_chain(response, result.task.normalized_url, final_url)
@@ -171,13 +177,14 @@ class CrawlEngine:
 
                 # ── 页面稳定等待 + 模拟人类滚动行为 ──────────────────────
                 # 滚动页面以触发懒加载内容、图片等
-                await _human_scroll(page, self._config.page_stabilize_milliseconds)
+                await stabilize_rendered_page(
+                    page,
+                    self._config.page_stabilize_milliseconds,
+                    definition=self._router.definition_for(final_url),
+                )
                 _raise_if_cancelled(cancel_event)
 
-                # ── 额外等待平台特定内容加载 ─────────────────────────────
                 definition = self._router.definition_for(final_url)
-                await _wait_for_platform_marker(page, definition)
-                _raise_if_cancelled(cancel_event)
 
                 # ── 检测访问屏障（验证码、登录等）────────────────────────
                 barrier = await inspect_page_access(
@@ -203,7 +210,7 @@ class CrawlEngine:
                     if final_url and result.page.redirect_chain[-1] != final_url:
                         result.page.redirect_chain.append(final_url)
                     definition = self._router.definition_for(final_url)
-                    await _wait_for_platform_marker(page, definition)
+                    await stabilize_rendered_page(page, 0, definition=definition)
                 if barrier is not None:
                     raise CrawlFailure(
                         TaskError("access", barrier.code, barrier.message, retryable=True),
@@ -231,11 +238,6 @@ class CrawlEngine:
                 result.route = route
                 result.status = RecordStatus.ROUTED
                 self._author.finalize(extracted, route)
-                if not extracted.title and not extracted.content_text:
-                    raise CrawlFailure(
-                        TaskError("parse", "EMPTY_PAGE", "页面没有可审计的标题或正文", retryable=False),
-                        RecordStatus.NEEDS_REVIEW,
-                    )
                 try:
                     result.assets.page_screenshot = await self._shooter.capture(
                         page,
@@ -248,18 +250,27 @@ class CrawlEngine:
                         TaskError("screenshot", "PAGE_SCREENSHOT_FAILED", str(error), retryable=False),
                         RecordStatus.FAILED,
                     ) from error
-                missing = _missing_required_fields(result)
-                if missing:
+                await self._collect_optional_assets(page, result, output_dir, cancel_event)
+                if not extracted.title and not extracted.content_text:
                     raise CrawlFailure(
                         TaskError(
                             "parse",
-                            "REQUIRED_FIELDS_MISSING",
-                            f"待人工补录字段：{', '.join(missing)}",
+                            "EMPTY_PAGE",
+                            "页面没有可审计的标题或正文",
                             retryable=False,
                         ),
                         RecordStatus.NEEDS_REVIEW,
                     )
-                await self._collect_optional_assets(page, result, output_dir, cancel_event)
+                missing = _missing_required_fields(result)
+                if missing:
+                    result.errors.append(
+                        TaskError(
+                            "export_validation",
+                            "PARTIAL_FIELDS_MISSING",
+                            f"已按现有内容导出；空缺字段：{', '.join(missing)}",
+                            retryable=False,
+                        )
+                    )
                 result.status = RecordStatus.ASSETS_READY
         except CrawlFailure:
             raise
@@ -304,8 +315,15 @@ class CrawlEngine:
                     )
                 )
 
-        if not result.page.image_urls:
+        # Body images are not delivery attachments. They are downloaded only
+        # when DOM extraction found no text and OCR may recover useful content.
+        if (
+            not self._config.ocr_enabled
+            or result.page.content_text
+            or not result.page.image_urls
+        ):
             return
+        collected_files: list[Path] = []
         try:
             collected = await self._asset_collector.collect(
                 page,
@@ -314,7 +332,7 @@ class CrawlEngine:
                 output_dir,
                 cancel_event,
             )
-            result.assets.downloaded_images.extend(collected.files)
+            collected_files.extend(collected.files)
             result.errors.extend(collected.errors)
         except asyncio.CancelledError:
             raise
@@ -329,38 +347,42 @@ class CrawlEngine:
             )
             return
 
-        # ── OCR fallback: extract text from images when DOM has none ──
-        if (
-            not self._config.ocr_enabled
-            or result.page.content_text
-            or not result.assets.downloaded_images
-        ):
+        if not collected_files:
             return
 
-        _raise_if_cancelled(cancel_event)
-        ocr_text = extract_text_from_images(
-            list(result.assets.downloaded_images),
-            confidence_threshold=self._config.ocr_confidence_threshold,
-        )
-        result.page.ocr_text = ocr_text
+        try:
+            _raise_if_cancelled(cancel_event)
+            ocr_text = extract_text_from_images(
+                collected_files,
+                confidence_threshold=self._config.ocr_confidence_threshold,
+            )
+            result.page.ocr_text = ocr_text
 
-        if ocr_text and ocr_text != "无文字":
-            result.page.content_text = ocr_text
-            result.page.field_sources["content_text"] = ExtractionSource.OCR
-            logger.info(
-                "OCR extracted text from %d image(s) for evidence %d",
-                len(result.assets.downloaded_images),
-                result.task.evidence_id,
-            )
-        else:
-            result.errors.append(
-                TaskError(
-                    "ocr",
-                    "OCR_NO_TEXT",
-                    f"已下载的 {len(result.assets.downloaded_images)} 张图片中未识别到文字",
-                    retryable=False,
+            if ocr_text and ocr_text != "无文字":
+                result.page.content_text = ocr_text
+                result.page.content_summary = ocr_text[: self._config.summary_max_chars]
+                result.page.summary_truncated = len(ocr_text) > self._config.summary_max_chars
+                result.page.field_sources["content_text"] = ExtractionSource.OCR
+                logger.info(
+                    "OCR extracted text from %d temporary image(s) for evidence %d",
+                    len(collected_files),
+                    result.task.evidence_id,
                 )
-            )
+            else:
+                result.errors.append(
+                    TaskError(
+                        "ocr",
+                        "OCR_NO_TEXT",
+                        f"临时读取的 {len(collected_files)} 张图片中未识别到文字",
+                        retryable=False,
+                    )
+                )
+        finally:
+            for path in collected_files:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as error:
+                    logger.warning("Unable to remove temporary OCR image %s: %s", path, error)
 
     def _check_response(self, status_code: int | None) -> None:
         barrier = inspect_http_response(status_code)
@@ -442,45 +464,3 @@ def _raise_if_cancelled(cancel_event: asyncio.Event) -> None:
 
 def _now() -> datetime:
     return datetime.now(DEFAULT_TIMEZONE)
-
-
-async def _wait_for_platform_marker(page: Any, definition: Any) -> None:
-    if definition is None or not hasattr(page, "locator"):
-        return
-    selectors = [
-        selector
-        for field in ("content_text", "title")
-        for selector in definition.selectors.get(field, ())
-    ]
-    if not selectors:
-        return
-    try:
-        await page.locator(", ".join(selectors)).first.wait_for(state="attached", timeout=3_000)
-    except Exception:
-        return
-
-
-async def _human_scroll(page: Any, stabilize_ms: int) -> None:
-    """模拟人类滚动以触发懒加载图片等资源，参考 MediaCrawler."""
-    try:
-        scroll_height = await page.evaluate("document.body.scrollHeight")
-        viewport_height = await page.evaluate("window.innerHeight")
-        if scroll_height <= viewport_height:
-            if stabilize_ms:
-                await page.wait_for_timeout(stabilize_ms)
-            return
-        steps = min(5, max(3, scroll_height // viewport_height))
-        for i in range(1, steps + 1):
-            scroll_to = int(viewport_height * i * 0.8)
-            await page.evaluate(f"window.scrollTo(0, {scroll_to})")
-            await page.wait_for_timeout(random.randint(200, 500))
-        pause = max(stabilize_ms, 800) if stabilize_ms else 800
-        await page.wait_for_timeout(pause)
-        await page.evaluate("window.scrollTo(0, 0)")
-        await page.wait_for_timeout(random.randint(100, 300))
-    except Exception:
-        if stabilize_ms:
-            try:
-                await page.wait_for_timeout(stabilize_ms)
-            except Exception:
-                pass

@@ -49,8 +49,10 @@ class TaskConfig:
     screenshot_format: str = "jpeg"
     full_page_screenshot: bool = True
 
-    # ── Asset collection ──────────────────────────────────────────────
-    max_images_per_record: int = 20
+    # ── OCR image inputs ──────────────────────────────────────────────
+    # Page images are temporary OCR inputs only; final output contains at
+    # most the content-page and author-home screenshots.
+    max_images_per_record: int = 6
     max_image_bytes: int = 10 * 1024 * 1024
 
     # ── Content extraction ────────────────────────────────────────────
@@ -74,8 +76,8 @@ class TaskConfig:
     # 参考 MediaCrawler 的反爬虫对抗策略:
     #   - stealth.min.js 注入 (stealth)
     #   - 代理 IP 轮换 (proxy)
-    #   - User-Agent 随机化 (user_agent)
-    #   - 浏览器指纹随机化 (viewport / extra_stealth)
+    #   - 可选自定义 User-Agent (user_agent)
+    #   - 固定截图视口 (viewport)
     # ──────────────────────────────────────────────────────────────────
 
     # ── Stealth anti-detection ────────────────────────────────────────
@@ -92,12 +94,12 @@ class TaskConfig:
     proxy_url: str | None = None
 
     # ── User-Agent ────────────────────────────────────────────────────
-    # 自定义 User-Agent；设为 None 则每次创建上下文时随机选择一个
-    # 参考: MediaCrawler 的 get_user_agent() 工具函数
+    # 自定义 User-Agent；设为 None 时使用 Chromium 原生 User-Agent，
+    # 避免 UA、浏览器内核和桌面视口互相矛盾。
     user_agent: str | None = None
 
     # ── Browser fingerprint ───────────────────────────────────────────
-    # 基础视口尺寸 (会在 ±20px 范围内随机偏移)
+    # 固定视口尺寸，确保截图可复现且不会因 2x DPR 产生超大图片。
     viewport_width: int = 1440
     viewport_height: int = 900
 
