@@ -48,7 +48,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
 {"@type":"Article","headline":"Fixture Title","articleBody":"Fixture article body","author":{"name":"Fixture Author"}}
 </script>
 </head><body>
-<a rel="author" href="/author">Fixture Author</a>
+<div class="author-card"><a href="/author">Fixture Author</a></div>
 <article><h1>Fixture Title</h1><p>Fixture article body</p><img src="/image.png" alt="evidence"></article>
 </body></html>"""
         self.send_response(200)

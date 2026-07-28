@@ -12,14 +12,20 @@ from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import parse_web_published_at
 
 
-DOCUMENT_SCRIPT = """
+DOCUMENT_SCRIPT = r"""
 (platformSelectors) => {
   const text = (element) => element ? (element.innerText || element.textContent || '').trim() : '';
   const pick = (selectors, field) => {
     for (const selector of selectors || []) {
       const element = document.querySelector(selector);
       if (!element) continue;
-      if (field.endsWith('_url') && element.href) return element.href;
+      if (field.endsWith('_url')) {
+        const link = element.matches?.('a[href]')
+          ? element
+          : (element.closest?.('a[href]') || element.querySelector?.('a[href]'));
+        if (link?.href) return link.href;
+        continue;
+      }
       const value = text(element) || element.getAttribute('content') || element.getAttribute('datetime') || '';
       if (value) return value.trim();
     }
@@ -33,12 +39,58 @@ DOCUMENT_SCRIPT = """
   }
   const domSelectors = {
     content_text: ['article', '[role="main"]', 'main', '.article-content', '.post-content', '.content'],
-    author_name: ['[rel="author"]', '.author-name', '.username', '[class*="author"] [class*="name"]'],
-    author_url: ['a[rel="author"]', '.author-name a', '[class*="author"] a'],
-    published_at: ['time[datetime]', 'time', '[class*="publish-time"]', '[class*="date"]']
+    author_name: [
+      '[rel="author"]', '.author-name', '.username',
+      '[class*="author"] [class*="name"]', '[class*="user"] [class*="name"]',
+      '[class*="creator"] [class*="name"]', '[class*="owner"] [class*="name"]',
+      '[class*="nickname"]', '[data-e2e*="author"]', '[data-e2e*="user-name"]'
+    ],
+    author_url: [
+      'a[rel="author"]', '.author-name a', '[class*="author"] a',
+      '.avatar a', '.user-info a', '.profile-link',
+      '[class*="profile"] a', 'a[href*="/user/"]',
+      'a[href*="/profile/"]', 'a[href*="/author/"]',
+      'a[href*="/u/"]', 'a[href*="/space/"]',
+      '[class*="up-info"] a', '[class*="author-face"] a'
+    ],
+    published_at: [
+      'time[datetime]', 'time', '[class*="publish-time"]',
+      '[class*="date"]', '[class*="time"]', '[class*="create-time"]',
+      '[datetime]', '[class*="post-time"]',
+      '[class*="sub-time"]', '[class*="timestamp"]'
+    ]
   };
   const domValues = {};
   for (const [field, selectors] of Object.entries(domSelectors)) domValues[field] = pick(selectors, field);
+  if (!domValues.author_url) {
+    const currentUrl = new URL(location.href);
+    const candidates = Array.from(document.querySelectorAll('a[href]')).map((anchor) => {
+      let target;
+      try { target = new URL(anchor.href, location.href); } catch (_) { return null; }
+      if (!['http:', 'https:'].includes(target.protocol)) return null;
+      if (target.href.split('#')[0] === currentUrl.href.split('#')[0]) return null;
+      if (/\/(?:login|signin|register|share|search|topic|tag|comment)(?:\/|$)/i.test(target.pathname)) return null;
+      const context = [
+        anchor.getAttribute('rel') || '',
+        anchor.getAttribute('class') || '',
+        anchor.parentElement?.getAttribute('class') || '',
+        anchor.parentElement?.parentElement?.getAttribute('class') || '',
+      ].join(' ');
+      let score = 0;
+      if (/\bauthor\b/i.test(anchor.getAttribute('rel') || '')) score += 120;
+      if (/(?:author|creator|profile|user|owner|uploader|nickname|avatar|up-info)/i.test(context)) score += 60;
+      if (/\/(?:user|profile|author|u|space|people|account|member|creator|up)(?:\/|$)/i.test(target.pathname)) score += 45;
+      if (anchor.querySelector('img[alt], [class*="avatar"]')) score += 20;
+      const label = text(anchor) || anchor.getAttribute('aria-label') || anchor.querySelector('img')?.alt || '';
+      if (label && label.length <= 80) score += 10;
+      if (target.pathname === '/' || target.pathname === '') score -= 80;
+      return { href: target.href, label: label.trim(), score };
+    }).filter(Boolean).sort((left, right) => right.score - left.score);
+    if (candidates[0]?.score >= 55) {
+      domValues.author_url = candidates[0].href;
+      if (!domValues.author_name && candidates[0].label) domValues.author_name = candidates[0].label;
+    }
+  }
   domValues.text_type_hint = document.querySelector(
     '[data-content-type="comment"], [data-page-type="comment"], .comment-detail-page, [class*="commentDetail"]'
   ) ? '评论回复' : '';
@@ -120,7 +172,15 @@ class GenericExtractor:
                     node.get("articleBody") or node.get("description") or node.get("caption"),
                     ExtractionSource.JSON_LD,
                 )
-                self._set(data, "published_at_raw", node.get("datePublished") or node.get("uploadDate"), ExtractionSource.JSON_LD)
+                self._set(
+                    data,
+                    "published_at_raw",
+                    node.get("datePublished")
+                    or node.get("uploadDate")
+                    or node.get("dateCreated")
+                    or node.get("dateModified"),
+                    ExtractionSource.JSON_LD,
+                )
                 self._set(data, "store_name", _name(node.get("seller") or node.get("brand")), ExtractionSource.JSON_LD)
                 author = node.get("author") or node.get("creator")
                 self._set(data, "author_name", _name(author), ExtractionSource.JSON_LD)
@@ -136,7 +196,11 @@ class GenericExtractor:
             _first(meta, "article:body", "og:description", "twitter:description", "description"),
             ExtractionSource.META,
         )
-        self._set(data, "author_name", _first(meta, "author", "article:author", "byl"), ExtractionSource.META)
+        meta_author = _first(meta, "author", "article:author", "byl")
+        if meta_author and str(meta_author).strip().lower().startswith(("http://", "https://")):
+            self._set(data, "author_url", meta_author, ExtractionSource.META)
+        else:
+            self._set(data, "author_name", meta_author, ExtractionSource.META)
         self._set(
             data,
             "author_id",
@@ -146,7 +210,14 @@ class GenericExtractor:
         self._set(
             data,
             "published_at_raw",
-            _first(meta, "article:published_time", "datepublished", "publishdate", "date"),
+            _first(
+                meta,
+                "article:published_time", "datepublished", "publishdate", "date",
+                "datecreated", "date_created", "pubdate", "sailthru.date",
+                "weibo:date", "weibo:time", "weibo:timestamp",
+                "bytedance:published_time", "bytedance:date",
+                "bili:date", "bili:pubdate",
+            ),
             ExtractionSource.META,
         )
         for key in ("og:image", "twitter:image", "image"):
@@ -234,7 +305,12 @@ def _identifier(value: Any) -> str | None:
 def _url(value: Any) -> str | None:
     if isinstance(value, list):
         return _url(value[0]) if value else None
-    return value.get("url") if isinstance(value, dict) else None
+    if isinstance(value, str) and value.startswith(("http://", "https://", "/")):
+        return value
+    if isinstance(value, dict):
+        candidate = value.get("url") or value.get("@id") or value.get("sameAs")
+        return _url(candidate)
+    return None
 
 
 def _json_images(value: Any) -> list[str]:

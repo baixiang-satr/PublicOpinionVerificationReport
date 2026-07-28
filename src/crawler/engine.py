@@ -152,7 +152,10 @@ class CrawlEngine:
         await wait_with_cancellation(random.uniform(0.3, 1.0), cancel_event)
         await self._rate_limiter.wait(result.task.normalized_url, cancel_event)
         try:
-            async with self._browser_pool.page(cancel_event) as page:
+            async with self._browser_pool.page(
+                cancel_event,
+                result.task.normalized_url,
+            ) as page:
                 # Modern pages often keep analytics/video connections open
                 # forever. Requiring networkidle turned otherwise usable pages
                 # into navigation failures, so use DOM readiness followed by
@@ -212,10 +215,20 @@ class CrawlEngine:
                     definition = self._router.definition_for(final_url)
                     await stabilize_rendered_page(page, 0, definition=definition)
                 if barrier is not None:
+                    self._browser_pool.mark_access_invalid(
+                        page,
+                        result.task.normalized_url,
+                        barrier_code=barrier.code,
+                        message=barrier.message,
+                    )
                     raise CrawlFailure(
                         TaskError("access", barrier.code, barrier.message, retryable=True),
                         barrier.status,
                     )
+                self._browser_pool.mark_access_valid(
+                    page,
+                    result.task.normalized_url,
+                )
                 _raise_if_cancelled(cancel_event)
                 try:
                     extracted = await self._parser.extract(page, definition)
@@ -231,8 +244,18 @@ class CrawlEngine:
                 result.status = RecordStatus.CRAWLED
                 route = self._router.route(final_url, extracted)
                 if route is None:
+                    unsupported_message = getattr(
+                        self._router,
+                        "unsupported_message",
+                        lambda _url: "未匹配模板允许的平台",
+                    )
                     raise CrawlFailure(
-                        TaskError("route", "ROUTE_UNSUPPORTED", "未匹配模板允许的平台", retryable=False),
+                        TaskError(
+                            "route",
+                            "ROUTE_UNSUPPORTED",
+                            unsupported_message(final_url),
+                            retryable=False,
+                        ),
                         RecordStatus.NEEDS_REVIEW,
                     )
                 result.route = route

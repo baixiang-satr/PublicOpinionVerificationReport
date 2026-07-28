@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from typing import Any
 
@@ -51,10 +52,12 @@ async def stabilize_rendered_page(
     *,
     definition: Any = None,
 ) -> None:
-    """Trigger bounded lazy loading, then wait briefly for platform content."""
+    """Trigger bounded lazy loading, wait briefly for platform content, then
+    wait for images to finish loading."""
 
-    await _scroll_for_lazy_content(page, stabilize_milliseconds)
     await _wait_for_platform_marker(page, definition)
+    await _scroll_for_lazy_content(page, stabilize_milliseconds)
+    await _wait_for_images_loaded(page)
 
 
 async def _wait_for_platform_marker(page: Any, definition: Any) -> None:
@@ -69,7 +72,7 @@ async def _wait_for_platform_marker(page: Any, definition: Any) -> None:
         return
     try:
         await page.locator(", ".join(selectors)).first.wait_for(
-            state="attached",
+            state="visible",
             timeout=3_000,
         )
     except Exception:
@@ -78,15 +81,19 @@ async def _wait_for_platform_marker(page: Any, definition: Any) -> None:
 
 async def _scroll_for_lazy_content(page: Any, stabilize_milliseconds: int) -> None:
     try:
-        scroll_height = await page.evaluate("document.body.scrollHeight")
-        viewport_height = await page.evaluate("window.innerHeight")
+        scroll_height = int(await page.evaluate("document.body.scrollHeight") or 0)
+        viewport_height = int(await page.evaluate("window.innerHeight") or 0)
+        if viewport_height <= 0:
+            return
         if scroll_height <= viewport_height:
             if stabilize_milliseconds:
                 await page.wait_for_timeout(stabilize_milliseconds)
             return
-        steps = min(5, max(3, scroll_height // viewport_height))
+        steps = min(8, max(3, math.ceil(scroll_height / viewport_height)))
         for index in range(1, steps + 1):
-            scroll_to = int(viewport_height * index * 0.8)
+            current_height = int(await page.evaluate("document.body.scrollHeight") or scroll_height)
+            max_scroll = max(0, current_height - viewport_height)
+            scroll_to = int(max_scroll * index / steps)
             await page.evaluate(f"window.scrollTo(0, {scroll_to})")
             await page.wait_for_timeout(random.randint(200, 500))
         await page.wait_for_timeout(max(stabilize_milliseconds, 800))
@@ -98,6 +105,21 @@ async def _scroll_for_lazy_content(page: Any, stabilize_milliseconds: int) -> No
                 await page.wait_for_timeout(stabilize_milliseconds)
             except Exception:
                 pass
+
+
+async def _wait_for_images_loaded(page: Any) -> None:
+    """Best-effort wait for images to finish loading after lazy scroll."""
+    if not hasattr(page, "evaluate"):
+        return
+    try:
+        await page.wait_for_function(
+            """() =>
+                Array.from(document.images).every(img => img.complete)
+            """,
+            timeout=4_000,
+        )
+    except Exception:
+        pass
 
 
 async def _has_rendered_content(page: Any) -> bool:

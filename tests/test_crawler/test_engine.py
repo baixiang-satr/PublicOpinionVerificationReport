@@ -50,9 +50,22 @@ class FakeBrowserPool:
         self.closed = True
 
     @asynccontextmanager
-    async def page(self, _cancel_event: object):
+    async def page(self, _cancel_event: object, _url: str | None = None):
         self.page_count += 1
         yield FakePage(self._statuses.pop(0), self._final_url)
+
+    def mark_access_valid(self, _page: FakePage, _url: str) -> None:
+        return None
+
+    def mark_access_invalid(
+        self,
+        _page: FakePage,
+        _url: str,
+        *,
+        barrier_code: str,
+        message: str,
+    ) -> None:
+        return None
 
 
 class StubParser:

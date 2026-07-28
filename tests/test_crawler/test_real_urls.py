@@ -274,6 +274,7 @@ async def test_crawl_real_url(name: str, url: str, sheet: str, description: str,
         print(f"状态码: {page.status_code}")
         print(f"标题: {page.title}")
         print(f"作者: {page.author_name}")
+        print(f"作者主页: {page.author_url}")
         print(f"内容摘要: {(page.content_summary or page.content_text or '')[:100]}...")
 
     if route:
@@ -288,6 +289,11 @@ async def test_crawl_real_url(name: str, url: str, sheet: str, description: str,
         print(f"截图: {screenshot} ({screenshot.stat().st_size} bytes)")
     else:
         print("截图: 无")
+    if result.assets.author_screenshot:
+        author_screenshot = result.assets.author_screenshot
+        print(f"主页截图: {author_screenshot} ({author_screenshot.stat().st_size} bytes)")
+    else:
+        print("主页截图: 无")
 
     print(f"{'='*60}\n")
 

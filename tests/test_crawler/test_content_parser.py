@@ -120,3 +120,56 @@ def test_author_extractor_resolves_relative_home_url() -> None:
     )
 
     assert data.author_url == "https://news.example.test/people/7"
+
+
+@pytest.mark.asyncio
+async def test_content_parser_does_not_guess_publish_date_from_url() -> None:
+    class DatePathPage(FakePage):
+        url = "https://news.example.test/article/2026/07/28/story"
+
+        async def evaluate(self, _script: str, _selectors: object) -> dict:
+            return {
+                "url": self.url,
+                "title": "Date path article",
+                "visibleText": "Body",
+                "canonicalUrl": self.url,
+                "meta": {},
+                "jsonLd": [],
+                "domValues": {},
+                "platformValues": {},
+                "images": [],
+            }
+
+    definition = find_platform("https://www.sohu.com/a/123")
+    assert definition is not None
+    data = await ContentParser().extract(DatePathPage(), definition)
+
+    assert data.published_at_raw is None
+    assert data.published_at is None
+
+
+@pytest.mark.asyncio
+async def test_commerce_parser_falls_back_from_author_to_store_name() -> None:
+    class CommercePage(FakePage):
+        url = "https://www.goofish.com/item?id=1"
+
+        async def evaluate(self, _script: str, _selectors: object) -> dict:
+            return {
+                "url": self.url,
+                "title": "闲鱼商品",
+                "visibleText": "商品描述",
+                "canonicalUrl": self.url,
+                "meta": {},
+                "jsonLd": [],
+                "domValues": {"author_name": "闲鱼卖家"},
+                "platformValues": {},
+                "images": [],
+            }
+
+    definition = find_platform(CommercePage.url)
+    assert definition is not None
+
+    data = await ContentParser().extract(CommercePage(), definition)
+
+    assert data.store_name == "闲鱼卖家"
+    assert data.field_sources["store_name"] == ExtractionSource.GENERIC_DOM

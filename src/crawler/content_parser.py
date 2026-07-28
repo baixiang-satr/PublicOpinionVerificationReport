@@ -6,7 +6,7 @@ from typing import Any
 
 from src.crawler.extractors.catalog import CatalogPlatformExtractor
 from src.crawler.extractors.generic import GenericExtractor
-from src.crawler.platform_catalog import PlatformDefinition
+from src.crawler.platform_catalog import ExtractorFamily, PlatformDefinition
 from src.domain.models import PageData
 
 
@@ -36,6 +36,11 @@ class ContentParser:
             return fallback
         primary = self._platform.extract(document, definition)
         merged = self._merge(primary, fallback)
+        if definition.family == ExtractorFamily.COMMERCE and not merged.store_name:
+            # C2C product pages often expose the seller only as an author/user.
+            merged.store_name = merged.author_name
+            if "author_name" in merged.field_sources:
+                merged.field_sources["store_name"] = merged.field_sources["author_name"]
         self._generic.finalize(merged)
         return merged
 
