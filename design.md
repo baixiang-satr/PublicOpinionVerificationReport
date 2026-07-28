@@ -276,7 +276,8 @@ src/
 | 抓取 | `max_retries` | 2 | 仅网络超时、429、5xx 等可重试错误。 |
 | 抓取 | `min_host_interval_seconds` | 1.0 | 同一域名请求的最小间隔。 |
 | 浏览器 | `headless` | `True` | 可由 GUI 覆盖。 |
-| 浏览器 | `storage_state_path` | `None` | 用户显式提供的登录态，不写入日志或 ZIP。 |
+| 浏览器 | `auth_store_dir` | 用户本机应用数据目录 | 34 平台独立的 DPAPI 加密登录态与脱敏索引。 |
+| 浏览器 | `storage_state_path` | 用户本机应用数据目录 | 旧版综合登录态，仅作兼容迁移来源。 |
 | 浏览器 | `manual_intervention_timeout_seconds` | 90 | 仅可视模式下等待用户完成登录/验证，范围 0-600 秒。 |
 | 截图 | `screenshot_format` | `jpeg` | 仅 `jpeg` 或 `png`。 |
 | 截图 | `full_page` | `True` | 全页截图开关。 |
@@ -311,7 +312,11 @@ src/
 
 ### 6.4 爬虫与浏览器池
 
-`CrawlEngine` 管理一个共享 Chromium 实例，并在并发上限内为每次 URL 尝试创建隔离的 browser context。context 负责访问页面、读取响应状态、提取渲染后 DOM 和生成主截图，并在本次尝试结束后关闭；批任务结束时统一关闭 Chromium 和 Playwright。
+`CrawlEngine` 管理一个共享 Chromium 实例，但 browser context 按认证范围隔离。公开页面使用游客 context；存在已复验状态时使用 `profile:<platform_key>` context；旧版综合状态只在对应平台尚未建立独立状态时作为兼容回退。内容页与作者主页可共享同一平台 context，不同平台不得共享 Cookie/localStorage。
+
+`AuthManagerService` 为 34 个平台维护固定策略和验证 URL。状态机为 `UNKNOWN -> PROBING -> GUEST_OK / AUTH_REQUIRED / CHALLENGE / INVALID_URL`；人工处理后进入 `VALIDATING`，仅当候选 storage state 在全新 context 中重新打开验证 URL 且不再命中访问屏障时，才进入 `VALID` 并原子提交。已有状态再次命中登录墙时进入 `EXPIRED`。内容失效、空页面、解析错误和导出错误不得据此判定登录态过期。
+
+Windows 状态正文使用当前用户 DPAPI 加密，索引只保存平台、状态、脱敏手机号、验证时间和错误码。手机号仅在登录态管理窗口内存中短暂存在；程序不保存验证码或密码，也不点击“发送验证码”。旧版 JSON 迁移时先按平台域名过滤，再经新 context 复验。
 
 ```python
 class CrawlEngine:

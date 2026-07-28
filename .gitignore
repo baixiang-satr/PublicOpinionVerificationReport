@@ -47,6 +47,9 @@ logs/
 browser_data/
 playwright_data/
 selenium_data/
+*.dpapi
+auth_index.json
+login_state.json
 
 # =============================================================================
 # 环境变量文件（敏感信息）

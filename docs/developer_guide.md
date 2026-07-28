@@ -26,6 +26,7 @@ playwright install chromium
 
 | 模块 | 职责 | 不应承担的职责 |
 | --- | --- | --- |
+| `auth/` | 平台策略、游客探测、人工登录接力、新 context 复验和加密状态 | 保存验证码/密码、跨平台共享状态、未经复验直接提交。 |
 | `input/` | 读取用户文件、抽取和稳定去重 URL | 路由平台、写 Excel。 |
 | `crawler/` | 页面访问、限速、重试、字段提取和平台路由 | 直接生成模板行或控制 GUI。 |
 | `screenshot/` | 管理浏览器 context、主截图、主页截图和临时 OCR 图片 | 决定 Excel 列。 |
@@ -75,7 +76,7 @@ python tools/release_check.py
 - 模板契约测试：仅在 Windows + Microsoft Excel 环境运行，验证源模板哈希、工作表顺序、首行、数据验证、保护和附件引用不变。
 - 端到端契约测试：本地 HTTP fixture 经 Playwright、TaskRunner 和真实 Excel COM 生成最终 ZIP。
 
-真实站点诊断测试标记为 `external` 并默认跳过；只有显式设置 `POR_RUN_EXTERNAL_TESTS=1` 时才运行。普通测试不得使用真实 Cookie 或写入源 `template/`。
+真实站点诊断测试标记为 `external` 并默认跳过；只有显式设置 `POR_RUN_EXTERNAL_TESTS=1` 时才运行。普通测试不得使用真实 Cookie 或写入源 `template/`。认证测试使用假保护器验证密文边界；Windows DPAPI 只做本机往返验证，测试输出不得包含 Cookie/Token 明文。
 
 `tools/release_check.py` 会解析全部 Python 文件、检查 500 行上限、验证 Markdown 本地链接、输出源模板指纹，并可通过 `--archive <path>` 检查 ZIP 路径和运行态文件泄漏。
 

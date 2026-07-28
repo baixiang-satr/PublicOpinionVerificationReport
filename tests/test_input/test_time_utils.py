@@ -18,3 +18,13 @@ def test_parse_web_time_supports_iso_unix_and_chinese_relative_values() -> None:
     assert parse_web_published_at("30分钟前", now=reference) == parse_published_at("2026-07-28 11:30:00")
     assert parse_web_published_at("昨天 08:15", now=reference) == parse_published_at("2026-07-27 08:15:00")
     assert parse_web_published_at(1785204000) is not None
+
+
+def test_parse_web_time_extracts_absolute_time_from_label_text() -> None:
+    parsed = parse_web_published_at("发布时间：2026/07/28 10:30 来源：中国日报")
+
+    assert parsed == parse_published_at("2026-07-28 10:30:00")
+
+
+def test_parse_web_time_rejects_implausible_numeric_ids() -> None:
+    assert parse_web_published_at("9999999999") is None

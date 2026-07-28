@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone as fixed_timezone, tzinfo
+from email.utils import parsedate_to_datetime
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -16,8 +17,11 @@ DATETIME_FORMATS = (
     "%Y/%m/%d %H:%M:%S",
     "%Y-%m-%d %H:%M",
     "%Y/%m/%d %H:%M",
+    "%Y.%m.%d %H:%M:%S",
+    "%Y.%m.%d %H:%M",
     "%Y-%m-%d",
     "%Y/%m/%d",
+    "%Y.%m.%d",
 )
 
 
@@ -58,15 +62,30 @@ def parse_web_published_at(
         return None
     if isinstance(value, datetime):
         return parse_published_at(value, timezone)
+    reference = now or datetime.now(timezone)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone)
     if isinstance(value, (int, float)) or re.fullmatch(r"\d{10,13}", str(value).strip()):
-        timestamp = float(value)
-        if timestamp > 10_000_000_000:
-            timestamp /= 1000
-        return datetime.fromtimestamp(timestamp, timezone)
+        try:
+            timestamp = float(value)
+            if timestamp > 10_000_000_000:
+                timestamp /= 1000
+            parsed = datetime.fromtimestamp(timestamp, timezone)
+        except (OSError, OverflowError, ValueError):
+            return None
+        if not datetime(1990, 1, 1, tzinfo=timezone) <= parsed <= reference + timedelta(days=2):
+            return None
+        return parsed
     text = str(value).strip()
     try:
         return parse_published_at(datetime.fromisoformat(text.replace("Z", "+00:00")), timezone)
     except ValueError:
+        pass
+    try:
+        rfc_value = parsedate_to_datetime(text)
+        if rfc_value is not None:
+            return parse_published_at(rfc_value, timezone)
+    except (TypeError, ValueError, OverflowError):
         pass
     normalized = text.replace("年", "-").replace("月", "-").replace("日", " ").replace("T", " ").strip()
     normalized = re.sub(r"\s+", " ", normalized)
@@ -74,9 +93,24 @@ def parse_web_published_at(
         return parse_published_at(normalized, timezone)
     except ValueError:
         pass
-    reference = now or datetime.now(timezone)
-    if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=timezone)
+    absolute_match = re.search(
+        r"(?<!\d)((?:19|20)\d{2})[-/.](\d{1,2})[-/.](\d{1,2})"
+        r"(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?(?!\d)",
+        normalized,
+    )
+    if absolute_match:
+        try:
+            return datetime(
+                year=int(absolute_match.group(1)),
+                month=int(absolute_match.group(2)),
+                day=int(absolute_match.group(3)),
+                hour=int(absolute_match.group(4) or 0),
+                minute=int(absolute_match.group(5) or 0),
+                second=int(absolute_match.group(6) or 0),
+                tzinfo=timezone,
+            )
+        except ValueError:
+            pass
     if text in {"刚刚", "刚才"}:
         return reference.replace(microsecond=0)
     for pattern, unit in ((r"(\d+)\s*分钟前", "minutes"), (r"(\d+)\s*小时前", "hours"), (r"(\d+)\s*天前", "days")):

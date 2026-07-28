@@ -48,6 +48,9 @@ class TaskConfig:
     # ── Screenshot ────────────────────────────────────────────────────
     screenshot_format: str = "jpeg"
     full_page_screenshot: bool = True
+    max_full_page_screenshot_height: int = 4_096
+    screenshot_jpeg_quality: int = 90
+    long_page_jpeg_quality: int = 82
 
     # ── OCR image inputs ──────────────────────────────────────────────
     # Page images are temporary OCR inputs only; final output contains at
@@ -63,7 +66,10 @@ class TaskConfig:
 
     # ── Browser mode ──────────────────────────────────────────────────
     headless: bool = True
+    # Legacy combined Playwright state. New verified states live in
+    # auth_store_dir and are isolated by platform.
     storage_state_path: Path | None = None
+    auth_store_dir: Path | None = None
     manual_intervention_timeout_seconds: int = 90
 
     # ── Author / OCR ──────────────────────────────────────────────────
@@ -121,6 +127,13 @@ class TaskConfig:
             raise ValueError("page_stabilize_milliseconds cannot be negative.")
         if self.screenshot_format not in {"jpeg", "png"}:
             raise ValueError("screenshot_format must be jpeg or png.")
+        if not 1_024 <= self.max_full_page_screenshot_height <= 32_767:
+            raise ValueError("max_full_page_screenshot_height must be between 1024 and 32767.")
+        if not 1 <= self.long_page_jpeg_quality <= self.screenshot_jpeg_quality <= 100:
+            raise ValueError(
+                "JPEG qualities must satisfy 1 <= long_page_jpeg_quality "
+                "<= screenshot_jpeg_quality <= 100."
+            )
         if self.max_images_per_record < 0 or self.max_image_bytes <= 0:
             raise ValueError("Image limits must be non-negative and positive respectively.")
         if not 1 <= self.summary_max_chars <= 32_767:
@@ -171,8 +184,27 @@ class AppConfig:
             ),
             screenshot_format=os.getenv("POR_SCREENSHOT_FORMAT", defaults.task.screenshot_format),
             full_page_screenshot=_bool_env("POR_FULL_PAGE_SCREENSHOT", defaults.task.full_page_screenshot),
+            max_full_page_screenshot_height=int(
+                os.getenv(
+                    "POR_MAX_FULL_PAGE_SCREENSHOT_HEIGHT",
+                    defaults.task.max_full_page_screenshot_height,
+                )
+            ),
+            screenshot_jpeg_quality=int(
+                os.getenv("POR_SCREENSHOT_JPEG_QUALITY", defaults.task.screenshot_jpeg_quality)
+            ),
+            long_page_jpeg_quality=int(
+                os.getenv("POR_LONG_PAGE_JPEG_QUALITY", defaults.task.long_page_jpeg_quality)
+            ),
             headless=_bool_env("POR_HEADLESS", defaults.task.headless),
-            storage_state_path=_path_from_environment("POR_STORAGE_STATE_PATH"),
+            storage_state_path=(
+                _path_from_environment("POR_STORAGE_STATE_PATH")
+                or _default_storage_state_path()
+            ),
+            auth_store_dir=(
+                _path_from_environment("POR_AUTH_STORE_DIR")
+                or default_auth_store_dir()
+            ),
             manual_intervention_timeout_seconds=int(
                 os.getenv(
                     "POR_MANUAL_INTERVENTION_TIMEOUT_SECONDS",
@@ -206,3 +238,24 @@ def _parse_extra_args(raw: str) -> tuple[str, ...]:
 def _path_from_environment(name: str) -> Path | None:
     value = os.getenv(name)
     return Path(value).expanduser() if value else None
+
+
+def _default_storage_state_path() -> Path:
+    """Return a user-local login-state file that is not included in exports."""
+
+    return _local_app_data_root() / "login_state.json"
+
+
+def default_auth_store_dir() -> Path:
+    """Return the per-platform encrypted authentication store directory."""
+
+    return _local_app_data_root() / "auth"
+
+
+def _local_app_data_root() -> Path:
+    if os.name == "nt":
+        local_data = os.getenv("LOCALAPPDATA")
+        root = Path(local_data) if local_data else Path.home() / "AppData" / "Local"
+    else:
+        root = Path(os.getenv("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return root / "PublicOpinionVerificationReport"

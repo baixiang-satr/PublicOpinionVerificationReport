@@ -53,6 +53,7 @@ python -m src.main
 
 ```text
 src/
+├── auth/                   # 34 平台登录策略、游客探测、DPAPI 状态存储与复验
 ├── config/                 # 不可变模板配置与可覆盖任务配置
 ├── domain/                 # 任务、抓取结果、模板结构模型
 ├── input/                  # TXT / CSV / 普通 XLSX 的 URL 导入
@@ -95,7 +96,9 @@ python -m pytest -m "not excel and not external"
 
 `references/MediaCrawler-main` 的任务生命周期、资源清理、浏览器上下文和平台适配器设计被吸收；`MediaCrawler-new-main` 提供了保持骨架精简的思路；浏览器插件帮助确认模板字段、示例行和截图附件关联。
 
-本项目不采用参考项目中的代理池、自动化隐匿、验证码破解、默认 CDP 连接用户浏览器、重建单工作表或多数据库输出方案。默认使用隔离的 Playwright context；用户可显式提供自己的合法登录态，或选择可视模式，在 90 秒人工处理窗口内完成登录/验证。
+登录态采用“游客优先、逐平台隔离”的方式管理：先对 34 个模板平台执行游客探测；只有明确要求登录或触发人工验证的平台，才由用户在平台官方页面完成手机号登录、验证码或扫码。候选会话必须在全新的 Playwright context 中复验成功，才会按平台写入 Windows 当前用户 DPAPI 加密存储。抓取时不同平台不共享 context；旧版综合 `storage_state` JSON 只作为兼容迁移来源。
+
+手机号输入框只是可选的辅助填写，不会自动发送验证码；验证码、密码和扫码信息只在平台页面中处理。状态索引只记录脱敏手机号、验证时间和错误码，不保存明文 Cookie/Token，也不会进入日志或 `template.zip`。
 
 ## 合规边界
 
