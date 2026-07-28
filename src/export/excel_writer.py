@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass
 import multiprocessing as mp
 import os
 from pathlib import Path
@@ -15,6 +14,11 @@ from typing import Any
 from src.domain.models import TemplateRow
 from src.domain.template_schema import SHEET_LAYOUTS, SHEET_ORDER, SheetLayout, expected_validation_formula
 from src.utils.file_utils import split_attachment_names
+from src.export.writer_models import (
+    TemplateIntegrityError,
+    WorkbookInspection,
+    WorkbookWriteResult,
+)
 
 
 XL_VALIDATE_LIST = 3
@@ -24,22 +28,6 @@ EXCEL_BUSY_RETRY_COUNT = 3
 
 class ExcelAutomationUnavailable(RuntimeError):
     """Raised when pywin32 or a local Microsoft Excel automation server is unavailable."""
-
-
-class TemplateIntegrityError(RuntimeError):
-    """Raised when a staging workbook no longer matches the fixed template contract."""
-
-
-@dataclass(frozen=True)
-class WorkbookInspection:
-    sheet_names: tuple[str, ...]
-    referenced_assets: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class WorkbookWriteResult:
-    workbook_path: Path
-    inspection: WorkbookInspection
 
 
 class ExcelTemplateWriter:
@@ -213,6 +201,42 @@ class ExcelTemplateWriter:
 
     @staticmethod
     def _write_sheet_rows(sheet: Any, layout: SheetLayout, rows: list[TemplateRow]) -> None:
+        if not rows:
+            return
+        if not hasattr(sheet, "Range"):
+            ExcelTemplateWriter._write_sheet_rows_cellwise(sheet, layout, rows)
+            return
+        columns = sorted(
+            {column for row in rows for column in row.values_by_column},
+            key=layout.column_number,
+        )
+        for column in columns:
+            column_number = layout.column_number(column)
+            start = sheet.Cells(layout.data_start_row, column_number)
+            end = sheet.Cells(layout.data_start_row + len(rows) - 1, column_number)
+            target = sheet.Range(start, end)
+            locked = target.Locked
+            if bool(sheet.ProtectContents) and (
+                locked is None or bool(locked)
+            ):
+                ExcelTemplateWriter._write_column_cellwise(
+                    sheet,
+                    layout,
+                    rows,
+                    column,
+                )
+                continue
+            target.Value = tuple(
+                (row.values_by_column.get(column),)
+                for row in rows
+            )
+
+    @staticmethod
+    def _write_sheet_rows_cellwise(
+        sheet: Any,
+        layout: SheetLayout,
+        rows: list[TemplateRow],
+    ) -> None:
         for offset, row in enumerate(rows):
             target_row = layout.data_start_row + offset
             for column, value in row.values_by_column.items():
@@ -220,6 +244,24 @@ class ExcelTemplateWriter:
                 if bool(sheet.ProtectContents) and bool(cell.Locked):
                     raise TemplateIntegrityError(f"Template input cell is locked: {layout.name}!{column}{target_row}")
                 cell.Value = value
+
+    @staticmethod
+    def _write_column_cellwise(
+        sheet: Any,
+        layout: SheetLayout,
+        rows: list[TemplateRow],
+        column: str,
+    ) -> None:
+        for offset, row in enumerate(rows):
+            if column not in row.values_by_column:
+                continue
+            target_row = layout.data_start_row + offset
+            cell = sheet.Cells(target_row, layout.column_number(column))
+            if bool(cell.Locked):
+                raise TemplateIntegrityError(
+                    f"Template input cell is locked: {layout.name}!{column}{target_row}"
+                )
+            cell.Value = row.values_by_column[column]
 
     @staticmethod
     def _read_sheet_assets(sheet: Any, layout: SheetLayout) -> set[str]:
