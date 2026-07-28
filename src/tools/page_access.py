@@ -33,6 +33,7 @@ class AccessBarrier:
     retryable: bool = False
 
 
+# ── 验证码 URL 特征 ────────────────────────────────────────────────────
 _CAPTCHA_URL_MARKERS = (
     "wappass.baidu.com/static/captcha",
     "/captcha",
@@ -40,7 +41,14 @@ _CAPTCHA_URL_MARKERS = (
     "x5sec",
     "/safeverify",
     "/security-check",
+    "geetest",
+    "slide.captcha",
+    "hcaptcha",
+    "recaptcha",
+    "turnstile",
 )
+
+# ── 登录 URL 特征 ──────────────────────────────────────────────────────
 _LOGIN_URL_MARKERS = (
     "/login",
     "/signin",
@@ -49,13 +57,21 @@ _LOGIN_URL_MARKERS = (
     "passport.",
     "login.",
     "account.",
+    "/auth/",
 )
+
+# ── 风控/限制 URL 特征 ─────────────────────────────────────────────────
 _RESTRICTED_URL_MARKERS = (
     "risk.jd.com",
     "/risk",
     "/challenge",
     "/anti-bot",
+    "/block",
+    "/deny",
+    "/verify",
 )
+
+# ── 验证码文本特征 ─────────────────────────────────────────────────────
 _CAPTCHA_TEXT_MARKERS = (
     "请输入验证码",
     "图形验证码",
@@ -64,7 +80,16 @@ _CAPTCHA_TEXT_MARKERS = (
     "完成安全验证",
     "verify you are human",
     "captcha",
+    "滑块拼图",
+    "点击按钮进行验证",
+    "安全验证",
+    "人机验证",
+    "拖动下方滑块完成拼图",
+    "请完成安全验证",
+    "滑动拼图验证",
 )
+
+# ── 登录文本特征 ───────────────────────────────────────────────────────
 _LOGIN_TEXT_MARKERS = (
     "请先登录",
     "登录后查看",
@@ -73,7 +98,13 @@ _LOGIN_TEXT_MARKERS = (
     "微博访客",
     "sign in to continue",
     "log in to continue",
+    "使用微信扫码登录",
+    "登录即代表同意",
+    "手机号登录",
+    "验证码登录",
 )
+
+# ── 风控文本特征 ───────────────────────────────────────────────────────
 _RESTRICTED_TEXT_MARKERS = (
     "访问异常",
     "请求异常",
@@ -82,13 +113,27 @@ _RESTRICTED_TEXT_MARKERS = (
     "操作存在风险",
     "unusual traffic",
     "access denied",
+    "请求太快了",
+    "操作频率过高",
+    "休息一下",
+    "前方拥挤",
+    "刷新试试",
+    "检测到异常访问",
+    "访问被拒绝",
+    "你的访问受到限制",
+    "账号存在风险",
+    "操作过于频繁",
 )
+
+# ── JavaScript 文本特征 ────────────────────────────────────────────────
 _JAVASCRIPT_TEXT_MARKERS = (
     "需要允许该网站执行 javascript",
     "请启用 javascript",
     "enable javascript",
     "javascript is required",
 )
+
+# ── 内容不可用文本特征 ─────────────────────────────────────────────────
 _UNAVAILABLE_TEXT_MARKERS = (
     "笔记不存在",
     "内容不存在",
@@ -99,6 +144,10 @@ _UNAVAILABLE_TEXT_MARKERS = (
     "内容已下线",
     "页面已失效",
     "404 not found",
+    "该内容已被删除",
+    "页面不存在或已删除",
+    "内容找不到了",
+    "该内容暂时无法查看",
 )
 _HOME_PATHS = {"", "/", "/index.html", "/home", "/home/"}
 
