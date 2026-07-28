@@ -72,6 +72,10 @@ _FAILURE_ADVICE: dict[str, str] = {
     ),
     # 导航超时 / 失败
     "NAVIGATION_TIMEOUT": "页面加载超时，可增大「单个页面最长等待时间」参数后重试。",
+    "PAGE_PROCESSING_TIMEOUT": (
+        "页面脚本、截图或解析超过单条记录硬超时，程序已跳过该条并继续后续 URL，"
+        "避免整批任务卡死。"
+    ),
     "NAVIGATION_PARTIAL_TIMEOUT": "页面加载部分超时，但已取得可读内容，不影响导出。",
     "NAVIGATION_FAILED": "页面导航失败，请检查 URL 是否正确、网络是否连通。",
     # 解析
@@ -83,12 +87,23 @@ _FAILURE_ADVICE: dict[str, str] = {
     "PAGE_SCREENSHOT_FAILED": "页面截图失败，可能是页面未完整加载。",
     "AUTHOR_SCREENSHOT_FAILED": "作者主页截图失败。",
     "AUTHOR_ACCESS_RESTRICTED": "作者主页要求登录或验证，无法截图。",
+    "AUTHOR_IDENTITY_MISMATCH": "主页昵称或账号 ID 与正文作者不一致，已拒绝该截图。",
+    "AUTHOR_CONTENT_NOT_READY": "作者主页没有渲染出可核验的身份信息或实质内容。",
+    "AUTHOR_HTTP_ERROR": "作者主页返回 HTTP 错误，不生成主页附件。",
     # OCR
-    "OCR_NO_TEXT": "图片 OCR 未识别到文字，可能图片不含文字或清晰度不够。",
+    "IMAGE_ONLY_NO_TEXT": "OCR 已成功执行，正文图片中未识别到文字，已写入明确标记。",
+    "OCR_UNAVAILABLE": "独立 Python 3.12 OCR 工作进程不可用，请检查 OCR 环境配置。",
+    "OCR_TIMEOUT": "OCR 工作进程超时，可单独重试该记录。",
+    "OCR_FAILED": "OCR 图片、模型或进程发生异常，可单独重试该记录。",
+    "OPTIONAL_ENRICHMENT_TIMEOUT": (
+        "主页截图、正文图片或 OCR 补充超过独立预算；正文和主截图已保留，"
+        "可稍后只重试该证据编号。"
+    ),
     # 模板导出
     "TEMPLATE_CAPACITY_EXCEEDED": "对应工作表已写满，无法写入更多记录。",
     "ROW_MAPPING_FAILED": "记录无法映射到模板列，请联系开发者检查。",
     "PARTIAL_FIELDS_MISSING": "部分字段缺失但已按现有内容导出，不影响交付。",
+    "CONTENT_TRUNCATED_FOR_EXCEL": "正文超过 Excel 单元格安全上限，已保留前 32000 字并记录原始长度。",
     # 通用
     "CANCELLED": "任务已被用户取消。",
     "UNEXPECTED": "发生未知错误，请查看运行日志获取详情。",

@@ -18,10 +18,17 @@ class JobRequest:
     sheet_name: str | None = None
     job_id: str | None = None
     label: str = "批量抓取"
+    resume_checkpoint_path: Path | None = None
+    reexport_only: bool = False
+    retry_evidence_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.input_path is None) == (not self.tasks):
             raise ValueError("JobRequest requires either input_path or tasks.")
+        if self.reexport_only and self.resume_checkpoint_path is None:
+            raise ValueError("reexport_only requires resume_checkpoint_path.")
+        if any(evidence_id < 1 for evidence_id in self.retry_evidence_ids):
+            raise ValueError("retry_evidence_ids must be positive.")
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,7 @@ class JobResult:
     quality_report_path: Path | None = None
     quality_summary_path: Path | None = None
     manual_entry_path: Path | None = None
+    checkpoint_path: Path | None = None
 
     @property
     def retryable_tasks(self) -> tuple[UrlTask, ...]:

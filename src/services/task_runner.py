@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-import shutil
 from typing import Any
 from uuid import uuid4
 
@@ -23,9 +21,11 @@ from src.domain.models import (
     UrlTask,
 )
 from src.export.excel_writer import ExcelAutomationUnavailable, ExcelTemplateWriter, TemplateIntegrityError
+from src.export.ooxml_writer import OoxmlTemplateWriter
 from src.export.package_validator import validate_template_assets
 from src.export.packager import create_template_archive
 from src.export.row_mapper import TemplateRowMapper, TemplateRowMappingError
+from src.export.staging_assets import cleanup_staging_assets
 from src.export.template_manager import PreparedTemplate, TemplateManager
 from src.input.reader import InputReadError, read_url_input
 from src.services.models import (
@@ -36,8 +36,9 @@ from src.services.models import (
     ProgressSnapshot,
     RunnerCallbacks,
 )
+from src.services.checkpoint_store import CheckpointStore
+from src.services.retained_records import prepare_retained_records
 from src.utils.time_utils import DEFAULT_TIMEZONE
-from src.utils.file_utils import require_safe_file_name
 from src.screenshot.browser import BrowserUnavailableError
 from src.tools.quality_report import QualityArtifacts, write_quality_artifacts
 
@@ -53,7 +54,7 @@ class TaskRunner:
         template_manager: TemplateManager | None = None,
         engine_factory: Callable[[TaskConfig], CrawlEngine] | None = None,
         row_mapper: TemplateRowMapper | None = None,
-        excel_writer: ExcelTemplateWriter | None = None,
+        excel_writer: ExcelTemplateWriter | OoxmlTemplateWriter | None = None,
         platform_router: PlatformRouter | None = None,
         asset_validator: Callable[..., Any] = validate_template_assets,
         packager: Callable[..., Path] = create_template_archive,
@@ -61,8 +62,12 @@ class TaskRunner:
         self._config = config
         self._template_manager = template_manager or TemplateManager(config.template)
         self._engine_factory = engine_factory or CrawlEngine
-        self._row_mapper = row_mapper or TemplateRowMapper()
-        self._excel_writer = excel_writer or ExcelTemplateWriter(config.template.workbook_name)
+        self._row_mapper = row_mapper or TemplateRowMapper(
+            config.task.export_content_max_chars
+        )
+        self._excel_writer = excel_writer or OoxmlTemplateWriter(
+            config.template.workbook_name
+        )
         self._platform_router = platform_router or PlatformRouter()
         self._asset_validator = asset_validator
         self._packager = packager
@@ -76,6 +81,7 @@ class TaskRunner:
         callbacks = callbacks or RunnerCallbacks()
         cancellation = cancel_event or asyncio.Event()
         prepared: PreparedTemplate | None = None
+        checkpoint: CheckpointStore | None = None
         try:
             tasks, rejected_count = await self._resolve_tasks(request)
             if not tasks:
@@ -84,17 +90,32 @@ class TaskRunner:
             _call(callbacks.started, JobSummary(job_id, request.label, len(tasks), rejected_count))
             self._log(callbacks, "INFO", f"已读取 {len(tasks)} 条有效 URL，开始准备任务目录。")
             prepared = await asyncio.to_thread(self._template_manager.prepare, job_id)
+            checkpoint = CheckpointStore(
+                prepared.job_dir / "job_checkpoint.json",
+                job_id=job_id,
+                tasks=tasks,
+            )
             if cancellation.is_set():
-                return self._cancelled_result(request, prepared, (), rejected_count)
+                checkpoint.save()
+                return self._cancelled_result(
+                    request,
+                    prepared,
+                    (),
+                    rejected_count,
+                    checkpoint.path,
+                )
 
             tracker = _ProgressTracker(tasks, callbacks)
             retained = await asyncio.to_thread(
-                _copy_retained_records,
-                request.retained_records,
+                prepare_retained_records,
+                request,
+                tasks,
                 prepared.template_dir,
             )
             for record in retained:
                 _call(callbacks.record_updated, record)
+            if retained:
+                checkpoint.update_many(retained)
             tracker.publish(stage="正在启动浏览器")
             auth_store_dir = self._config.task.auth_store_dir
             if auth_store_dir is not None:
@@ -119,12 +140,37 @@ class TaskRunner:
                         f"旧版模式将在任务结束时保存综合登录态：{login_state}",
                     )
             engine = self._engine_factory(self._config.task)
-            records = await engine.run(
-                list(tasks),
-                prepared.template_dir,
-                on_event=tracker.on_task_event,
-                on_result=tracker.on_record,
-                cancel_event=cancellation,
+
+            def on_result(record: RecordResult) -> None:
+                tracker.on_record(record)
+                checkpoint.update(record)
+
+            retained_ids = {
+                record.task.evidence_id
+                for record in retained
+            }
+            pending_tasks = [
+                task
+                for task in tasks
+                if task.evidence_id not in retained_ids
+            ]
+            if retained and request.resume_checkpoint_path is not None:
+                self._log(
+                    callbacks,
+                    "INFO",
+                    f"已从 checkpoint 复用 {len(retained)} 条记录，"
+                    f"仅抓取其余 {len(pending_tasks)} 条。",
+                )
+            records = (
+                await engine.run(
+                    pending_tasks,
+                    prepared.template_dir,
+                    on_event=tracker.on_task_event,
+                    on_result=on_result,
+                    cancel_event=cancellation,
+                )
+                if pending_tasks
+                else []
             )
             records = [*retained, *records]
             records.sort(key=lambda item: item.task.evidence_id)
@@ -134,9 +180,17 @@ class TaskRunner:
                 self._template_manager.assert_source_unchanged(prepared)
                 tracker.publish(records, stage="任务已取消")
                 self._log(callbacks, "WARNING", "任务已取消，已完成结果仅供查看，不生成压缩包。")
-                return self._cancelled_result(request, prepared, records, rejected_count)
+                checkpoint.update_many(records)
+                return self._cancelled_result(
+                    request,
+                    prepared,
+                    records,
+                    rejected_count,
+                    checkpoint.path,
+                )
 
             rows = self._build_rows(records, callbacks)
+            checkpoint.update_many(records)
             if not rows:
                 self._template_manager.assert_source_unchanged(prepared)
                 tracker.publish(records, stage="没有可导出的记录")
@@ -151,9 +205,10 @@ class TaskRunner:
                     records=tuple(records),
                     rejected_count=rejected_count,
                     job_dir=prepared.job_dir,
+                    checkpoint_path=checkpoint.path,
                 )
 
-            self._cleanup_staging_assets(
+            cleanup_staging_assets(
                 prepared.template_dir,
                 rows,
                 self._config.template.workbook_name,
@@ -168,7 +223,14 @@ class TaskRunner:
             )
             if cancellation.is_set():
                 self._template_manager.assert_source_unchanged(prepared)
-                return self._cancelled_result(request, prepared, records, rejected_count)
+                checkpoint.update_many(records)
+                return self._cancelled_result(
+                    request,
+                    prepared,
+                    records,
+                    rejected_count,
+                    checkpoint.path,
+                )
 
             await asyncio.to_thread(
                 self._asset_validator,
@@ -189,6 +251,7 @@ class TaskRunner:
                 if record.status == RecordStatus.READY_FOR_EXPORT:
                     record.status = RecordStatus.EXPORTED
                     _call(callbacks.record_updated, record)
+            checkpoint.update_many(records)
             quality = await asyncio.to_thread(
                 self._write_quality_artifacts,
                 records,
@@ -214,6 +277,7 @@ class TaskRunner:
                 quality_report_path=quality.report_path,
                 quality_summary_path=quality.summary_path,
                 manual_entry_path=quality.manual_entry_path,
+                checkpoint_path=checkpoint.path,
             )
         except asyncio.CancelledError:
             cancellation.set()
@@ -288,27 +352,6 @@ class TaskRunner:
             _call(callbacks.record_updated, record)
         return rows
 
-    @staticmethod
-    def _cleanup_staging_assets(
-        template_dir: Path,
-        rows: list[TemplateRow],
-        workbook_name: str,
-    ) -> None:
-        """Remove staging files not referenced by any export row (failed-record leftovers)."""
-        expected: set[str] = set()
-        for row in rows:
-            for name in row.all_asset_names():
-                expected.add(name)
-        for path in list(template_dir.rglob("*")):
-            if path.is_dir():
-                continue
-            if path.name == workbook_name and path.parent == template_dir:
-                continue
-            if path.parent != template_dir:
-                continue
-            if path.name not in expected:
-                path.unlink()
-
     def _write_quality_artifacts(
         self,
         records: list[RecordResult],
@@ -332,6 +375,7 @@ class TaskRunner:
         prepared: PreparedTemplate,
         records: Sequence[RecordResult],
         rejected_count: int,
+        checkpoint_path: Path | None = None,
     ) -> JobResult:
         prepared.archive_path.unlink(missing_ok=True)
         return JobResult(
@@ -341,6 +385,7 @@ class TaskRunner:
             rejected_count=rejected_count,
             job_dir=prepared.job_dir,
             cancelled=True,
+            checkpoint_path=checkpoint_path,
         )
 
     @staticmethod
@@ -428,42 +473,6 @@ def _call(callback: Callable[[Any], None] | None, value: Any) -> None:
 def _new_job_id() -> str:
     timestamp = datetime.now(DEFAULT_TIMEZONE).strftime("%Y%m%d-%H%M%S")
     return f"{timestamp}-{uuid4().hex[:8]}"
-
-
-def _copy_retained_records(
-    records: tuple[RecordResult, ...],
-    template_dir: Path,
-) -> list[RecordResult]:
-    copied: list[RecordResult] = []
-    for source_record in records:
-        if source_record.status != RecordStatus.EXPORTED:
-            continue
-        record = deepcopy(source_record)
-        record.assets.page_screenshot = _copy_asset(
-            source_record.assets.page_screenshot,
-            template_dir,
-        )
-        record.assets.author_screenshot = _copy_asset(
-            source_record.assets.author_screenshot,
-            template_dir,
-        )
-        record.assets.downloaded_images = []
-        record.status = RecordStatus.ASSETS_READY
-        copied.append(record)
-    return copied
-
-
-def _copy_asset(source: Path | None, template_dir: Path) -> Path | None:
-    if source is None:
-        return None
-    source = Path(source)
-    if not source.is_file():
-        raise TaskRunnerError(f"重试所需的历史附件不存在：{source.name}")
-    destination = template_dir / require_safe_file_name(source.name)
-    if destination.exists():
-        raise TaskRunnerError(f"重试附件文件名冲突：{destination.name}")
-    shutil.copy2(source, destination)
-    return destination
 
 
 def _friendly_error(error: Exception) -> str:

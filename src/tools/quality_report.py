@@ -84,6 +84,29 @@ def write_quality_artifacts(
             "records_with_page_screenshot": sum(
                 record.assets.page_screenshot is not None for record in records
             ),
+            "records_with_author_screenshot": sum(
+                record.assets.author_screenshot is not None for record in records
+            ),
+            "author_profile_eligible": sum(
+                row["author_profile_eligible"] for row in rows
+            ),
+            "author_profile_url_found": sum(
+                row["author_profile_url_found"] for row in rows
+            ),
+            "author_profile_screenshot_valid": sum(
+                row["has_author_screenshot"] for row in rows
+            ),
+            "records_with_title": sum(bool(record.page.title) for record in records),
+            "records_with_nickname": sum(
+                bool(record.page.author_name or record.page.store_name)
+                for record in records
+            ),
+            "records_with_published_at": sum(
+                record.page.published_at is not None for record in records
+            ),
+            "records_with_content": sum(
+                bool(record.page.content_text) for record in records
+            ),
             "rejected_input_values": rejected_count,
         },
         "status_counts": status_counts,
@@ -117,6 +140,11 @@ def _record_row(
     error_messages = list(dict.fromkeys(error.message for error in record.errors))
     partial = "PARTIAL_FIELDS_MISSING" in error_codes
     successful = record.status in _SUCCESS_STATUSES
+    author_failure_codes = [
+        code
+        for code in error_codes
+        if code.startswith("AUTHOR_")
+    ]
     return {
         "evidence_id": record.task.evidence_id,
         "platform_key": definition.key if definition else "unmapped",
@@ -140,6 +168,26 @@ def _record_row(
         "successful": successful,
         "needs_manual_entry": not successful or partial,
         "has_page_screenshot": record.assets.page_screenshot is not None,
+        "has_author_screenshot": record.assets.author_screenshot is not None,
+        "author_profile_eligible": bool(
+            record.page.author_url
+            or record.assets.author_screenshot
+        ),
+        "author_profile_url_found": bool(record.page.author_url),
+        "author_profile_failure_code": (
+            author_failure_codes[0] if author_failure_codes else ""
+        ),
+        "content_kind": record.page.content_kind.value,
+        "ocr_status": record.page.ocr_status.value,
+        "ocr_image_count": record.page.ocr_image_count,
+        "ocr_text_image_count": record.page.ocr_text_image_count,
+        "original_content_chars": record.page.original_content_chars,
+        "exported_content_chars": record.page.exported_content_chars,
+        "missing_fields": [
+            field
+            for field in _TRACKED_FIELDS
+            if not getattr(record.page, field)
+        ],
         "filled_fields": sum(
             bool(getattr(record.page, field))
             for field in _TRACKED_FIELDS
@@ -195,6 +243,11 @@ def _write_manual_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "错误码",
         "错误说明",
         "建议处理",
+        "缺失字段",
+        "内容类型",
+        "OCR状态",
+        "主页截图状态",
+        "是否可自动重试",
     )
     with path.open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
@@ -214,6 +267,33 @@ def _write_manual_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                     "错误码": "; ".join(codes),
                     "错误说明": "; ".join(messages),
                     "建议处理": advice.replace("\n", " "),
+                    "缺失字段": "; ".join(row["missing_fields"]),
+                    "内容类型": row["content_kind"],
+                    "OCR状态": row["ocr_status"],
+                    "主页截图状态": (
+                        "已生成"
+                        if row["has_author_screenshot"]
+                        else (
+                            f"未生成（{row['author_profile_failure_code']}）"
+                            if row["author_profile_failure_code"]
+                            else "未生成"
+                        )
+                    ),
+                    "是否可自动重试": (
+                        "是"
+                        if any(
+                            code
+                            in {
+                                "OCR_TIMEOUT",
+                                "OCR_FAILED",
+                                "OPTIONAL_ENRICHMENT_TIMEOUT",
+                                "PAGE_PROCESSING_TIMEOUT",
+                                "PAGE_SCREENSHOT_FAILED",
+                            }
+                            for code in codes
+                        )
+                        else "否"
+                    ),
                 }
             )
 
@@ -229,6 +309,17 @@ def _markdown_report(summary: dict[str, Any], manual_file: str) -> str:
         f"- 成功记录：{totals['successful_records']}",
         f"- 待人工补录：{totals['manual_entry_records']}",
         f"- 有正文截图：{totals['records_with_page_screenshot']}",
+        f"- 有个人主页截图：{totals['records_with_author_screenshot']}",
+        (
+            "- 个人主页候选/发现 URL/有效截图："
+            f"{totals['author_profile_eligible']}/"
+            f"{totals['author_profile_url_found']}/"
+            f"{totals['author_profile_screenshot_valid']}"
+        ),
+        f"- 有标题：{totals['records_with_title']}",
+        f"- 有昵称/店铺名：{totals['records_with_nickname']}",
+        f"- 有发布时间：{totals['records_with_published_at']}",
+        f"- 有信息内容：{totals['records_with_content']}",
         f"- 待补录清单：`{manual_file}`",
         "",
         "## 平台统计",

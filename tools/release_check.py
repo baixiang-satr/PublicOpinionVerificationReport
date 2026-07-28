@@ -132,7 +132,15 @@ def _check_archive(path: Path) -> tuple[list[str], int]:
 def _ignored(relative: Path) -> bool:
     return bool(
         set(relative.parts)
-        & {".git", ".venv", "references", "output", "__pycache__"}
+        & {
+            ".git",
+            ".venv",
+            ".ocr-venv",
+            ".test-tmp",
+            "references",
+            "output",
+            "__pycache__",
+        }
     )
 
 
