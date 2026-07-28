@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import urlsplit
 
+from src.crawler.structured_data import payload_has_content
 from src.domain.models import RecordStatus
 
 
@@ -141,6 +142,7 @@ _UNAVAILABLE_TEXT_MARKERS = (
     "视频不存在",
     "文章不存在",
     "内容已删除",
+    "内容可能已删除",
     "内容已下线",
     "页面已失效",
     "404 not found",
@@ -255,7 +257,7 @@ async def inspect_page_access(
             "平台明确提示内容不存在、已删除或已下线；请核对原始 URL。",
             RecordStatus.FAILED,
         )
-    if _looks_like_json(body):
+    if _looks_like_json(body) and not _json_has_extractable_content(body):
         return AccessBarrier(
             AccessKind.API_RESPONSE,
             "UNEXPECTED_API_RESPONSE",
@@ -372,6 +374,13 @@ def _looks_like_json(body: str) -> bool:
         return False
     try:
         return isinstance(json.loads(candidate), (dict, list))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _json_has_extractable_content(body: str) -> bool:
+    try:
+        return payload_has_content(json.loads(body.strip()))
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
 

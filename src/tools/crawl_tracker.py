@@ -32,6 +32,10 @@ _FAILURE_ADVICE: dict[str, str] = {
         "页面需要登录才能访问。请打开**「管理平台登录态」**，选择对应平台，"
         "人工登录并等待新 context 复验通过。"
     ),
+    "PLATFORM_AUTH_PAUSED": (
+        "同平台已检测到失效登录态或验证屏障。请先在「管理平台登录态」中完成复验，"
+        "再使用“重试失败项”，避免重复访问无效页面。"
+    ),
     # 风控 / 访问限制
     "ACCESS_CHALLENGE": (
         "平台风控拦截了本次访问。建议：\n"
@@ -58,6 +62,7 @@ _FAILURE_ADVICE: dict[str, str] = {
     ),
     # API
     "UNEXPECTED_API_RESPONSE": "页面返回了 JSON 数据而非正常 HTML，请提供浏览器可打开的内容页 URL。",
+    "PLATFORM_FALLBACK_USED": "已自动改用同平台官方页面变体，无需人工处理。",
     # 空页面
     "EMPTY_RENDERED_PAGE": (
         "页面渲染后仍为空。可能需要：\n"
@@ -115,10 +120,10 @@ def generate_run_report(
     pending = sum(1 for r in records if r.status == RecordStatus.PENDING)
 
     lines = [
-        f"\n\n---\n",
+        "\n\n---\n",
         f"## 运行报告：{now}\n",
-        f"| 项目 | 数值 |",
-        f"|------|------|",
+        "| 项目 | 数值 |",
+        "|------|------|",
         f"| **任务名称** | {label} |",
         f"| **任务 ID** | {job_id} |",
         f"| **处理时间** | {now} |",
