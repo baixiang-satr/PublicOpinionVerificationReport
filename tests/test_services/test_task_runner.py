@@ -255,6 +255,108 @@ async def test_retry_keeps_previous_exports_and_adds_recovered_record(tmp_path: 
         ]
 
 
+@pytest.mark.asyncio
+async def test_resume_checkpoint_reexports_without_recrawling(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    tasks = (
+        UrlTask(1, "https://example.test/1", "https://example.test/1"),
+        UrlTask(2, "https://example.test/2", "https://example.test/2"),
+    )
+    first = await TaskRunner(
+        config,
+        engine_factory=lambda _task_config: FakeEngine(),
+        excel_writer=FakeWriter(),
+    ).run(JobRequest(tasks=tasks, job_id="checkpoint-source"))
+    assert first.checkpoint_path is not None
+
+    engine = FakeEngine()
+    resumed = await TaskRunner(
+        config,
+        engine_factory=lambda _task_config: engine,
+        excel_writer=FakeWriter(),
+    ).run(
+        JobRequest(
+            tasks=tasks,
+            job_id="checkpoint-resumed",
+            resume_checkpoint_path=first.checkpoint_path,
+        )
+    )
+
+    assert not engine.called
+    assert [record.task.evidence_id for record in resumed.records] == [1, 2]
+    assert all(record.status == RecordStatus.EXPORTED for record in resumed.records)
+    assert resumed.archive_path is not None
+
+
+@pytest.mark.asyncio
+async def test_reexport_only_keeps_failed_placeholder_without_recrawling(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    tasks = (UrlTask(1, "https://example.test/1", "https://example.test/1"),)
+    first = await TaskRunner(
+        config,
+        engine_factory=lambda _task_config: FakeEngine(RecordStatus.FAILED),
+        excel_writer=FakeWriter(),
+    ).run(JobRequest(tasks=tasks, job_id="failed-checkpoint-source"))
+    assert first.checkpoint_path is not None
+
+    engine = FakeEngine()
+    resumed = await TaskRunner(
+        config,
+        engine_factory=lambda _task_config: engine,
+        excel_writer=FakeWriter(),
+    ).run(
+        JobRequest(
+            tasks=tasks,
+            job_id="failed-checkpoint-reexport",
+            resume_checkpoint_path=first.checkpoint_path,
+            reexport_only=True,
+        )
+    )
+
+    assert not engine.called
+    assert resumed.records[0].status == RecordStatus.FAILED
+    assert resumed.archive_path is not None
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_can_retry_only_selected_evidence_ids(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    tasks = (
+        UrlTask(1, "https://example.test/1", "https://example.test/1"),
+        UrlTask(2, "https://example.test/2", "https://example.test/2"),
+    )
+    first = await TaskRunner(
+        config,
+        engine_factory=lambda _task_config: FakeEngine(),
+        excel_writer=FakeWriter(),
+    ).run(JobRequest(tasks=tasks, job_id="selected-retry-source"))
+    assert first.checkpoint_path is not None
+
+    engine = FakeEngine()
+    resumed = await TaskRunner(
+        config,
+        engine_factory=lambda _task_config: engine,
+        excel_writer=FakeWriter(),
+    ).run(
+        JobRequest(
+            tasks=tasks,
+            job_id="selected-retry-result",
+            resume_checkpoint_path=first.checkpoint_path,
+            reexport_only=True,
+            retry_evidence_ids=(2,),
+        )
+    )
+
+    assert engine.called
+    assert [record.task.evidence_id for record in resumed.records] == [1, 2]
+
+
 def test_build_rows_preserves_all_records_beyond_seeded_sheet_rows(tmp_path: Path) -> None:
     runner = TaskRunner(
         _config(tmp_path),

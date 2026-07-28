@@ -102,6 +102,12 @@ class StubParser:
         )
 
 
+class HangingParser:
+    async def extract(self, _page: FakePage, _definition: object) -> PageData:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 class StubShooter:
     async def capture(
         self,
@@ -128,8 +134,22 @@ class AssetParser:
         )
 
 
+class ImageParser:
+    async def extract(self, _page: FakePage, _definition: object) -> PageData:
+        return PageData(
+            title="Question",
+            content_text="Answer body",
+            content_summary="Answer body",
+            image_urls=["https://example.test/image.png"],
+        )
+
+
 class FailingAuthorShooter:
-    async def capture(self, *_args: object) -> Path:
+    async def capture(
+        self,
+        *_args: object,
+        **_options: object,
+    ) -> Path:
         raise AuthorScreenshotError("AUTHOR_HTTP_ERROR", "作者主页返回 HTTP 403")
 
 
@@ -145,6 +165,12 @@ class UnexpectedAssetCollector:
         raise AssertionError(f"正文已经存在，不应下载正文图片：{output_dir}")
 
 
+class HangingAssetCollector:
+    async def collect(self, *_args: object, **_options: object) -> AssetCollectionResult:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 @pytest.mark.asyncio
 async def test_engine_retries_5xx_records_status_and_closes_browser(tmp_path: Path) -> None:
     pool = FakeBrowserPool([503, 200], "https://www.zhihu.com/question/1")
@@ -153,6 +179,7 @@ async def test_engine_retries_5xx_records_status_and_closes_browser(tmp_path: Pa
         retry_base_delay_seconds=0,
         min_host_interval_seconds=0,
         page_stabilize_milliseconds=0,
+        ocr_enabled=False,
     )
     engine = CrawlEngine(config, browser_pool=pool, parser=StubParser(), shooter=StubShooter())
 
@@ -186,6 +213,35 @@ async def test_engine_honors_pre_set_cancellation_and_still_closes_pool(tmp_path
 
     assert result.status == RecordStatus.CANCELLED
     assert pool.page_count == 0
+    assert pool.closed
+
+
+@pytest.mark.asyncio
+async def test_engine_skips_page_that_exceeds_processing_hard_timeout(
+    tmp_path: Path,
+) -> None:
+    pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
+    engine = CrawlEngine(
+        TaskConfig(
+            max_retries=2,
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+            page_processing_timeout_seconds=0.05,
+        ),
+        browser_pool=pool,
+        parser=HangingParser(),
+        shooter=StubShooter(),
+    )
+
+    [result] = await engine.run(
+        [UrlTask(1, "https://www.zhihu.com/question/1", "https://www.zhihu.com/question/1")],
+        tmp_path,
+    )
+
+    assert result.status == RecordStatus.FAILED
+    assert result.attempt_count == 1
+    assert [error.code for error in result.errors] == ["PAGE_PROCESSING_TIMEOUT"]
+    assert pool.page_count == 1
     assert pool.closed
 
 
@@ -236,7 +292,11 @@ async def test_engine_applies_http_retry_policy(
 async def test_only_author_screenshot_is_collected_when_body_text_exists(tmp_path: Path) -> None:
     pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
     engine = CrawlEngine(
-        TaskConfig(min_host_interval_seconds=0, page_stabilize_milliseconds=0),
+        TaskConfig(
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+            ocr_enabled=False,
+        ),
         browser_pool=pool,
         parser=AssetParser(),
         shooter=StubShooter(),
@@ -253,6 +313,37 @@ async def test_only_author_screenshot_is_collected_when_body_text_exists(tmp_pat
     assert result.assets.author_screenshot is None
     assert result.assets.downloaded_images == []
     assert [error.code for error in result.errors] == ["AUTHOR_HTTP_ERROR"]
+
+
+@pytest.mark.asyncio
+async def test_optional_ocr_timeout_keeps_main_content_and_screenshot(
+    tmp_path: Path,
+) -> None:
+    pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
+    engine = CrawlEngine(
+        TaskConfig(
+            max_retries=0,
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+            page_processing_timeout_seconds=1,
+        ),
+        browser_pool=pool,
+        parser=ImageParser(),
+        shooter=StubShooter(),
+        asset_collector=HangingAssetCollector(),
+    )
+
+    [result] = await engine.run(
+        [UrlTask(1, "https://www.zhihu.com/question/1", "https://www.zhihu.com/question/1")],
+        tmp_path,
+    )
+
+    assert result.status == RecordStatus.ASSETS_READY
+    assert result.page.content_text == "Answer body"
+    assert result.assets.page_screenshot == tmp_path / "001.jpg"
+    assert "OPTIONAL_ENRICHMENT_TIMEOUT" in [
+        error.code for error in result.errors
+    ]
 
 
 class PartialParser:

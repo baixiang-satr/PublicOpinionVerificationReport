@@ -57,6 +57,24 @@ class _FakeDynamicSheet:
         return self._cells.setdefault((row, column), _FakeCell())
 
 
+class _FakeRange:
+    def __init__(self) -> None:
+        self.Locked = False
+        self.Value: object | None = None
+
+
+class _FakeBulkSheet(_FakeDynamicSheet):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ProtectContents = False
+        self.ranges: list[_FakeRange] = []
+
+    def Range(self, _start: _FakeCell, _end: _FakeCell) -> _FakeRange:
+        target = _FakeRange()
+        self.ranges.append(target)
+        return target
+
+
 def test_excel_writer_extends_short_sheet_without_dropping_rows() -> None:
     layout = get_sheet_layout("电商平台")
     sheet = _FakeDynamicSheet()
@@ -79,6 +97,31 @@ def test_excel_writer_extends_short_sheet_without_dropping_rows() -> None:
     assert last_row == 5
     assert sheet.ProtectContents is False
     assert sheet.Cells(5, 1).Value == "https://item.jd.com/3.html"
+
+
+def test_excel_writer_batches_each_populated_column() -> None:
+    layout = get_sheet_layout("电商平台")
+    sheet = _FakeBulkSheet()
+    rows = [
+        TemplateRow(
+            layout.name,
+            evidence_id,
+            {
+                "A": f"https://item.jd.com/{evidence_id}.html",
+                "B": "京东_京东商城_电商平台",
+            },
+        )
+        for evidence_id in range(1, 4)
+    ]
+
+    ExcelTemplateWriter._write_sheet_rows(sheet, layout, rows)
+
+    assert len(sheet.ranges) == 2
+    assert sheet.ranges[0].Value == (
+        ("https://item.jd.com/1.html",),
+        ("https://item.jd.com/2.html",),
+        ("https://item.jd.com/3.html",),
+    )
 
 
 def test_excel_writer_retries_transient_com_busy_error(monkeypatch) -> None:

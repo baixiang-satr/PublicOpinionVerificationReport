@@ -45,7 +45,21 @@ def test_row_mapper_keeps_partial_record_and_leaves_unknown_fields_blank() -> No
     assert row.values_by_column["C"] == "知乎_知乎_博客贴吧"
     assert row.values_by_column["G"] == "002.jpg"
     assert "B" not in row.values_by_column
-    assert "F" not in row.values_by_column
+    assert row.values_by_column["F"] == "只抓到了标题"
+
+
+def test_row_mapper_preserves_distinct_title_inside_content_when_sheet_has_no_title_column() -> None:
+    result = RecordResult(
+        task=UrlTask(3, "https://www.zhihu.com/question/3", "https://www.zhihu.com/question/3"),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=RouteDecision("微博博客", "知乎_知乎_博客贴吧", "正文"),
+        page=PageData(title="问题标题", content_summary="问题正文"),
+        assets=AssetSet(page_screenshot=Path("003.jpg")),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["F"] == "问题标题\n问题正文"
 
 
 def test_row_mapper_accepts_commerce_product_as_merchant() -> None:
@@ -90,3 +104,41 @@ def test_row_mapper_preserves_failed_record_without_a_screenshot() -> None:
     assert "G" not in row.values_by_column
     assert row.primary_screenshot_name is None
     assert row.all_asset_names() == ()
+
+
+def test_row_mapper_exports_full_content_instead_of_the_short_summary() -> None:
+    full_content = "完整正文" * 1_000
+    result = RecordResult(
+        task=UrlTask(5, "https://weibo.com/5", "https://weibo.com/5"),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=RouteDecision("微博博客", "新浪_新浪微博_博客贴吧", "正文"),
+        page=PageData(
+            title="标题",
+            content_text=full_content,
+            content_summary=full_content[:2_000],
+        ),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["F"] == f"标题\n{full_content}"
+    assert result.page.exported_content_chars == len(f"标题\n{full_content}")
+    assert not result.page.summary_truncated
+
+
+def test_row_mapper_marks_only_the_excel_safety_truncation() -> None:
+    result = RecordResult(
+        task=UrlTask(6, "https://weibo.com/6", "https://weibo.com/6"),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=RouteDecision("微博博客", "新浪_新浪微博_博客贴吧", "正文"),
+        page=PageData(content_text="字" * 100),
+    )
+
+    row = TemplateRowMapper(export_content_max_chars=32).map(result)
+
+    assert row.values_by_column["F"] == "字" * 32
+    assert result.page.original_content_chars == 100
+    assert result.page.exported_content_chars == 32
+    assert [error.code for error in result.errors] == [
+        "CONTENT_TRUNCATED_FOR_EXCEL"
+    ]

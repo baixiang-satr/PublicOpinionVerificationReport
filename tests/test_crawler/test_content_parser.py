@@ -111,6 +111,62 @@ def test_generic_extractor_uses_network_json_before_visible_text() -> None:
     assert data.field_sources["title"] == ExtractionSource.NETWORK_JSON
 
 
+def test_generic_extractor_reads_common_social_api_field_variants() -> None:
+    document = RenderedDocument(
+        url="https://weibo.com/5644764907/example",
+        visible_text="页面外壳",
+        network_payloads=(
+            {
+                "status": {
+                    "itemTitle": "接口中的帖子标题",
+                    "text_raw": "接口中的完整帖子正文",
+                    "pubdate": 1785204000,
+                    "user": {
+                        "screen_name": "接口昵称",
+                        "id_str": "5644764907",
+                        "homepage": "https://weibo.com/u/5644764907",
+                    },
+                }
+            },
+        ),
+    )
+
+    data = GenericExtractor().extract(document)
+
+    assert data.title == "接口中的帖子标题"
+    assert data.content_text == "接口中的完整帖子正文"
+    assert data.author_name == "接口昵称"
+    assert data.author_id == "5644764907"
+    assert data.author_url == "https://weibo.com/u/5644764907"
+    assert data.published_at is not None
+
+
+def test_generic_extractor_rejects_navigation_chrome_as_author_name() -> None:
+    data = GenericExtractor().extract(
+        RenderedDocument(
+            url="https://example.test/video/1",
+            title="视频标题",
+            visible_text="视频正文",
+            dom_values={"author_name": "首页"},
+        )
+    )
+
+    assert data.author_name is None
+
+
+def test_generic_extractor_keeps_only_name_from_author_container() -> None:
+    data = GenericExtractor().extract(
+        RenderedDocument(
+            url="https://example.test/post/1",
+            title="帖子标题",
+            visible_text="帖子正文",
+            dom_values={"author_name": "可获得我\n2025-08-05"},
+        )
+    )
+
+    assert data.author_name == "可获得我"
+
+
 class FakePage:
     url = "https://mp.weixin.qq.com/s/test"
 

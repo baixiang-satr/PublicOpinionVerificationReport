@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 from src.config.settings import TaskConfig
-from src.screenshot.author_shooter import AuthorShooter, AuthorScreenshotError
+from src.screenshot.author_shooter import (
+    AuthorShooter,
+    AuthorScreenshotError,
+    _validate_author_identity,
+)
 
 
 class FakeResponse:
@@ -87,10 +91,27 @@ class StubPageShooter:
         file_stem: str,
         output_dir: Path,
         _cancel_event: object,
+        **_options: object,
     ) -> Path:
         path = output_dir / f"{file_stem}.png"
         path.write_bytes(b"png")
         return path
+
+
+class MismatchedIdentityPage:
+    async def evaluate(self, _script: str) -> dict[str, str]:
+        return {
+            "name": "完全不同的账号",
+            "body": "完全不同的账号 作品列表 粉丝 简介",
+        }
+
+
+class NavigationFalsePositiveIdentityPage:
+    async def evaluate(self, _script: str) -> dict[str, str]:
+        return {
+            "name": "新华社",
+            "body": "网易首页 新闻 体育 新华社 作品列表 粉丝 简介",
+        }
 
 
 @pytest.mark.asyncio
@@ -196,3 +217,27 @@ async def test_author_shooter_rejects_page_without_rendered_profile_content(
     assert caught.value.code == "AUTHOR_CONTENT_NOT_READY"
     assert author_page.closed
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_author_identity_mismatch_is_rejected() -> None:
+    with pytest.raises(AuthorScreenshotError) as caught:
+        await _validate_author_identity(
+            MismatchedIdentityPage(),
+            "正文作者",
+            "author-123",
+        )
+
+    assert caught.value.code == "AUTHOR_IDENTITY_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_author_identity_does_not_accept_name_from_navigation() -> None:
+    with pytest.raises(AuthorScreenshotError) as caught:
+        await _validate_author_identity(
+            NavigationFalsePositiveIdentityPage(),
+            "网易",
+            None,
+        )
+
+    assert caught.value.code == "AUTHOR_IDENTITY_MISMATCH"
