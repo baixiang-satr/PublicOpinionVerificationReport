@@ -3,8 +3,8 @@
 ## 1. 文档信息
 
 - 项目名称：舆情验证报告工具（Public Opinion Verification Report Tool）
-- 文档版本：v0.3
-- 编写日期：2026-07-28
+- 文档版本：v0.4
+- 编写日期：2026-07-29
 - 需求依据：[requirements.md](requirements.md)
 - 适用范围：Windows 本地桌面应用 MVP
 
@@ -27,12 +27,12 @@
 | 页面访问和截图 | Playwright Chromium | 目标站点普遍依赖 JavaScript；同一浏览器上下文可同时用于提取页面和截图。 |
 | 抓取并发 | `asyncio` + 固定数量 worker + 域名限速 | 既能批量处理，也能控制对单一平台的访问频率。 |
 | 结构化提取 | 平台规则优先，JSON-LD/meta/通用 DOM 兜底 | 模板字段有平台特定的账号、店铺、公众号要求。 |
-| 固定模板写入 | Windows Microsoft Excel COM 自动化（`pywin32`） | 基准文件为受保护的 OLE Office 工作簿，普通 `.xlsx` 库无法可靠保留其验证规则和格式。 |
+| 固定模板写入 | Office Open XML 直接操作（`OoxmlTemplateWriter`），回退至 Windows Excel COM 自动化（`pywin32`） | 基准文件优先通过直接修改 OOXML 压缩包内的 XML 写入，保留全部结构；若源模板为受保护的旧式 OLE 格式则自动回退至 Excel COM。 |
 | 用户输入 Excel | `openpyxl` | 只读取用户提供的标准 `.xlsx`，不用于写出固定模板。 |
 | 打包 | Python `zipfile`，显式写入归档名 | 可精确控制 ZIP 必须具有 `template/` 顶层目录，避免平台相关的压缩路径差异。 |
 | GUI 后台执行 | `QThread` 内运行独立 asyncio 事件循环，通过 Qt signal 回传 | 避免阻塞 PyQt5 主线程，且不引入额外的事件循环桥接依赖。 |
 
-`pyproject.toml` 和 `requirements.txt` 实施时应新增 Windows 条件依赖：`pywin32>=308; platform_system == 'Windows'`。现有 `openpyxl` 保留给输入文件读取，导出模板时禁止调用它。
+`requirements.txt` 中保留 Windows 条件依赖：`pywin32>=308; platform_system == 'Windows'`，作为旧式 OLE 模板的降级回退。默认导出路径使用 `OoxmlTemplateWriter` 直接操作 Office Open XML。现有 `openpyxl` 保留给输入文件读取，导出模板时禁止调用它。
 
 ### 2.3 参考项目评估与最终选择
 
@@ -216,9 +216,9 @@ class TemplateRow:
 
 ## 6. 模块与接口设计
 
-### 6.1 建议的代码布局
+### 6.1 当前代码布局
 
-现有模块基本保持其职责；以下是实现时应新增或调整的文件。
+现有模块的职责划分如下；`src/export/ooxml_writer.py` 是默认模板写入器，`src/export/excel_writer.py` 保留为 Excel COM 回退路径。
 
 ```text
 src/
@@ -251,7 +251,8 @@ src/
 ├── export/
 │   ├── template_manager.py       # 模板副本、源模板指纹和旧资产清理
 │   ├── row_mapper.py             # RecordResult -> TemplateRow
-│   ├── excel_writer.py           # Excel COM 读写与工作簿校验
+│   ├── excel_writer.py           # Excel COM 写入（OLE 回退路径）
+│   ├── ooxml_writer.py           # Office Open XML 直接写入（默认路径）
 │   ├── package_validator.py      # Excel 附件引用与目录清单校验
 │   └── packager.py               # 固定 template.zip 打包
 ├── ui/
@@ -381,9 +382,28 @@ class PlatformExtractor(Protocol):
 
 历史样例附件名可能在工作簿中存在但不在基准目录中，因此副本清理后必须由 Excel 写入器清空第 3 行及之后的业务数据，再写入本次结果，不能保留旧行中的附件引用。
 
-### 7.2 Excel COM 写入
+### 7.2 模板写入策略
 
-Excel 自动化只能在单一线程中执行。`ExcelTemplateWriter` 由 `TaskRunner` 在抓取和资产准备结束后串行调用；进入线程时调用 `pythoncom.CoInitialize()`，退出时无论成功失败均 `Workbook.Close()`、`Application.Quit()` 和 `CoUninitialize()`。
+本项目支持两种模板写入方式，按优先级依次尝试：
+
+#### 7.2a 首选：Office Open XML 直接写入 (`OoxmlTemplateWriter`)
+
+`OoxmlTemplateWriter` 直接解压 `template.xlsx`（即 ZIP 压缩包），读取 XML 内容，操作 `xl/sharedStrings.xml`、`xl/worksheets/sheet*.xml` 等文件，在第 3 行及之后替换业务数据，然后重新打包。此方式不依赖外部 Excel 应用程序，速度快、无环境依赖。
+
+写入过程：
+
+1. 读取 `template.xlsx` 为内存字典（文件名 → 字节）并校验 8 个工作表的名称和顺序。
+2. 解析并验证工作表首行与 `template_schema.py` 中定义的列名称一致。
+3. 删除 `sheetData` 中第 `data_start_row` 行及之后的所有已有行。
+4. 以第 `data_start_row` 行的行格式为蓝本，为每条 `TemplateRow` 创建新行。
+5. 日期值转换为 Excel 序列号写入；文本以 `inlineStr` 格式写入。
+6. 更新工作表的 `dimension` 引用。
+7. 以临时文件写入新 ZIP 并原子替换原文件。
+8. 重新读取验证：引用资产必须与写入行完全匹配。
+
+#### 7.2b 回退：Excel COM 自动化写入 (`ExcelTemplateWriter`)
+
+当源模板为旧式 OLE 容器（非纯 Open XML）且 Ooxml 路径失败时，回退至 Windows Excel COM。Excel 自动化只能在单一线程中执行。`ExcelTemplateWriter` 由 `TaskRunner` 在抓取和资产准备结束后串行调用；进入线程时调用 `pythoncom.CoInitialize()`，退出时无论成功失败均 `Workbook.Close()`、`Application.Quit()` 和 `CoUninitialize()`。
 
 写入过程：
 
@@ -396,7 +416,7 @@ Excel 自动化只能在单一线程中执行。`ExcelTemplateWriter` 由 `TaskR
 7. 直接调用 `Workbook.Save()` 保存副本，不使用 `SaveAs()` 改变文件格式或扩展名。
 8. 关闭并重新以 Excel 打开副本，复核工作表保护、数据验证、首行、已写值和附件列。
 
-写入器禁止：
+#### 写入器共同禁止项：
 
 - 用 `openpyxl`、pandas、xlsxwriter 等重新保存 `template.xlsx`；
 - 插入或删除行列、自动调整列宽/行高、改变日期格式；
@@ -494,8 +514,9 @@ GUI 主线程只处理界面。`TaskWorker(QThread)` 创建 asyncio 事件循环
 ### 10.2 集成与契约测试
 
 - 使用 Playwright 路由拦截或本地 HTTP fixture，稳定模拟成功页、延迟页、403、429、重定向、登录墙和空白页。
-- 在 Windows 且已安装 Excel 的测试环境中执行模板契约测试：源模板哈希不变、8 个工作表顺序不变、首行/验证/保护不变、输出文件可再次由 Excel 打开、引用附件完整。
-- 通过 fake `ExcelGateway` 覆盖大部分映射与失败路径；只在专门 Windows 契约作业中启动真实 Excel COM，避免普通 CI 依赖桌面 Office。
+- 模板写入测试同时覆盖 `OoxmlTemplateWriter`（默认）和 `ExcelTemplateWriter`（COM 回退）路径。
+- 在 Windows 且已安装 Excel 的测试环境中执行 Excel COM 契约测试：源模板哈希不变、8 个工作表顺序不变、首行/验证/保护不变、输出文件可再次由 Excel 打开、引用附件完整。
+- 通过 fake writer 覆盖大部分映射与失败路径；只在专门 Windows 契约作业中启动真实 Excel COM，避免普通 CI 依赖桌面 Office。
 - ZIP 测试必须检查每个归档项以 `template/` 开头，且不存在日志、缓存或未引用附件。
 
 ## 11. 实施顺序

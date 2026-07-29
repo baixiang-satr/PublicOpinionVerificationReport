@@ -9,7 +9,13 @@ import shutil
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from src.crawler.author_profile_urls import derive_author_profile_url
 from src.domain.models import RecordResult, TaskError
+from src.screenshot.author_evidence import (
+    AuthorEvidenceDecision,
+    ProfilePageType,
+    write_decision,
+)
 from src.screenshot.author_shooter import AuthorScreenshotError
 
 
@@ -37,6 +43,30 @@ async def capture_author_home_asset(
                 f"{result.task.evidence_id:03d}主页{suffix}"
             )
             await asyncio.to_thread(shutil.copy2, primary, destination)
+            decision = AuthorEvidenceDecision(
+                candidate_url=author_url,
+                evidence_id=result.task.evidence_id,
+                candidate_source="same_document",
+                expected_name=result.page.author_name,
+                expected_id=(
+                    None
+                    if result.page.author_id_is_fallback
+                    else result.page.author_id
+                ),
+                detected_name=result.page.author_name,
+                detected_id=(
+                    None
+                    if result.page.author_id_is_fallback
+                    else result.page.author_id
+                ),
+                page_type=ProfilePageType.PERSON_PROFILE.value,
+                access_state="accessible",
+                overlay_state="clear",
+                capture_region="profile_container",
+                identity_state="verified",
+                accepted=True,
+            )
+            await asyncio.to_thread(write_decision, decision, Path(output_dir))
             return destination, None
         except Exception as error:
             return None, TaskError(
@@ -58,6 +88,7 @@ async def capture_author_home_asset(
                 if result.page.author_id_is_fallback
                 else result.page.author_id
             ),
+            candidate_source=_candidate_source(author_url, result.page.final_url),
         )
         return path, None
     except AuthorScreenshotError as error:
@@ -107,3 +138,13 @@ def _looks_like_profile_url(url: str) -> bool:
             re.I,
         )
     )
+
+
+def _candidate_source(author_url: str, final_url: str | None) -> str:
+    """Label where the candidate came from; generic JSON-LD org links excluded."""
+
+    if derive_author_profile_url(final_url or author_url, None) == author_url:
+        return "platform_derived"
+    if _looks_like_profile_url(author_url):
+        return "author_link"
+    return "dom_or_derived"

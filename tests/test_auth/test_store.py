@@ -98,6 +98,110 @@ def test_delete_removes_only_selected_platform_state(tmp_path: Path) -> None:
     assert not store.has_valid_state("zhihu")
 
 
+def test_expired_auth_result_marks_profile_but_keeps_state_file(
+    tmp_path: Path,
+) -> None:
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    state = {"cookies": [], "origins": []}
+    profile = store.commit_validated_state(
+        "zhihu",
+        state,
+        _result(AuthStatus.VALID),
+    )
+    assert profile.state_filename is not None
+    state_path = store.states_dir / profile.state_filename
+    assert store.has_valid_state("zhihu")
+
+    store.record_result(
+        AuthProbeResult(
+            platform_key="zhihu",
+            status=AuthStatus.EXPIRED,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://www.zhihu.com/question/362425387",
+            final_url="https://www.zhihu.com/login",
+            barrier_code="LOGIN_REQUIRED",
+            message="expired",
+            used_saved_state=True,
+        )
+    )
+    updated = store.profile_for("zhihu")
+    assert not store.has_valid_state("zhihu")
+    assert updated.status == AuthStatus.EXPIRED
+    # The encrypted file survives a (possibly false-positive) expiry so the
+    # user does not lose the login state; a fresh login overwrites it.
+    assert updated.state_filename == profile.state_filename
+    assert state_path.is_file()
+
+
+def test_expired_profile_state_loads_only_with_include_inactive(
+    tmp_path: Path,
+) -> None:
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    state = {"cookies": [{"name": "session", "value": "x"}], "origins": []}
+    store.commit_validated_state("zhihu", state, _result(AuthStatus.VALID))
+    store.record_result(
+        AuthProbeResult(
+            platform_key="zhihu",
+            status=AuthStatus.EXPIRED,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://www.zhihu.com/question/362425387",
+            barrier_code="LOGIN_REQUIRED",
+            message="expired",
+            used_saved_state=True,
+        )
+    )
+
+    # Crawling must not silently reuse an inert state…
+    assert store.load_state("zhihu") is None
+    assert not store.has_valid_state("zhihu")
+    # …but the auth manager may re-validate the preserved cookies, so a
+    # false-positive expiry can flip back to VALID without a fresh login.
+    assert store.load_state("zhihu", include_inactive=True) == state
+
+
+@pytest.mark.parametrize(
+    "transient_status",
+    [
+        AuthStatus.CHALLENGE,
+        AuthStatus.ACCESS_BLOCKED,
+        AuthStatus.INVALID_URL,
+        AuthStatus.ERROR,
+    ],
+)
+def test_transient_probe_failure_preserves_valid_login_state(
+    tmp_path: Path,
+    transient_status: AuthStatus,
+) -> None:
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    state = {"cookies": [], "origins": []}
+    profile = store.commit_validated_state(
+        "zhihu",
+        state,
+        _result(AuthStatus.VALID),
+    )
+    assert profile.state_filename is not None
+
+    store.record_result(
+        AuthProbeResult(
+            platform_key="zhihu",
+            status=transient_status,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://www.zhihu.com/question/362425387",
+            barrier_code="HTTP_403",
+            message="transient failure",
+            used_saved_state=True,
+        )
+    )
+
+    updated = store.profile_for("zhihu")
+    assert updated.status == AuthStatus.VALID
+    assert updated.state_filename == profile.state_filename
+    assert store.has_valid_state("zhihu")
+    assert store.load_state("zhihu") == state
+    assert updated.last_error_code == "HTTP_403"
+    assert updated.last_message == "transient failure"
+
+
 def test_result_index_does_not_persist_arbitrary_content_url(
     tmp_path: Path,
 ) -> None:

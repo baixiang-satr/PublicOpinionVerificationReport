@@ -52,13 +52,47 @@ async def test_collector_deduplicates_limits_and_returns_only_real_files(tmp_pat
         output_dir=tmp_path,
     )
 
-    assert [path.name for path in result.files] == ["001_01.png", "001_02.png"]
+    # Image index follows the candidate position, so failed downloads leave
+    # gaps instead of shifting later file names.
+    assert sorted(path.name for path in result.files) == ["001_01.png", "001_03.png"]
     assert all(path.is_file() for path in result.files)
-    assert [url for url, _index in fetcher.calls] == [
-        "https://example.test/one.png",
+    assert sorted(url for url, _index in fetcher.calls) == [
         failed_url,
+        "https://example.test/one.png",
         "https://example.test/two.png",
     ]
-    assert [index for _url, index in fetcher.calls] == [1, 2, 2]
+    assert sorted(index for _url, index in fetcher.calls) == [1, 2, 3]
     assert [error.code for error in result.errors] == ["IMAGE_HTTP_ERROR"]
     assert "secret" not in result.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_failed_download_falls_back_to_element_screenshot(tmp_path: Path) -> None:
+    class FallbackPage:
+        async def evaluate(self, script: str, _url: str | None = None) -> bool:
+            return True
+
+        def locator(self, _selector: str) -> "FallbackLocator":
+            return FallbackLocator()
+
+    class FallbackLocator:
+        @property
+        def first(self) -> "FallbackLocator":
+            return self
+
+        async def screenshot(self, path: str, **_kwargs: object) -> None:
+            Path(path).write_bytes(b"png")
+
+    failed_url = "https://example.test/protected.avif"
+    fetcher = StubFetcher(failed_url)
+    collector = AssetCollector(TaskConfig(), fetcher=fetcher)
+
+    result = await collector.collect(
+        FallbackPage(),
+        [failed_url],
+        evidence_id=2,
+        output_dir=tmp_path,
+    )
+
+    assert [path.name for path in result.files] == ["002_01_element.png"]
+    assert result.errors == ()

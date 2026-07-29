@@ -1,9 +1,10 @@
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 import src.auth.service as service_module
-from src.auth.models import AuthStatus
+from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.registry import AUTH_POLICIES
 from src.auth.service import _barrier_result, filter_state_for_policy
 from src.auth.store import AuthProfileStore
@@ -136,6 +137,9 @@ class FakeContext:
     async def new_page(self) -> FakePage:
         return FakePage()
 
+    async def storage_state(self, **_kwargs: object) -> dict:
+        return {"cookies": [], "origins": []}
+
     async def close(self) -> None:
         self.closed = True
 
@@ -178,3 +182,181 @@ class FakeStarter:
 
     async def start(self) -> FakeRuntime:
         return self._runtime
+
+
+@pytest.mark.asyncio
+async def test_revalidation_restores_expired_profile_without_fresh_login(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    contexts: list[FakeContext] = []
+    runtime = FakeRuntime(FakeBrowser(contexts))
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: FakeStarter(runtime),
+    )
+
+    async def fake_navigate(page: FakePage, url: str, _config: TaskConfig):
+        page.url = url
+        return FakeResponse()
+
+    async def no_barrier(_page: FakePage, _final: str, _original: str):
+        return None
+
+    monkeypatch.setattr(service_module, "_navigate", fake_navigate)
+    monkeypatch.setattr(service_module, "inspect_page_access", no_barrier)
+
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    state = {
+        "cookies": [
+            {"name": "session", "value": "x", "domain": ".zhihu.com", "path": "/"}
+        ],
+        "origins": [],
+    }
+    store.commit_validated_state(
+        "zhihu",
+        state,
+        AuthProbeResult(
+            platform_key="zhihu",
+            status=AuthStatus.VALID,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://www.zhihu.com/question/362425387",
+        ),
+    )
+    store.record_result(
+        AuthProbeResult(
+            platform_key="zhihu",
+            status=AuthStatus.EXPIRED,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://www.zhihu.com/question/362425387",
+            barrier_code="LOGIN_REQUIRED",
+            message="possibly false-positive expiry",
+            used_saved_state=True,
+        )
+    )
+    assert not store.has_valid_state("zhihu")
+
+    manager = service_module.AuthManagerService(TaskConfig(), store)
+    result = await manager.probe("zhihu")
+
+    # The preserved cookies still work, so a plain re-validation flips the
+    # profile back to VALID without an interactive login.
+    assert result.status == AuthStatus.VALID
+    profile = store.profile_for("zhihu")
+    assert profile.status == AuthStatus.VALID
+    assert store.has_valid_state("zhihu")
+
+
+@pytest.mark.asyncio
+async def test_dead_probe_page_falls_back_to_next_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    contexts: list[FakeContext] = []
+    runtime = FakeRuntime(FakeBrowser(contexts))
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: FakeStarter(runtime),
+    )
+    navigated: list[str] = []
+
+    async def fake_navigate(page: FakePage, url: str, _config: TaskConfig):
+        page.url = url
+        navigated.append(url)
+        return FakeResponse()
+
+    policy = next(item for item in AUTH_POLICIES if item.platform_key == "zhihu")
+    assert len(policy.probe_candidates) >= 2
+
+    async def dead_first_candidate(_page: FakePage, final: str, _original: str):
+        if final.rstrip("/") == policy.probe_url.rstrip("/"):
+            return AccessBarrier(
+                AccessKind.REDIRECTED_HOME,
+                "CONTENT_REDIRECTED_TO_HOME",
+                "dead probe page",
+                RecordStatus.NEEDS_REVIEW,
+            )
+        return None
+
+    monkeypatch.setattr(service_module, "_navigate", fake_navigate)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_page_access",
+        dead_first_candidate,
+    )
+
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    store.commit_validated_state(
+        "zhihu",
+        {"cookies": [], "origins": []},
+        AuthProbeResult(
+            platform_key="zhihu",
+            status=AuthStatus.VALID,
+            checked_at=datetime.now().astimezone(),
+            original_url=policy.probe_url,
+        ),
+    )
+    manager = service_module.AuthManagerService(TaskConfig(), store)
+
+    result = await manager.probe("zhihu")
+
+    # The rotted primary probe page must not be read as an expired login:
+    # the fallback candidate renders cleanly and the profile stays VALID.
+    assert result.status == AuthStatus.VALID
+    assert navigated[0] == policy.probe_url
+    assert policy.fallback_probe_urls[0] in navigated
+    assert store.has_valid_state("zhihu")
+
+
+@pytest.mark.asyncio
+async def test_interactive_login_commits_state_when_probe_pages_are_dead(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    contexts: list[FakeContext] = []
+    runtime = FakeRuntime(FakeBrowser(contexts))
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: FakeStarter(runtime),
+    )
+
+    async def fake_navigate(page: FakePage, url: str, _config: TaskConfig):
+        page.url = url
+        return FakeResponse()
+
+    async def clean_initial_navigation(page: FakePage, policy: object, _config: TaskConfig):
+        # The interactive login page is clean after the user logs in.
+        page.url = "https://www.zhihu.com/question/362425387"
+        return None, "https://www.zhihu.com/question/362425387"
+
+    async def dead_probe_barrier(_page: FakePage, _final: str, _original: str):
+        # Every validation probe page is dead (delisted product etc.).
+        return AccessBarrier(
+            AccessKind.REDIRECTED_HOME,
+            "CONTENT_REDIRECTED_TO_HOME",
+            "dead probe page",
+            RecordStatus.NEEDS_REVIEW,
+        )
+
+    monkeypatch.setattr(service_module, "_navigate", fake_navigate)
+    monkeypatch.setattr(
+        service_module,
+        "_navigate_probe_candidates",
+        clean_initial_navigation,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "inspect_page_access",
+        dead_probe_barrier,
+    )
+
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    manager = service_module.AuthManagerService(TaskConfig(), store)
+
+    result = await manager.probe("zhihu", use_saved_state=False, interactive=True)
+
+    # The user just logged in manually; dead probe pages cannot disprove the
+    # fresh cookies, so the state is committed instead of discarded.
+    assert result.status == AuthStatus.VALID
+    assert "已直接保存" in result.message
+    assert store.has_valid_state("zhihu")

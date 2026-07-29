@@ -65,6 +65,13 @@ class ExcelTemplateWriter:
         workbook = self._open_workbook(app, workbook_path, read_only=False)
         try:
             self._verify_template_contract(workbook)
+            # Unprotect all sheets so ClearContents and cell writes succeed.
+            for layout in SHEET_LAYOUTS.values():
+                sheet = workbook.Worksheets(layout.name)
+                try:
+                    sheet.Unprotect()
+                except Exception:
+                    pass
             for layout in SHEET_LAYOUTS.values():
                 sheet = workbook.Worksheets(layout.name)
                 sheet_rows = rows_by_sheet.get(layout.name, [])
@@ -77,6 +84,12 @@ class ExcelTemplateWriter:
             for sheet_name, rows in rows_by_sheet.items():
                 layout = SHEET_LAYOUTS[sheet_name]
                 self._write_sheet_rows(workbook.Worksheets(sheet_name), layout, rows)
+            # Re-protect all sheets so that inspect and validate_contract
+            # can verify the template integrity after writing.
+            for layout in SHEET_LAYOUTS.values():
+                sheet = workbook.Worksheets(layout.name)
+                if not bool(sheet.ProtectContents):
+                    sheet.Protect()
             workbook.Save()
         finally:
             workbook.Close(False)
@@ -178,7 +191,7 @@ class ExcelTemplateWriter:
             # Cells beyond the source template's preformatted area are locked.
             # Unprotect only a dynamically extended sheet so the new rows can
             # be written now and manually completed later. Existing sheets
-            # that fit their reserved rows remain protected.
+            # that fit their reserved rows are unprotected by _clear_data_rows.
             sheet.Unprotect()
         except Exception as error:
             raise TemplateIntegrityError(

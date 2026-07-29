@@ -31,7 +31,7 @@
 
 ## 禁止项
 
-- 使用 `openpyxl`、pandas、xlsxwriter、SheetJS 等重建/另存固定模板。
+- 使用 `openpyxl`、pandas、xlsxwriter、SheetJS 等重建/另存固定模板（`OoxmlTemplateWriter` 直接操作 Office Open XML 属于允许的本机重写，不在此限）。
 - 增加状态码、错误信息、标题或作者主页 URL 列。
 - 将运行日志、Cookie、浏览器 profile、调试 HTML 或临时 JSON 放进 ZIP。
 - 以 Excel 行号代替全局证据编号，或写入不存在的附件名称。

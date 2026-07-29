@@ -7,7 +7,7 @@
 
 [project]
 name = "public-opinion-verification-report"
-version = "0.1.0"
+version = "0.2.0"
 description = "舆情验证报告桌面工具 —— 批量采集网页并交付固定 template.zip"
 authors = [
     { name = "developer" },

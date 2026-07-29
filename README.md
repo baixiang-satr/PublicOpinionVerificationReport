@@ -12,7 +12,7 @@ T01 至 T08 已完成：模板契约、URL 导入、页面采集、平台路由�
 - `template.xlsx` 的工作表、表头、下拉值、格式和保护必须保持不变；截图和附件放在同一目录。
 - Excel 中每一个非空截图/附件文件名必须对应 ZIP 内的实际文件。
 
-固定模板为受保护的 Office OLE 工作簿，不能用 `openpyxl` 重建或另存。`openpyxl` 仅用于读取用户输入的普通 `.xlsx`；模板副本必须通过 Windows Excel COM 自动化写入并验证。
+固定模板为受保护的 Office OLE 工作簿，不能用 `openpyxl` 重建或另存。`openpyxl` 仅用于读取用户输入的普通 `.xlsx`；模板副本通过 `OoxmlTemplateWriter`（Office Open XML 直接写入）或 `ExcelTemplateWriter`（Excel COM 回退）写入并验证。
 
 ## 文档导航
 
@@ -44,7 +44,7 @@ python -m src.main
 ```text
 输入文件 -> URL 解析/去重 -> 任务编排 -> Playwright 页面访问
   -> 平台路由与字段提取 -> 内容/主页截图 -> 部分字段可导出校验
-  -> Excel COM 写入模板副本 -> 附件引用校验 -> template.zip
+  -> OOXML / Excel COM 写入模板副本 -> 附件引用校验 -> template.zip
 ```
 
 运行态会保留标题、作者主页 URL、状态码、重定向链和错误信息；其中模板没有对应列的字段只在 GUI 和本机运行日志中显示，不会擅自加入 ZIP。

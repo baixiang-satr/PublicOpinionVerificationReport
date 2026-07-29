@@ -15,7 +15,6 @@ from src.crawler.platform_router import PlatformRouter
 from src.domain.models import (
     RecordResult,
     RecordStatus,
-    TaskError,
     TaskEvent,
     TemplateRow,
     UrlTask,
@@ -24,10 +23,15 @@ from src.export.excel_writer import ExcelAutomationUnavailable, ExcelTemplateWri
 from src.export.ooxml_writer import OoxmlTemplateWriter
 from src.export.package_validator import validate_template_assets
 from src.export.packager import create_template_archive
-from src.export.row_mapper import TemplateRowMapper, TemplateRowMappingError
+from src.export.row_mapper import TemplateRowMapper
 from src.export.staging_assets import cleanup_staging_assets
 from src.export.template_manager import PreparedTemplate, TemplateManager
 from src.input.reader import InputReadError, read_url_input
+from src.screenshot.author_evidence import AuthorEvidenceDecision
+from src.services.export_flow import (
+    audit_and_archive_author_evidence,
+    build_export_rows,
+)
 from src.services.models import (
     JobRequest,
     JobResult,
@@ -208,6 +212,23 @@ class TaskRunner:
                     checkpoint_path=checkpoint.path,
                 )
 
+            rows, author_decisions, author_audit_entries = (
+                audit_and_archive_author_evidence(
+                    prepared.template_dir,
+                    rows,
+                    prepared.job_dir,
+                )
+            )
+            for entry in author_audit_entries:
+                self._log(
+                    callbacks,
+                    "WARNING",
+                    (
+                        f"主页截图 {entry['file']} 未通过 ZIP 前审计"
+                        f"（{entry['rejection_code']}），已从附件移除并转入待补录。"
+                    ),
+                    entry.get("evidence_id"),
+                )
             cleanup_staging_assets(
                 prepared.template_dir,
                 rows,
@@ -259,6 +280,8 @@ class TaskRunner:
                 prepared.job_id,
                 request.label,
                 rejected_count,
+                author_decisions,
+                author_audit_entries,
             )
             tracker.publish(records, stage="已完成")
             self._log(callbacks, "SUCCESS", f"任务完成：{archive_path}")
@@ -313,44 +336,12 @@ class TaskRunner:
         records: list[RecordResult],
         callbacks: RunnerCallbacks,
     ) -> list[TemplateRow]:
-        rows: list[TemplateRow] = []
-        for record in records:
-            if record.status in {
-                RecordStatus.PENDING,
-                RecordStatus.RUNNING,
-                RecordStatus.CANCELLED,
-            }:
-                continue
-            if record.route is None:
-                route_url = record.task.normalized_url
-                record.route = self._platform_router.route(route_url, record.page)
-            if record.route is None:
-                record.errors.append(
-                    TaskError(
-                        "export_validation",
-                        "ROW_ROUTE_UNAVAILABLE",
-                        "URL 未匹配固定模板平台，无法保留对应工作表行。",
-                        retryable=False,
-                    )
-                )
-                if record.status == RecordStatus.ASSETS_READY:
-                    record.status = RecordStatus.NEEDS_REVIEW
-                _call(callbacks.record_updated, record)
-                continue
-            was_assets_ready = record.status == RecordStatus.ASSETS_READY
-            if was_assets_ready:
-                record.status = RecordStatus.READY_FOR_EXPORT
-            try:
-                row = self._row_mapper.map(record)
-                rows.append(row)
-            except TemplateRowMappingError as error:
-                if was_assets_ready:
-                    record.status = RecordStatus.NEEDS_REVIEW
-                record.errors.append(
-                    TaskError("export_validation", "ROW_MAPPING_FAILED", str(error))
-                )
-            _call(callbacks.record_updated, record)
-        return rows
+        return build_export_rows(
+            records,
+            self._row_mapper,
+            self._platform_router,
+            callbacks.record_updated,
+        )
 
     def _write_quality_artifacts(
         self,
@@ -359,6 +350,8 @@ class TaskRunner:
         job_id: str,
         label: str,
         rejected_count: int,
+        author_decisions: list[AuthorEvidenceDecision] | None = None,
+        author_audit_entries: list[dict[str, Any]] | None = None,
     ) -> QualityArtifacts:
         return write_quality_artifacts(
             records,
@@ -367,6 +360,8 @@ class TaskRunner:
             label=label,
             rejected_count=rejected_count,
             router=self._platform_router,
+            author_decisions=author_decisions,
+            author_audit_entries=author_audit_entries,
         )
 
     @staticmethod

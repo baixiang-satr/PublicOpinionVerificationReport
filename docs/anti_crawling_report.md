@@ -1,7 +1,8 @@
 # 反爬机制检测报告与解决方案
 
-> **文档版本**: v0.3  
+> **文档版本**: v0.4  
 > **测试日期**: 2026-07-28  
+> **更新说明**: OoxmlTemplateWriter 已作为默认导出路径，不再强制依赖 Excel COM  
 > **测试范围**: 模板 8 个工作表中 6 个适用 URL 抓取的工作表，共 30 个平台  
 > **测试工具**: Playwright Chromium headless (`TaskConfig(headless=True)`)  
 > **测试方法**: 每个平台选取一个公开 URL，通过 `CrawlEngine` 执行完整爬取流程（访问→解析→路由→截图）  

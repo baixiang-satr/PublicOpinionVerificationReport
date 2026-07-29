@@ -133,6 +133,20 @@ class MainWindow(QMainWindow):
         self.retry_button.setText("重试失败项")
         self.retry_button.clicked.connect(self._retry_failed)
 
+        self.resume_button = QPushButton()
+        self.resume_button.setObjectName("resumeButton")
+        self.resume_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowForward))
+        self.resume_button.setText("从断点继续")
+        self.resume_button.setToolTip("复用最近一次断点中已完成的记录，仅抓取其余 URL。")
+        self.resume_button.clicked.connect(self._resume_from_checkpoint)
+
+        self.reexport_button = QPushButton()
+        self.reexport_button.setObjectName("reexportButton")
+        self.reexport_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.reexport_button.setText("仅重新导出")
+        self.reexport_button.setToolTip("不启动浏览器，直接用最近一次断点记录重新生成 template.zip。")
+        self.reexport_button.clicked.connect(self._reexport_from_checkpoint)
+
         self.open_output_button = QPushButton()
         self.open_output_button.setObjectName("openOutputButton")
         self.open_output_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
@@ -142,8 +156,10 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.start_button, 0, 0)
         action_row.addWidget(self.cancel_button, 0, 1)
         action_row.addWidget(self.retry_button, 0, 2)
-        action_row.addWidget(self.open_output_button, 0, 3)
-        for column in range(4):
+        action_row.addWidget(self.resume_button, 0, 3)
+        action_row.addWidget(self.reexport_button, 0, 4)
+        action_row.addWidget(self.open_output_button, 0, 5)
+        for column in range(6):
             action_row.setColumnStretch(column, 1)
         g3_layout.addLayout(action_row)
 
@@ -212,6 +228,43 @@ class MainWindow(QMainWindow):
             label="失败项重试",
         )
         self._start_worker(request, clear_results=True)
+
+    def _resume_from_checkpoint(self) -> None:
+        self._start_from_checkpoint(reexport_only=False)
+
+    def _reexport_from_checkpoint(self) -> None:
+        self._start_from_checkpoint(reexport_only=True)
+
+    def _start_from_checkpoint(self, *, reexport_only: bool) -> None:
+        input_path = self.file_selector.path()
+        if input_path is None:
+            QMessageBox.information(self, "还差一步", "请先选择与原任务相同的 URL 文件。")
+            return
+        checkpoint = self._latest_checkpoint()
+        if checkpoint is None:
+            QMessageBox.information(
+                self,
+                "没有断点",
+                "输出目录中没有可复用的 job_checkpoint.json，请先完成一次抓取。",
+            )
+            return
+        request = JobRequest(
+            input_path=input_path,
+            resume_checkpoint_path=checkpoint,
+            reexport_only=reexport_only,
+            label="仅重新导出" if reexport_only else "断点继续",
+        )
+        self._start_worker(request, clear_results=True)
+
+    def _latest_checkpoint(self) -> Path | None:
+        output_dir = Path(self._base_config.template.output_dir)
+        try:
+            candidates = list(output_dir.glob("*/job_checkpoint.json"))
+        except OSError:
+            return None
+        if not candidates:
+            return None
+        return max(candidates, key=lambda path: path.stat().st_mtime)
 
     def _open_auth_manager(self) -> None:
         store_dir = self._base_config.task.auth_store_dir or default_auth_store_dir()
@@ -307,6 +360,9 @@ class MainWindow(QMainWindow):
         self.cancel_button.setText("取消任务")
         has_retry = self._last_result is not None and bool(self._last_result.retryable_tasks)
         self.retry_button.setEnabled(not running and has_retry)
+        has_checkpoint = not running and self._latest_checkpoint() is not None
+        self.resume_button.setEnabled(has_checkpoint)
+        self.reexport_button.setEnabled(has_checkpoint)
         self.open_output_button.setEnabled(not running and self._last_output is not None)
 
     def _open_output(self) -> None:

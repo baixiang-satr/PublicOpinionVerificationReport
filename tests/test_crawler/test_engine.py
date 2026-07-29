@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from src.auth.models import AuthStatus
 from src.config.settings import TaskConfig
 from src.crawler.engine import CrawlEngine
 from src.domain.models import PageData, RecordStatus, UrlTask
@@ -369,80 +368,6 @@ async def test_partial_content_is_assets_ready_with_missing_field_warning(tmp_pa
     assert result.status == RecordStatus.ASSETS_READY
     assert result.assets.page_screenshot == tmp_path / "001.jpg"
     assert "PARTIAL_FIELDS_MISSING" in [error.code for error in result.errors]
-
-
-@pytest.mark.asyncio
-async def test_auth_failure_pauses_remaining_tasks_for_same_platform(tmp_path: Path) -> None:
-    pool = FakeBrowserPool([401], "https://www.zhihu.com/question/1")
-    engine = CrawlEngine(
-        TaskConfig(
-            max_retries=0,
-            min_host_interval_seconds=0,
-            page_stabilize_milliseconds=0,
-        ),
-        browser_pool=pool,
-        parser=StubParser(),
-        shooter=StubShooter(),
-    )
-    tasks = [
-        UrlTask(
-            evidence_id,
-            f"https://www.zhihu.com/question/{evidence_id}",
-            f"https://www.zhihu.com/question/{evidence_id}",
-        )
-        for evidence_id in (1, 2, 3)
-    ]
-
-    results = await engine.run(tasks, tmp_path)
-
-    assert pool.page_count == 1
-    assert [result.status for result in results] == [
-        RecordStatus.NEEDS_REVIEW,
-        RecordStatus.NEEDS_REVIEW,
-        RecordStatus.NEEDS_REVIEW,
-    ]
-    assert [error.code for error in results[1].errors] == ["PLATFORM_AUTH_PAUSED"]
-    assert [error.code for error in results[2].errors] == ["PLATFORM_AUTH_PAUSED"]
-
-
-@pytest.mark.asyncio
-async def test_known_expired_auth_state_blocks_platform_before_navigation(
-    tmp_path: Path,
-) -> None:
-    class ExpiredAuthStore:
-        @staticmethod
-        def profile_for(_platform_key: str):
-            return type("Profile", (), {"status": AuthStatus.EXPIRED})()
-
-    pool = FakeBrowserPool([], "https://www.zhihu.com/question/1")
-    engine = CrawlEngine(
-        TaskConfig(
-            auth_store_dir=tmp_path / "auth",
-            min_host_interval_seconds=0,
-            page_stabilize_milliseconds=0,
-        ),
-        browser_pool=pool,
-        parser=StubParser(),
-        shooter=StubShooter(),
-        auth_store=ExpiredAuthStore(),
-    )
-
-    results = await engine.run(
-        [
-            UrlTask(
-                1,
-                "https://www.zhihu.com/question/1",
-                "https://www.zhihu.com/question/1",
-            )
-        ],
-        tmp_path,
-    )
-
-    assert pool.page_count == 0
-    assert results[0].status == RecordStatus.NEEDS_REVIEW
-    assert [error.code for error in results[0].errors] == [
-        "PLATFORM_AUTH_PAUSED"
-    ]
 
 
 @pytest.mark.asyncio

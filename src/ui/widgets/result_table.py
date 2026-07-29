@@ -24,6 +24,7 @@ HEADERS = (
     "工作表",
     "HTTP状态码",
     "处理状态",
+    "主页证据",
     "错误与提醒",
 )
 
@@ -63,10 +64,10 @@ class ResultTable(QTableWidget):
         self.verticalHeader().setVisible(False)
         self.verticalHeader().setDefaultSectionSize(38)
         self.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate((60, 220, 220, 180, 120, 200, 100, 70, 90)):
+        for column, width in enumerate((60, 220, 220, 180, 120, 200, 100, 70, 90, 90)):
             self.setColumnWidth(column, width)
         self.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.horizontalHeader().setSectionResizeMode(9, QHeaderView.Stretch)
+        self.horizontalHeader().setSectionResizeMode(10, QHeaderView.Stretch)
         self.horizontalHeader().setMinimumSectionSize(50)
         self._rows: dict[int, int] = {}
         self._records: dict[int, RecordResult] = {}
@@ -89,13 +90,14 @@ class ResultTable(QTableWidget):
             record.route.sheet_name if record.route else "",
             "" if record.page.status_code is None else str(record.page.status_code),
             STATUS_TEXT.get(record.status, record.status.value),
+            _author_evidence_text(record),
             _error_text(record),
         )
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
-            item.setToolTip(value)
+            item.setToolTip(_cell_tooltip(record, column, value))
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            if column in {0, 7, 8}:
+            if column in {0, 7, 8, 9}:
                 item.setTextAlignment(Qt.AlignCenter)
             self.setItem(row, column, item)
         color = STATUS_COLORS.get(record.status)
@@ -113,3 +115,37 @@ class ResultTable(QTableWidget):
 
 def _error_text(record: RecordResult) -> str:
     return "；".join(f"{error.code}: {error.message}" for error in record.errors)
+
+
+def _author_evidence_text(record: RecordResult) -> str:
+    """Author-home evidence state: accepted / rejected-with-code / candidate."""
+
+    if record.assets.author_screenshot is not None:
+        return "✓ 已接受"
+    rejection = next(
+        (
+            error.code
+            for error in record.errors
+            if error.code.startswith("AUTHOR_")
+        ),
+        None,
+    )
+    if rejection is not None:
+        return f"✗ {rejection}"
+    if record.page.author_url:
+        return "… 候选"
+    return ""
+
+
+def _cell_tooltip(record: RecordResult, column: int, value: str) -> str:
+    """Field source/confidence provenance on hover for extracted cells."""
+
+    field_by_column = {3: "title", 4: "author_name", 5: "author_url"}
+    field = field_by_column.get(column)
+    if field is None:
+        return value
+    source = record.page.field_sources.get(field)
+    confidence = record.page.field_confidences.get(field)
+    parts = [part for part in (value, f"来源：{source.value}" if source else None,
+                               f"置信度：{confidence:.2f}" if confidence else None) if part]
+    return "\n".join(parts)

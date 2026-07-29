@@ -54,9 +54,11 @@ def test_main_window_exposes_complete_three_step_workflow(
     assert window.start_button.text() == "开始生成"
     assert window.cancel_button.text() == "取消任务"
     assert window.retry_button.text() == "重试失败项"
+    assert window.resume_button.text() == "从断点继续"
+    assert window.reexport_button.text() == "仅重新导出"
     assert window.open_output_button.text() == "打开输出位置"
     assert window.auth_manager_button.text() == "管理平台登录态…"
-    assert window.result_table.columnCount() == 10
+    assert window.result_table.columnCount() == 11
     assert not window.cancel_button.isEnabled()
     assert window.options.task_config().max_concurrency == 3
 

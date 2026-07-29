@@ -17,6 +17,7 @@ from src.crawler.content_parser import ContentParser
 from src.crawler.crawl_navigation import CrawlFailure, navigate_with_fallback
 from src.crawler.field_quality import missing_required_fields
 from src.crawler.ocr_pipeline import OcrPipeline
+from src.crawler.optional_assets import collect_optional_assets
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.platform_scheduler import PlatformTaskScheduler
 from src.crawler.rate_limiter import HostRateLimiter, wait_with_cancellation
@@ -29,7 +30,6 @@ from src.domain.models import (
     UrlTask,
 )
 from src.screenshot.asset_collector import AssetCollector
-from src.screenshot.author_asset import capture_author_home_asset
 from src.screenshot.author_shooter import AuthorShooter
 from src.screenshot.browser import BrowserPool
 from src.screenshot.page_shooter import PageShooter, PageScreenshotError
@@ -126,6 +126,20 @@ class CrawlEngine:
         results: list[RecordResult] = []
         known_block = self._scheduler.known_auth_block(tasks[0])
         if known_block is not None:
+            # A stored EXPIRED marker may be stale (false positive from a
+            # dead probe page, or cookies refreshed by another session).
+            # Give the preserved state one probe inside the crawl browser
+            # before pausing the whole platform.
+            blocked_platform = self._scheduler.blocked_auth_platform(tasks[0])
+            if blocked_platform is not None and await self._try_heal_auth(
+                blocked_platform
+            ):
+                logger.info(
+                    "Auth profile for %s self-healed before crawl; platform not paused.",
+                    blocked_platform,
+                )
+                known_block = None
+        if known_block is not None:
             for task in tasks:
                 results.append(
                     self._publish_paused_result(
@@ -187,6 +201,20 @@ class CrawlEngine:
             except Exception:
                 pass
         return result
+
+    async def _try_heal_auth(self, platform_key: str) -> bool:
+        revalidate = getattr(self._browser_pool, "revalidate_platform_profile", None)
+        if revalidate is None:
+            return False
+        try:
+            return bool(await revalidate(platform_key))
+        except Exception as error:
+            logger.warning(
+                "Auth self-heal probe failed for %s: %s",
+                platform_key,
+                error,
+            )
+            return False
 
     def _publish_paused_result(
         self,
@@ -404,68 +432,16 @@ class CrawlEngine:
         output_dir: Path,
         cancel_event: asyncio.Event,
     ) -> None:
-        if result.page.author_url:
-            asset, error = await capture_author_home_asset(
-                self._author_shooter,
-                page,
-                result,
-                output_dir,
-                cancel_event,
-            )
-            result.assets.author_screenshot = asset
-            if error is not None:
-                result.errors.append(error)
-
-        # Body images are temporary OCR inputs, including mixed text/image
-        # posts. They never become delivery attachments.
-        if not self._config.ocr_enabled or not result.page.image_urls:
-            result.errors.extend(
-                await self._ocr_pipeline.process_content_images(
-                    result.page,
-                    [],
-                    cancel_event,
-                )
-            )
-            return
-        collected_files: list[Path] = []
-        try:
-            collected = await self._asset_collector.collect(
-                page,
-                result.page.image_urls,
-                result.task.evidence_id,
-                output_dir,
-                cancel_event,
-            )
-            collected_files.extend(collected.files)
-            result.errors.extend(collected.errors)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            result.errors.append(
-                TaskError(
-                    "image_download",
-                    "ASSET_COLLECTION_FAILED",
-                    str(error),
-                    retryable=False,
-                )
-            )
-            return
-
-        try:
-            _raise_if_cancelled(cancel_event)
-            result.errors.extend(
-                await self._ocr_pipeline.process_content_images(
-                    result.page,
-                    collected_files,
-                    cancel_event,
-                )
-            )
-        finally:
-            for path in collected_files:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError as error:
-                    logger.warning("Unable to remove temporary OCR image %s: %s", path, error)
+        await collect_optional_assets(
+            config=self._config,
+            author_shooter=self._author_shooter,
+            asset_collector=self._asset_collector,
+            ocr_pipeline=self._ocr_pipeline,
+            page=page,
+            result=result,
+            output_dir=output_dir,
+            cancel_event=cancel_event,
+        )
 
     async def _backoff(self, attempt: int, cancel_event: asyncio.Event) -> None:
         # Exponential backoff with full jitter (AWS-recommended strategy)

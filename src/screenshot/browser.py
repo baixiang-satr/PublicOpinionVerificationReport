@@ -16,87 +16,26 @@ from src.auth.registry import auth_policy_for_key, auth_policy_for_url
 from src.auth.state_filter import filter_state_for_policy
 from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
+from src.screenshot.browser_options import (
+    STEALTH_SCRIPT_PATH as _STEALTH_SCRIPT_PATH,
+    browser_context_options,
+    browser_launch_options,
+)
 from src.screenshot.browser_runtime import (
     close_quietly,
     connection_closed,
-    mask_proxy,
 )
 from src.screenshot.stealth import apply_extra_stealth
 
 
 logger = logging.getLogger(__name__)
 
-_STEALTH_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "libs" / "stealth.min.js"
-
-# ── Anti-detection Chromium launch arguments ─────────────────────────────
-# Reference: MediaCrawler (https://github.com/NanmiCoder/MediaCrawler)
-# These args help hide Playwright automation fingerprints from target sites.
-_ANTI_DETECTION_ARGS = (
-    # ── Core automation hiding ───────────────────────────────────────
-    "--disable-blink-features=AutomationControlled",
-    "--exclude-switches=enable-automation",
-    "--disable-infobars",
-    # ── Sandbox / shared memory ──────────────────────────────────────
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-setuid-sandbox",
-    # ── Background throttling prevention ─────────────────────────────
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "--disable-ipc-flooding-protection",
-    "--disable-hang-monitor",
-    # ── Feature flags ────────────────────────────────────────────────
-    "--disable-features=IsolateOrigins,site-per-process",
-    "--disable-web-security",
-    "--disable-sync",
-    "--disable-extensions",
-    "--disable-component-extensions-with-background-pages",
-    # ── Performance ──────────────────────────────────────────────────
-    "--disable-gpu",
-    # ── Misc ─────────────────────────────────────────────────────────
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--hide-scrollbars",
-    "--mute-audio",
-)
-
-
-def browser_launch_options(config: TaskConfig) -> dict[str, Any]:
-    launch_args = [*_ANTI_DETECTION_ARGS, *config.extra_chromium_args]
-    options: dict[str, Any] = {
-        "headless": config.headless,
-        "args": launch_args,
-    }
-    if config.proxy_url:
-        options["proxy"] = {"server": config.proxy_url}
-        logger.info("Browser configured with proxy: %s", mask_proxy(config.proxy_url))
-    return options
-
-
-def browser_context_options(
-    config: TaskConfig,
-    storage_state: Any | None = None,
-) -> dict[str, Any]:
-    options: dict[str, Any] = {
-        "viewport": {
-            "width": config.viewport_width,
-            "height": config.viewport_height,
-        },
-        "locale": "zh-CN",
-        "timezone_id": config.timezone,
-        "device_scale_factor": 1,
-        "is_mobile": False,
-        "has_touch": False,
-        "color_scheme": "light",
-        "reduced_motion": "no-preference",
-        "forced_colors": "none",
-    }
-    if config.user_agent:
-        options["user_agent"] = config.user_agent
-    if storage_state is not None:
-        options["storage_state"] = storage_state
-    return options
+__all__ = [
+    "BrowserPool",
+    "BrowserUnavailableError",
+    "browser_context_options",
+    "browser_launch_options",
+]
 
 
 class BrowserUnavailableError(RuntimeError):
@@ -297,6 +236,29 @@ class BrowserPool:
             slot.platform_key,
         )
 
+    async def revalidate_platform_profile(self, platform_key: str) -> bool:
+        """Give a non-VALID profile's preserved state one fair probe.
+
+        Used by the crawl engine before pausing a whole platform: preserved
+        cookies that still work restore the profile to VALID (self-heal), so
+        a stale EXPIRED marker never blocks a batch right after the user
+        logged in.
+        """
+
+        if self._auth_store is None or self._browser is None:
+            return False
+        from src.screenshot.auth_revalidation import revalidate_platform_profile
+
+        return await revalidate_platform_profile(
+            self._browser,
+            self._config,
+            self._auth_store,
+            platform_key,
+            stealth_script_path=(
+                str(_STEALTH_SCRIPT_PATH) if self._stealth_loaded else None
+            ),
+        )
+
     def mark_access_invalid(
         self,
         page: Any,
@@ -306,37 +268,39 @@ class BrowserPool:
         message: str,
     ) -> None:
         slot = self._context_ids.get(id(page.context))
-        if (
-            slot is None
-            or slot.source != "profile"
-            or slot.platform_key is None
-            or self._auth_store is None
-        ):
+        if slot is None or slot.platform_key is None:
             return
-        if barrier_code in {"LOGIN_REQUIRED", "HTTP_401"}:
-            status = AuthStatus.EXPIRED
-        elif barrier_code in {
-            "CAPTCHA_REQUIRED",
-            "ACCESS_CHALLENGE",
-            "HTTP_403",
-        }:
-            status = AuthStatus.CHALLENGE
-        else:
-            # A dead URL, empty page, API response, or parser problem does not
-            # prove that an otherwise valid authentication state has expired.
+        if barrier_code not in {"LOGIN_REQUIRED", "HTTP_401"}:
+            # A dead URL, empty page, HTTP 403, captcha, API response or
+            # parser problem is page-specific risk control; it does not
+            # prove anything about the saved login state.
             return
-        self._auth_store.record_result(
-            AuthProbeResult(
-                platform_key=slot.platform_key,
-                status=status,
-                checked_at=datetime.now().astimezone(),
-                original_url=original_url,
-                final_url=str(getattr(page, "url", "") or ""),
-                barrier_code=barrier_code,
-                message=message,
-                used_saved_state=True,
-            )
+        # A single content URL's login wall must not downgrade the persisted
+        # authentication profile: the barrier may be URL-specific, and
+        # wiping the profile forced users to log in again after every
+        # transient failure.  Only the auth manager's fresh-context probe
+        # against the platform probe URL may mark a profile EXPIRED.  Here we
+        # just evict the in-memory context so later URLs do not reuse the
+        # session that hit the wall; the per-record error still reports the
+        # barrier for the quality report.
+        logger.warning(
+            "Login barrier %s on %s for platform %s; kept saved login state, "
+            "re-validate from the auth manager if it persists.",
+            barrier_code,
+            original_url,
+            slot.platform_key,
         )
+        self._invalidate_auth_context(slot)
+
+    def _invalidate_auth_context(self, slot: _ContextSlot) -> None:
+        """Evict a profile-backed browser context after its saved state proves invalid."""
+        self._contexts.pop(slot.key, None)
+        self._context_ids.pop(id(slot.context), None)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(close_quietly(slot.context, timeout=2.0))
 
     def _context_spec(
         self,

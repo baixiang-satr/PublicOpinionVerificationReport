@@ -94,6 +94,9 @@ class PageData:
     content_kind: ContentKind = ContentKind.UNKNOWN
     original_content_chars: int = 0
     exported_content_chars: int = 0
+    # Auditable reasons for rejected field candidates (e.g. foreign-scope
+    # comment/recommendation nodes skipped during structured extraction).
+    field_rejection_notes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

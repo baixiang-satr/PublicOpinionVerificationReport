@@ -46,6 +46,33 @@ _PROBE_URLS: dict[str, str] = {
 }
 
 
+# Probe URLs are concrete content pages that can rot (product delisted,
+# article deleted, redirect to home).  A dead probe page must never be read
+# as "login state expired", so platforms with volatile probe pages get
+# fallback candidates; validation tries them in order and only an explicit
+# login wall proves expiry.
+_FALLBACK_PROBE_URLS: dict[str, tuple[str, ...]] = {
+    "tmall": ("https://detail.tmall.com/item.htm?id=557017471577",),
+    "taobao": ("https://item.taobao.com/item.htm?id=917048988868",),
+    "1688": ("https://detail.1688.com/offer/652702302959.html",),
+    "jd": ("https://item.jd.com/100033296948.html",),
+    "pinduoduo": ("https://mobile.yangkeduo.com/goods2.html?goods_id=583843098814",),
+    "douyin_ecommerce": (
+        "https://haohuo.jinritemai.com/ecommerce/trade/detail/index.html"
+        "?id=3794554853968183539&origin_type=604",
+    ),
+    "xianyu": ("https://www.goofish.com/item?categoryId=0&id=953562730533",),
+    "weibo": ("https://weibo.com/7798269830/5264010640887796",),
+    "toutiao": ("https://www.toutiao.com/article/7610591062242935322/",),
+    "baijiahao": ("https://baijiahao.baidu.com/s?id=1852981564697478409",),
+    "kuaishou": ("https://www.kuaishou.com/short-video/3xifs9zxiwmvgqe",),
+    "douyin": ("https://www.douyin.com/video/7660061608801996068",),
+    "ixigua": ("https://www.ixigua.com/7635649905751384165",),
+    "zhihu": ("https://zhuanlan.zhihu.com/p/2015007141673596133",),
+    "tieba": ("https://tieba.baidu.com/p/10847021396",),
+}
+
+
 AUTH_POLICIES: tuple[PlatformAuthPolicy, ...] = tuple(
     PlatformAuthPolicy(
         platform_key=definition.key,
@@ -62,6 +89,7 @@ AUTH_POLICIES: tuple[PlatformAuthPolicy, ...] = tuple(
             "huawei_browser",
             "qq_browser",
         },
+        fallback_probe_urls=_FALLBACK_PROBE_URLS.get(definition.key, ()),
     )
     for definition in PLATFORM_DEFINITIONS
 )

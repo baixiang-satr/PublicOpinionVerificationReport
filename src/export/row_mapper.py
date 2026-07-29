@@ -15,6 +15,11 @@ from src.utils.file_utils import require_safe_file_name
 from src.utils.time_utils import as_excel_datetime
 
 
+# Labels used to keep titles inside 信息内容 on sheets without a title column.
+TITLE_HEADING = "【标题】"
+BODY_HEADING = "【正文】"
+
+
 class TemplateRowMappingError(ValueError):
     """Raised when a runtime record cannot truthfully satisfy a template row."""
 
@@ -149,14 +154,26 @@ class TemplateRowMapper:
 
 
 def _content_with_title(title: object | None, content: object | None) -> object | None:
-    """Preserve a fetched title in fixed sheets that have no title column."""
+    """Preserve a fetched title in fixed sheets that have no title column.
+
+    The fixed template only gives 电商平台 and 公众号 an independent title
+    column.  Every other sheet keeps the title inside 信息内容 with explicit
+    labels so the extracted title is never lost:
+
+        【标题】……
+        【正文】
+        ……
+
+    When the title already appears naturally at the start of the body it is
+    not duplicated.
+    """
 
     title_text = str(title or "").strip()
     content_text = str(content or "").strip()
     if not title_text:
         return content
     if not content_text:
-        return title_text
+        return f"{TITLE_HEADING}{title_text}"
     if title_text.casefold() in content_text[: max(240, len(title_text) * 3)].casefold():
         return content
-    return f"{title_text}\n{content_text}"
+    return f"{TITLE_HEADING}{title_text}\n{BODY_HEADING}\n{content_text}"

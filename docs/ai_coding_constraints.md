@@ -2,7 +2,7 @@
 
 1. 单个代码文件中的代码不得超过 500 行；接近上限时按职责拆分模块。
 2. 编码前必须阅读 `requirements.md`、`design.md`、模板契约和本任务相关代码。
-3. 源 `template/` 只能读取；固定 `template.xlsx` 只能通过 Excel COM 写 staging 副本。
+3. 源 `template/` 只能读取；固定 `template.xlsx` 优先通过 Office Open XML 直接写入（`OoxmlTemplateWriter`），仅在旧式 OLE 格式时回退至 Excel COM。
 4. 不新增、删除或改变模板工作表、列、表头、验证、格式和保护。
 5. 运行态采集事实与 Excel 模板行必须使用独立模型，禁止用松散字典跨层传递。
 6. 平台枚举、列映射、命名规则和可配置参数必须集中管理，禁止散落硬编码。

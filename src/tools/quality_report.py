@@ -46,6 +46,8 @@ def write_quality_artifacts(
     label: str,
     rejected_count: int = 0,
     router: PlatformRouter | None = None,
+    author_decisions: list[Any] | None = None,
+    author_audit_entries: list[dict[str, Any]] | None = None,
 ) -> QualityArtifacts:
     """Write UTF-8 audit files without changing the fixed template ZIP."""
 
@@ -113,6 +115,10 @@ def write_quality_artifacts(
         "error_counts": error_counts,
         "extraction_source_counts": source_counts,
         "platforms": platform_stats,
+        "author_evidence": _author_evidence_summary(
+            author_decisions or [],
+            author_audit_entries or [],
+        ),
     }
 
     summary_path = destination / "quality_summary.json"
@@ -188,6 +194,9 @@ def _record_row(
             for field in _TRACKED_FIELDS
             if not getattr(record.page, field)
         ],
+        "field_rejection_notes": list(
+            dict.fromkeys(record.page.field_rejection_notes)
+        )[:5],
         "filled_fields": sum(
             bool(getattr(record.page, field))
             for field in _TRACKED_FIELDS
@@ -244,6 +253,11 @@ def _write_manual_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "错误说明",
         "建议处理",
         "缺失字段",
+        "字段拒绝原因",
+        "主截图拒绝原因",
+        "主页截图拒绝原因",
+        "建议在登录态恢复后重试",
+        "推荐补录顺序",
         "内容类型",
         "OCR状态",
         "主页截图状态",
@@ -256,6 +270,14 @@ def _write_manual_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             codes = row["error_codes"]
             messages = row["error_messages"]
             advice = get_failure_advice(codes[0]) if codes else "请人工核对并补录。"
+            page_screenshot_rejection = next(
+                (
+                    code
+                    for code in codes
+                    if code in {"PAGE_SCREENSHOT_FAILED", "CONTENT_SCREENSHOT_FAILED"}
+                ),
+                "",
+            )
             writer.writerow(
                 {
                     "证据编号": f"{row['evidence_id']:03d}",
@@ -268,6 +290,35 @@ def _write_manual_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                     "错误说明": "; ".join(messages),
                     "建议处理": advice.replace("\n", " "),
                     "缺失字段": "; ".join(row["missing_fields"]),
+                    "字段拒绝原因": (
+                        "；".join(row["field_rejection_notes"])
+                        if row["field_rejection_notes"]
+                        else (
+                            "平台未提供可信候选"
+                            if row["missing_fields"]
+                            else ""
+                        )
+                    ),
+                    "主截图拒绝原因": page_screenshot_rejection,
+                    "主页截图拒绝原因": row["author_profile_failure_code"],
+                    "建议在登录态恢复后重试": (
+                        "是"
+                        if any(
+                            code
+                            in {
+                                "LOGIN_REQUIRED",
+                                "HTTP_401",
+                                "PLATFORM_AUTH_PAUSED",
+                                "CAPTCHA_REQUIRED",
+                                "ACCESS_CHALLENGE",
+                                "HTTP_403",
+                                "AUTHOR_ACCESS_RESTRICTED",
+                            }
+                            for code in codes
+                        )
+                        else "否"
+                    ),
+                    "推荐补录顺序": _manual_entry_priority(row),
                     "内容类型": row["content_kind"],
                     "OCR状态": row["ocr_status"],
                     "主页截图状态": (
@@ -296,6 +347,19 @@ def _write_manual_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                     ),
                 }
             )
+
+
+def _manual_entry_priority(row: dict[str, Any]) -> str:
+    """Suggested manual-entry order: nearly-complete records finish fastest."""
+
+    missing = len(row["missing_fields"])
+    if row["status"] == "failed":
+        return "靠后（主结果未取到，先核对 URL/登录态）"
+    if missing <= 2:
+        return "优先（仅缺少数字段）"
+    if missing <= 4:
+        return "普通"
+    return "靠后"
 
 
 def _markdown_report(summary: dict[str, Any], manual_file: str) -> str:
@@ -346,7 +410,63 @@ def _markdown_report(summary: dict[str, Any], manual_file: str) -> str:
         lines.append(f"| `{code}` | {count} |")
     if not summary["error_counts"]:
         lines.append("| 无 | 0 |")
+    author = summary.get("author_evidence") or {}
+    if author:
+        lines.extend(
+            [
+                "",
+                "## 个人主页证据验收",
+                "",
+                f"- 候选主页：{author.get('author_url_candidates', 0)}",
+                f"- 已打开主页：{author.get('author_pages_opened', 0)}",
+                f"- 身份校验通过：{author.get('author_identity_validated', 0)}",
+                f"- 干净可交付截图：{author.get('author_clean_screenshots', 0)}",
+            ]
+        )
+        rejections = author.get("author_rejection_codes") or {}
+        if rejections:
+            lines.extend(["", "| 拒绝码 | 数量 |", "|---|---:|"])
+            for code, count in rejections.items():
+                lines.append(f"| `{code}` | {count} |")
+        removals = author.get("author_staging_audit_removals") or []
+        if removals:
+            lines.extend(["", "### ZIP 前审计移除的主页附件", ""])
+            for entry in removals:
+                lines.append(
+                    f"- `{entry.get('file')}`（{entry.get('rejection_code')}）"
+                )
     return "\n".join(lines) + "\n"
+
+
+def _author_evidence_summary(
+    decisions: list[Any],
+    audit_entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Structured author-home evidence counters from persisted decisions."""
+
+    rejection_counts = _count_values(
+        getattr(decision, "rejection_code", None) or "UNKNOWN"
+        for decision in decisions
+        if not getattr(decision, "accepted", False)
+    )
+    return {
+        "author_url_candidates": len(decisions),
+        "author_pages_opened": sum(
+            getattr(decision, "access_state", "unknown") != "unknown"
+            for decision in decisions
+        ),
+        "author_identity_validated": sum(
+            getattr(decision, "identity_state", "unverified") == "verified"
+            for decision in decisions
+        ),
+        "author_clean_screenshots": sum(
+            bool(getattr(decision, "accepted", False))
+            and getattr(decision, "overlay_state", "unknown") in {"clear", "dismissed"}
+            for decision in decisions
+        ),
+        "author_rejection_codes": rejection_counts,
+        "author_staging_audit_removals": audit_entries,
+    }
 
 
 def _count_values(values: Any) -> dict[str, int]:

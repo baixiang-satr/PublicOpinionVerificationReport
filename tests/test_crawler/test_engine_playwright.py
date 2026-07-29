@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 from pathlib import Path
 import struct
 from threading import Thread
@@ -130,4 +131,15 @@ async def test_real_browser_records_redirect_status_parses_and_screenshots(tmp_p
     assert result.assets.author_screenshot.name == "001主页.png"
     assert result.assets.author_screenshot.read_bytes().startswith(b"\x89PNG")
     assert result.assets.downloaded_images == []
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["001.png", "001主页.png"]
+    # The author evidence decision is persisted next to the screenshots so the
+    # pre-ZIP audit and quality report work from facts.
+    decision_path = tmp_path / "001主页.decision.json"
+    assert decision_path.is_file()
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    assert decision["accepted"] is True
+    assert decision["candidate_url"].endswith("/author")
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "001.png",
+        "001主页.decision.json",
+        "001主页.png",
+    ]

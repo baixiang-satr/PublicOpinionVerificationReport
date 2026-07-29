@@ -2,11 +2,19 @@
 
 本任务清单以 [requirements.md](../requirements.md)、[design.md](../design.md) 和 [template_contract.md](template_contract.md) 为准。每项任务完成后应独立验证，不把未完成的下游功能当作验收前提。
 
+## 当前状态（2026-07-29）
+
+- [x] T01–T08：见 2026-07-28 状态。
+- [x] T09：登录态防误过期——探测/爬取失败不再删除加密状态文件；瞬时风控（403/验证码/探测页失效）不再降级有效档案；单页登录墙只驱逐内存 context，只有登录态管理的复验可判 EXPIRED；EXPIRED 档案保留文件，可在管理界面一键复验恢复（`load_state(include_inactive=True)`）；平台队列暂停前自动复验自愈；探测 URL 支持候选回退；交互登录完成后探测页失效仍保存状态。
+- [x] T10：个人主页证据验收管线——`AuthorEvidenceDecision` 全量持久化；页面类型分类（个人/媒体/店铺/评论用户页/企业栏目/文章页/登录墙/已删除）；头部强证据身份校验；弹窗关闭与遮挡超 15% 拒绝；ZIP 前审计移除未通过主页附件；质量报告分层统计。
+- [x] T11：字段对象关联——结构化 JSON 候选按 content_id 绑定当前 URL，评论/推荐/侧栏外域候选不得覆盖主对象字段（第 44 条回归）；无标题列工作表以【标题】/【正文】标签保留标题；字段拒绝原因写入待补录 CSV。
+- [x] T12：图片下载有限并发（3）+ 元素截图回退（AVIF/SVG/鉴权图）；待补录 CSV 增列（字段拒绝原因、主/主页截图拒绝原因、登录态重试建议、推荐补录顺序）；结果表新增主页证据列与字段来源/置信度提示；新增"从断点继续""仅重新导出"按钮；取消 5 秒恢复回归。
+
 ## 当前状态（2026-07-28）
 
 - [x] T01：模板配置、8 张工作表契约、标准枚举、源目录哈希清单与只读 Excel 契约校验已实现。
 - [x] T02：运行态模型，以及 TXT、CSV、普通 XLSX 的 URL 导入、规范化、稳定去重和证据编号已实现。
-- [x] T03：staging 模板副本、隔离 Excel COM 写入、资产引用校验和 `template.zip` 打包已实现。
+- [x] T03：staging 模板副本、Office Open XML 直接写入（`OoxmlTemplateWriter`）、Excel COM 回退（`ExcelTemplateWriter`）、资产引用校验和 `template.zip` 打包已实现。
 - [x] T04：Playwright 生命周期、隔离 context、域名限速、有限重试、取消、状态码/重定向链、受限页质量门禁、可视人工接力与主截图已实现。
 - [x] T05：完整平台目录、内容页路径约束、平台 DOM 优先与 JSON-LD/meta/通用 DOM 回退、新闻站点选择器、时间解析及 ID 昵称回退审计已实现。
 - [x] T06：同一浏览器 context 内的作者主页截图、页面图片受控下载、真实格式校验、安全命名和非阻断错误已实现。
@@ -33,11 +41,11 @@
 
 **目标**：在不抓取网页的情况下，使用构造结果安全生成 `template.zip`。
 
-**涉及模块**：`src/export/template_manager.py`、`src/export/row_mapper.py`、`src/export/excel_writer.py`、`src/export/package_validator.py`、`src/export/packager.py`。
+**涉及模块**：`src/export/template_manager.py`、`src/export/row_mapper.py`、`src/export/ooxml_writer.py`、`src/export/excel_writer.py`、`src/export/package_validator.py`、`src/export/packager.py`。
 
 **依赖**：T01、T02。
 
-**完成标准**：源 `template/` 哈希不变；Excel COM 仅写 staging 副本；模板格式和保护保留；ZIP 包含 `template/` 顶层目录，且所有 Excel 附件引用真实存在。
+**完成标准**：源 `template/` 哈希不变；`OoxmlTemplateWriter` 为默认写入路径，`ExcelTemplateWriter` 为旧式 OLE 回退；模板格式和保护保留；ZIP 包含 `template/` 顶层目录，且所有 Excel 附件引用真实存在。
 
 ## T04 浏览器生命周期与页面主截图
 

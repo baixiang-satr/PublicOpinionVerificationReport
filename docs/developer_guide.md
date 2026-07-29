@@ -16,7 +16,7 @@ playwright install chromium
 ## 开发原则
 
 1. `template/` 是只读源；所有写入只能针对任务 staging 副本。
-2. 模板工作簿禁止用 `openpyxl`、pandas 或 xlsxwriter 另存；只允许 Excel COM 直接保存副本。
+2. 模板工作簿禁止用 `openpyxl`、pandas 或 xlsxwriter 另存；允许 Office Open XML 直接写入（`OoxmlTemplateWriter`）或 Excel COM 直接保存副本（`ExcelTemplateWriter`）。
 3. 采集事实与模板行必须分离：`RecordResult` 保存完整事实，`TemplateRow` 只保存模板允许的字段。
 4. 模板标准枚举和列映射集中于 `src/domain/template_schema.py`；平台域名、分类和选择器集中于 `src/crawler/platform_catalog.py`，不得散落在 UI 中。
 5. 每个异步任务必须可以取消；浏览器、页面、Excel COM 和临时文件都必须在 `finally` 中释放。
@@ -31,7 +31,7 @@ playwright install chromium
 | `crawler/` | 页面访问、限速、重试、字段提取和平台路由 | 直接生成模板行或控制 GUI。 |
 | `screenshot/` | 管理浏览器 context、主截图、主页截图和临时 OCR 图片 | 决定 Excel 列。 |
 | `domain/` | 稳定模型、模板结构和枚举 | I/O、UI 或浏览器调用。 |
-| `export/` | 模板复制、行映射、Excel COM、资产校验、ZIP | 重新抓取网页。 |
+| `export/` | 模板复制、行映射、OOXML/Excel COM 写入、资产校验、ZIP | 重新抓取网页。 |
 | `services/` | 协调完整任务、发布进度事件、处理取消 | 具体页面 DOM 选择器。 |
 | `tools/` | 识别受限页、内容失效和错误响应，提供有界人工处理等待 | 隐匿自动化、破解验证码或绕过权限。 |
 | `ui/` | 收集参数、显示进度和运行态审计信息 | 在主线程执行阻塞任务。 |
@@ -40,7 +40,7 @@ playwright install chromium
 
 1. `TemplateManager` 对源 `template/` 计算 SHA-256 清单并复制到 staging。
 2. `TemplateRowMapper` 只接收 `READY_FOR_EXPORT` 的记录，并校验主截图与标准枚举；其他缺失字段保持空白。
-3. `ExcelTemplateWriter` 在短生命周期、隔离的 Excel COM worker 中打开副本，清空第 3 行及后的业务值，写入新数据并直接 `Save()`；worker 在退出前调用 `Quit()`，避免 COM 释放影响 UI 进程。
+3. `OoxmlTemplateWriter` 通过直接操作 Office Open XML（ZIP 内 XML 文件）写入业务行并重新打包；`ExcelTemplateWriter` 作为旧式 OLE 回退，在隔离的 Excel COM worker 中打开副本，清空第 3 行及后的业务值，保存并退出。
 4. `PackageValidator` 从 Excel 读取截图/附件列，确认每一个引用都在 staging 根目录存在。
 5. `Packager` 使用临时压缩包和原子替换生成 `template.zip`。
 
@@ -73,8 +73,9 @@ python tools/release_check.py
 - 资产测试：使用内存响应和本地文件，覆盖 MIME/文件头不一致、超限、重复 URL、登录墙以及失败文件不进入附件集合。
 - Playwright 集成测试：只访问本地 fixture，覆盖重定向、正文解析，以及每条最多一个页面截图和一个作者主页截图。
 - 服务与 UI 测试：使用依赖替身覆盖成功、取消、全失败、合并重试和 QThread 信号；Qt 使用 offscreen 平台验证布局。
-- 模板契约测试：仅在 Windows + Microsoft Excel 环境运行，验证源模板哈希、工作表顺序、首行、数据验证、保护和附件引用不变。
-- 端到端契约测试：本地 HTTP fixture 经 Playwright、TaskRunner 和真实 Excel COM 生成最终 ZIP。
+- OOXML 契约测试：验证 `OoxmlTemplateWriter` 输出的工作表顺序、首行、数据列和附件引用正确；不依赖 Excel COM。
+- 模板契约测试：仅在 Windows + Microsoft Excel 环境运行（COM 回退路径），验证源模板哈希、工作表顺序、首行、数据验证、保护和附件引用不变。
+- 端到端契约测试：本地 HTTP fixture 经 Playwright、TaskRunner 和 `OoxmlTemplateWriter`（默认）或 Excel COM（回退）生成最终 ZIP。
 
 真实站点诊断测试标记为 `external` 并默认跳过；只有显式设置 `POR_RUN_EXTERNAL_TESTS=1` 时才运行。普通测试不得使用真实 Cookie 或写入源 `template/`。认证测试使用假保护器验证密文边界；Windows DPAPI 只做本机往返验证，测试输出不得包含 Cookie/Token 明文。
 

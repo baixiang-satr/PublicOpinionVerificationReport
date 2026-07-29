@@ -155,6 +155,37 @@ _CONTENT_SIGNAL_KEYS = frozenset(
     (*_TITLE_KEYS, *_CONTENT_KEYS, *_AUTHOR_NAME_KEYS, *_STORE_KEYS)
 )
 
+# Keys that may carry the node's own content identifier.  Only values of at
+# least 6 ID-shaped characters count as strong identifiers; small numeric
+# database IDs and URL-valued ``id`` fields are ignored.
+_CONTENT_ID_KEYS = (
+    "id",
+    "item_id",
+    "itemId",
+    "aweme_id",
+    "awemeId",
+    "note_id",
+    "noteId",
+    "mblogid",
+    "id_str",
+    "idStr",
+    "article_id",
+    "articleId",
+    "video_id",
+    "videoId",
+    "offer_id",
+    "offerId",
+    "goods_id",
+    "goodsId",
+    "content_id",
+    "contentId",
+    "doc_id",
+    "docId",
+    "question_id",
+)
+_STRONG_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{6,}")
+_BILIBILI_ID_PATTERN = re.compile(r"BV[0-9A-Za-z]{8,}")
+
 
 def payload_has_content(payload: Any) -> bool:
     """Return whether a bounded JSON walk contains likely content fields."""
@@ -166,6 +197,61 @@ def payload_has_content(payload: Any) -> bool:
     return False
 
 
+def url_content_ids(url: str | None) -> frozenset[str]:
+    """Strong content identifiers recoverable from a page URL.
+
+    Long digit runs (article/video/item IDs) and BV-style bilibili IDs from
+    both the path and the query string.
+    """
+
+    if not url:
+        return frozenset()
+    ids = {match.group(0) for match in re.finditer(r"\d{6,}", url)}
+    ids.update(match.group(0) for match in _BILIBILI_ID_PATTERN.finditer(url))
+    return frozenset(ids)
+
+
+def candidate_scope(
+    node: Mapping[str, Any],
+    url_ids: frozenset[str],
+) -> str:
+    """Classify a JSON node as ``main``, ``foreign`` or ``unknown`` scope.
+
+    ``foreign`` means the node carries strong content identifiers that
+    provably belong to a different object than the current page (comments,
+    recommendations, sidebar cards).  Nodes without strong identifiers, or
+    pages whose URL exposes none, stay ``unknown`` and keep the historical
+    merge behavior so legitimate main objects are never starved.
+    """
+
+    node_ids: set[str] = set()
+    for key in _CONTENT_ID_KEYS:
+        value = node.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        text = str(value).strip()
+        if not text or len(text) > 64 or not _STRONG_ID_PATTERN.fullmatch(text):
+            continue
+        node_ids.add(text)
+    if not node_ids or not url_ids:
+        return "unknown"
+    return "main" if node_ids.intersection(url_ids) else "foreign"
+
+
+def _foreign_scope_summary(node: Mapping[str, Any]) -> str:
+    ids = [
+        f"{key}={node[key]}"
+        for key in _CONTENT_ID_KEYS
+        if key in node and not isinstance(node.get(key), bool)
+    ]
+    preview = _first_text(node, _CONTENT_KEYS) or _first_text(node, _TITLE_KEYS) or ""
+    preview = preview.replace("\n", " ")[:40]
+    parts = ids[:2]
+    if preview:
+        parts.append(f"“{preview}…”")
+    return "，".join(parts) or "未携带可识别 ID"
+
+
 class StructuredDataExtractor:
     """Merge the best content-shaped JSON node into a ``PageData`` object."""
 
@@ -175,6 +261,7 @@ class StructuredDataExtractor:
         data: PageData,
         source: ExtractionSource,
     ) -> None:
+        url_ids = url_content_ids(data.final_url)
         candidates = [
             (_candidate_score(node), node)
             for payload in payloads
@@ -183,6 +270,16 @@ class StructuredDataExtractor:
         for score, node in sorted(candidates, key=lambda item: item[0], reverse=True):
             if score <= 0:
                 break
+            if candidate_scope(node, url_ids) == "foreign":
+                # Comment summaries, recommendation cards and sidebar items
+                # carry their own content IDs; they must never override the
+                # main object's fields.  (Regression: record 44's 8,005-char
+                # body was replaced by a 342-char comment summary.)
+                data.field_rejection_notes.append(
+                    "忽略外域候选（评论/推荐/侧栏）："
+                    + _foreign_scope_summary(node)
+                )
+                continue
             self._apply_node(node, data, source)
             if data.title and data.content_text and (data.author_name or data.store_name):
                 break

@@ -133,13 +133,21 @@ class AuthManagerDialog(QDialog):
     def refresh(self) -> None:
         for row, policy in enumerate(AUTH_POLICIES):
             profile = self._store.profile_for(policy.platform_key)
+            message = profile.last_message
+            if profile.status == AuthStatus.EXPIRED and profile.state_filename:
+                message = (
+                    f"{message}（登录态文件仍保留，可先点击“验证选中”尝试恢复，"
+                    "无需重新登录）"
+                    if message
+                    else "登录态文件仍保留，可先点击“验证选中”尝试恢复，无需重新登录"
+                )
             values = (
                 policy.display_name,
                 _STATUS_TEXT[profile.status],
                 profile.masked_phone or "",
                 profile.validated_at or "",
                 profile.last_error_code or "",
-                profile.last_message,
+                message,
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)

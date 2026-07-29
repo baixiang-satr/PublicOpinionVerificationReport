@@ -59,9 +59,26 @@ class AuthProfileStore:
             and (self.states_dir / profile.state_filename).is_file()
         )
 
-    def load_state(self, platform_key: str) -> dict[str, Any] | None:
+    def load_state(
+        self,
+        platform_key: str,
+        *,
+        include_inactive: bool = False,
+    ) -> dict[str, Any] | None:
+        """Load the stored state for a platform.
+
+        With ``include_inactive=False`` (the default for crawling) only a
+        VALID profile yields its state.  With ``include_inactive=True`` an
+        EXPIRED/CHALLENGE profile's preserved file is also returned so the
+        auth manager can re-validate the exact cookies the user saved; a
+        successful re-validation simply flips the profile back to VALID
+        without forcing a fresh interactive login.
+        """
+
         profile = self.profile_for(platform_key)
-        if profile.status != AuthStatus.VALID or not profile.state_filename:
+        if not profile.state_filename:
+            return None
+        if profile.status != AuthStatus.VALID and not include_inactive:
             return None
         state_path = self.states_dir / profile.state_filename
         if not state_path.is_file():
@@ -128,18 +145,38 @@ class AuthProfileStore:
         status = result.status
         if status == AuthStatus.GUEST_OK and profile.status == AuthStatus.VALID:
             status = AuthStatus.VALID
+
+        # Only a confirmed login-required signal (EXPIRED) may downgrade a
+        # validated profile.  Dead probe URLs, risk-control challenges,
+        # HTTP 403/429, timeouts and parser errors do NOT prove that the
+        # saved login state expired, so they must neither downgrade the
+        # profile nor destroy the encrypted state file the user just
+        # created.  The file is also kept on EXPIRED: it stays inert because
+        # load_state/has_valid_state require status == VALID, and a fresh
+        # interactive login simply overwrites it.  Files are removed only by
+        # an explicit delete_state() call.
+        if profile.status == AuthStatus.VALID and status not in {
+            AuthStatus.VALID,
+            AuthStatus.EXPIRED,
+        }:
+            status = AuthStatus.VALID
+
         updated = replace(
             profile,
             status=status,
             validated_at=(
                 result.checked_at.astimezone().isoformat()
-                if status in {AuthStatus.GUEST_OK, AuthStatus.VALID}
+                if result.status in {AuthStatus.GUEST_OK, AuthStatus.VALID}
                 else profile.validated_at
             ),
             # Keep arbitrary user content URLs and query strings out of the
             # plaintext index; the registry probe URL is sufficient metadata.
             validation_url=policy.probe_url,
-            last_error_code=result.barrier_code,
+            last_error_code=(
+                None
+                if result.status in {AuthStatus.GUEST_OK, AuthStatus.VALID}
+                else result.barrier_code
+            ),
             last_message=result.message,
         )
         with self._lock:

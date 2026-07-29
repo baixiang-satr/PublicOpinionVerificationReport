@@ -45,7 +45,7 @@ def test_row_mapper_keeps_partial_record_and_leaves_unknown_fields_blank() -> No
     assert row.values_by_column["C"] == "知乎_知乎_博客贴吧"
     assert row.values_by_column["G"] == "002.jpg"
     assert "B" not in row.values_by_column
-    assert row.values_by_column["F"] == "只抓到了标题"
+    assert row.values_by_column["F"] == "【标题】只抓到了标题"
 
 
 def test_row_mapper_preserves_distinct_title_inside_content_when_sheet_has_no_title_column() -> None:
@@ -59,7 +59,21 @@ def test_row_mapper_preserves_distinct_title_inside_content_when_sheet_has_no_ti
 
     row = TemplateRowMapper().map(result)
 
-    assert row.values_by_column["F"] == "问题标题\n问题正文"
+    assert row.values_by_column["F"] == "【标题】问题标题\n【正文】\n问题正文"
+
+
+def test_row_mapper_does_not_duplicate_a_title_already_leading_the_body() -> None:
+    result = RecordResult(
+        task=UrlTask(3, "https://www.zhihu.com/question/3", "https://www.zhihu.com/question/3"),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=RouteDecision("微博博客", "知乎_知乎_博客贴吧", "正文"),
+        page=PageData(title="问题标题", content_summary="问题标题\n问题正文详情"),
+        assets=AssetSet(page_screenshot=Path("003.jpg")),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["F"] == "问题标题\n问题正文详情"
 
 
 def test_row_mapper_accepts_commerce_product_as_merchant() -> None:
@@ -121,8 +135,9 @@ def test_row_mapper_exports_full_content_instead_of_the_short_summary() -> None:
 
     row = TemplateRowMapper().map(result)
 
-    assert row.values_by_column["F"] == f"标题\n{full_content}"
-    assert result.page.exported_content_chars == len(f"标题\n{full_content}")
+    expected = f"【标题】标题\n【正文】\n{full_content}"
+    assert row.values_by_column["F"] == expected
+    assert result.page.exported_content_chars == len(expected)
     assert not result.page.summary_truncated
 
 

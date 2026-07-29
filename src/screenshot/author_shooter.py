@@ -3,15 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from src.config.settings import TaskConfig
 from src.crawler.navigation import navigate_page, stabilize_rendered_page
+from src.screenshot.author_evidence import (
+    CAPTURABLE_PAGE_TYPES,
+    PAGE_SIGNAL_SCRIPT,
+    AuthorEvidenceDecision,
+    ProfilePageType,
+    classify_profile_page,
+    dismiss_profile_overlays,
+    identity_verdict,
+    write_decision,
+)
 from src.screenshot.page_shooter import PageShooter, PageScreenshotError
 from src.tools.page_access import inspect_page_access, wait_for_manual_access
 
+
+logger = logging.getLogger(__name__)
 
 PROFILE_SELECTORS = (
     "[class*='profile-header']",
@@ -45,9 +58,48 @@ class AuthorShooter:
         *,
         expected_author_name: str | None = None,
         expected_author_id: str | None = None,
+        candidate_source: str = "unknown",
     ) -> Path:
         _raise_if_cancelled(cancel_event)
+        decision = AuthorEvidenceDecision(
+            candidate_url=author_url,
+            evidence_id=evidence_id,
+            candidate_source=candidate_source,
+            expected_name=expected_author_name,
+            expected_id=expected_author_id,
+        )
+        try:
+            return await self._capture_with_decision(
+                source_page,
+                author_url,
+                evidence_id,
+                output_dir,
+                cancel_event,
+                decision,
+            )
+        finally:
+            # Persist every decision, accepted or rejected, so the pre-ZIP
+            # audit and the quality report work from facts, not log lines.
+            try:
+                await asyncio.to_thread(write_decision, decision, Path(output_dir))
+            except Exception as error:
+                logger.warning(
+                    "Unable to persist author evidence decision for #%03d: %s",
+                    evidence_id,
+                    error,
+                )
+
+    async def _capture_with_decision(
+        self,
+        source_page: Any,
+        author_url: str,
+        evidence_id: int,
+        output_dir: Path,
+        cancel_event: asyncio.Event | None,
+        decision: AuthorEvidenceDecision,
+    ) -> Path:
         if urlsplit(author_url).scheme.lower() not in {"http", "https"}:
+            decision.rejection_code = "AUTHOR_URL_INVALID"
             raise AuthorScreenshotError("AUTHOR_URL_INVALID", "作者主页不是 HTTP(S) URL")
 
         author_page = None
@@ -62,6 +114,8 @@ class AuthorShooter:
             _raise_if_cancelled(cancel_event)
             status = int(response.status) if response is not None else None
             if status is not None and status >= 400:
+                decision.access_state = f"http_{status}"
+                decision.rejection_code = "AUTHOR_HTTP_ERROR"
                 raise AuthorScreenshotError(
                     "AUTHOR_HTTP_ERROR",
                     f"作者主页返回 HTTP {status}",
@@ -89,40 +143,138 @@ class AuthorShooter:
                 )
                 await stabilize_rendered_page(author_page, 0)
             if barrier is not None:
+                decision.access_state = "restricted"
+                decision.rejection_code = "AUTHOR_ACCESS_RESTRICTED"
                 raise AuthorScreenshotError(
                     "AUTHOR_ACCESS_RESTRICTED",
                     f"作者主页不可访问：{barrier.message}",
                 )
             if await _is_access_restricted(author_page):
+                decision.access_state = "restricted"
+                decision.rejection_code = "AUTHOR_ACCESS_RESTRICTED"
                 raise AuthorScreenshotError(
                     "AUTHOR_ACCESS_RESTRICTED",
                     "作者主页要求登录或访问验证",
                 )
+            decision.access_state = "accessible"
             if not await _has_author_content(author_page):
+                decision.page_type = ProfilePageType.DELETED_OR_EMPTY.value
+                decision.rejection_code = "AUTHOR_CONTENT_NOT_READY"
                 raise AuthorScreenshotError(
                     "AUTHOR_CONTENT_NOT_READY",
                     "作者主页未渲染出可见的账号资料或实质内容",
                 )
-            await _validate_author_identity(
-                author_page,
-                expected_author_name,
-                expected_author_id,
+
+            signals = await _page_signals(author_page)
+            if not signals:
+                # Pages without JS evaluation support (legacy/fake contexts)
+                # keep the previous capture behavior; every real browser page
+                # provides signals and goes through the full decision gate.
+                path = await self._shooter.capture_named(
+                    author_page,
+                    f"{evidence_id:03d}主页",
+                    output_dir,
+                    cancel_event,
+                    focus_selectors=PROFILE_SELECTORS,
+                )
+                decision.capture_region = "profile_container"
+                decision.accepted = True
+                decision.rejection_code = None
+                return path
+            decision.detected_name = str(signals.get("headerName") or "") or None
+            decision.detected_id = str(signals.get("headerId") or "") or None
+            title = str(signals.get("title") or "")
+            body = str(signals.get("body") or "")
+            decision.page_type = classify_profile_page(
+                url=final_url,
+                title=title,
+                body_text=body,
+                has_profile_surface=bool(signals.get("hasProfileSurface")),
+                detected_name=decision.detected_name,
+            ).value
+
+            if decision.page_type == ProfilePageType.LOGIN_OR_CHALLENGE.value:
+                decision.rejection_code = "AUTHOR_ACCESS_RESTRICTED"
+                raise AuthorScreenshotError(
+                    "AUTHOR_ACCESS_RESTRICTED",
+                    "作者主页是登录页或访问验证页，不得作为证据",
+                )
+            if decision.page_type == ProfilePageType.DELETED_OR_EMPTY.value:
+                decision.rejection_code = "AUTHOR_CONTENT_NOT_READY"
+                raise AuthorScreenshotError(
+                    "AUTHOR_CONTENT_NOT_READY",
+                    "作者主页已删除或渲染后为空",
+                )
+            if (
+                decision.page_type not in {item.value for item in CAPTURABLE_PAGE_TYPES}
+                and decision.page_type != ProfilePageType.COMMENT_USER_PAGE.value
+            ):
+                decision.rejection_code = "AUTHOR_PAGE_TYPE_INVALID"
+                raise AuthorScreenshotError(
+                    "AUTHOR_PAGE_TYPE_INVALID",
+                    f"候选页面类型为 {decision.page_type}，不是可接受的主页",
+                )
+
+            decision.overlay_state = await dismiss_profile_overlays(author_page)
+            _raise_if_cancelled(cancel_event)
+            if decision.overlay_state == "blocked":
+                decision.rejection_code = "AUTHOR_OVERLAY_BLOCKED"
+                raise AuthorScreenshotError(
+                    "AUTHOR_OVERLAY_BLOCKED",
+                    "作者主页弹窗或登录组件遮挡主体区域，按无截图处理",
+                )
+
+            identity_state, rejection = identity_verdict(
+                expected_name=decision.expected_name,
+                expected_id=decision.expected_id,
+                detected_name=decision.detected_name,
+                detected_id=decision.detected_id,
+                body_text=body,
+                page_url=final_url,
             )
-            return await self._shooter.capture_named(
+            decision.identity_state = identity_state
+            if rejection is not None:
+                decision.rejection_code = rejection
+                raise AuthorScreenshotError(
+                    rejection,
+                    (
+                        f"作者主页身份校验未通过：正文作者为 "
+                        f"{decision.expected_name or decision.expected_id!r}，"
+                        f"主页头部显示为 {decision.detected_name!r}"
+                    ),
+                )
+            # Comment-user pages are capturable only when identity is verified.
+            if (
+                decision.page_type == ProfilePageType.COMMENT_USER_PAGE.value
+                and identity_state != "verified"
+            ):
+                decision.rejection_code = "AUTHOR_IDENTITY_UNVERIFIED"
+                raise AuthorScreenshotError(
+                    "AUTHOR_IDENTITY_UNVERIFIED",
+                    "评论用户页无法确认就是正文作者，按无截图处理",
+                )
+
+            path = await self._shooter.capture_named(
                 author_page,
                 f"{evidence_id:03d}主页",
                 output_dir,
                 cancel_event,
                 focus_selectors=PROFILE_SELECTORS,
             )
+            decision.capture_region = "profile_container"
+            decision.accepted = True
+            decision.rejection_code = None
+            return path
         except AuthorScreenshotError:
             raise
         except PageScreenshotError as error:
+            decision.rejection_code = "AUTHOR_SCREENSHOT_FAILED"
             raise AuthorScreenshotError("AUTHOR_SCREENSHOT_FAILED", str(error)) from error
         except asyncio.CancelledError:
             raise
         except Exception as error:
             code = "AUTHOR_TIMEOUT" if "timeout" in str(error).lower() else "AUTHOR_NAVIGATION_FAILED"
+            decision.rejection_code = code
             raise AuthorScreenshotError(code, f"作者主页访问失败：{error}") from error
         finally:
             if author_page is not None:
@@ -203,70 +355,14 @@ async def _wait_for_author_surface(page: Any) -> None:
         pass
 
 
-async def _validate_author_identity(
-    page: Any,
-    expected_name: str | None,
-    expected_id: str | None,
-) -> None:
-    if not expected_name and not expected_id:
-        return
+async def _page_signals(page: Any) -> dict[str, Any]:
     if not hasattr(page, "evaluate"):
-        return
+        return {}
     try:
-        identity = await page.evaluate(
-            """() => {
-                const selectors = [
-                  '[class*="profile-header"] [class*="name"]',
-                  '[class*="user-info"] [class*="name"]',
-                  '[class*="author-info"] [class*="name"]',
-                  '[class*="nickname"]',
-                  'main h1',
-                  'main h2'
-                ];
-                let name = '';
-                for (const selector of selectors) {
-                  const element = document.querySelector(selector);
-                  const text = (element?.innerText || element?.textContent || '').trim();
-                  if (text && text.length <= 100) { name = text; break; }
-                }
-                return {
-                  name,
-                  body: (document.body?.innerText || '').slice(0, 5000)
-                };
-            }"""
-        )
+        signals = await page.evaluate(PAGE_SIGNAL_SCRIPT)
     except Exception:
-        return
-    detected = _identity_key(str(identity.get("name") or ""))
-    expected = _identity_key(expected_name or "")
-    body = _identity_key(str(identity.get("body") or ""))
-    identifier = _identity_key(expected_id or "")
-    if identifier and identifier in body:
-        return
-    # A detected profile-header name is stronger evidence than arbitrary body
-    # text.  Navigation bars, recommendations and sidebars commonly repeat
-    # other publisher names; accepting a body-only match when the header names
-    # somebody else produced false author screenshots in the real URL batch.
-    if expected and detected:
-        if expected in detected or detected in expected:
-            return
-        raise AuthorScreenshotError(
-            "AUTHOR_IDENTITY_MISMATCH",
-            (
-                f"作者主页身份不一致：正文作者为 {expected_name!r}，"
-                f"主页显示为 {identity.get('name')!r}"
-            ),
-        )
-    if expected and expected in body:
-        return
-
-
-def _identity_key(value: str) -> str:
-    return "".join(
-        character.casefold()
-        for character in value
-        if character.isalnum()
-    )
+        return {}
+    return signals if isinstance(signals, dict) else {}
 
 
 async def _has_author_content(page: Any) -> bool:

@@ -87,6 +87,72 @@ async def test_pages_share_login_state_and_it_is_reused_by_next_run(tmp_path: Pa
         await second_pool.close()
 
 
+async def test_login_wall_evicts_context_but_preserves_auth_profile(
+    tmp_path: Path,
+) -> None:
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    state = {
+        "cookies": [
+            {
+                "name": "session",
+                "value": "zhihu-only",
+                "domain": ".zhihu.com",
+                "path": "/",
+                "expires": -1,
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        ],
+        "origins": [],
+    }
+    store.commit_validated_state(
+        "zhihu",
+        state,
+        AuthProbeResult(
+            platform_key="zhihu",
+            status=AuthStatus.VALID,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://www.zhihu.com/question/362425387",
+        ),
+    )
+    pool = BrowserPool(
+        TaskConfig(
+            max_concurrency=1,
+            page_timeout_seconds=10,
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+            auth_store_dir=tmp_path / "auth",
+        ),
+        auth_store=store,
+    )
+    try:
+        await pool.start()
+    except BrowserUnavailableError as error:
+        pytest.skip(str(error))
+    try:
+        first_context = None
+        async with pool.page(url="https://www.zhihu.com/question/123") as signed_in:
+            first_context = signed_in.context
+            cookies = await first_context.cookies("https://www.zhihu.com")
+            assert any(cookie["value"] == "zhihu-only" for cookie in cookies)
+            pool.mark_access_invalid(
+                signed_in,
+                "https://www.zhihu.com/question/123",
+                barrier_code="LOGIN_REQUIRED",
+                message="login expired",
+            )
+            # A single content URL's login wall must not expire the saved
+            # profile; only the auth manager probe may do that.
+            assert store.profile_for("zhihu").status == AuthStatus.VALID
+        async with pool.page(url="https://www.zhihu.com/question/456") as new_page:
+            assert new_page.context is not first_context
+            restored = await new_page.context.cookies("https://www.zhihu.com")
+            assert any(cookie["value"] == "zhihu-only" for cookie in restored)
+    finally:
+        await pool.close()
+
+
 async def test_invalid_login_state_falls_back_to_fresh_session(tmp_path: Path) -> None:
     state_path = tmp_path / "broken-login-state.json"
     state_path.write_text("{not-json", encoding="utf-8")

@@ -69,11 +69,11 @@
 
 抓取引擎已经能快速取消，但正式 `TaskRunner` 仍主要在任务结束后生成完整质量文件。下一步需要把每条结果原子化落盘，使程序崩溃、人工取消或 Excel 导出失败后可以从未完成记录继续。
 
-### 3.6 Excel 导出仍依赖桌面 COM
+### 3.6 Excel 导出已完成非 COM 路径（本次迭代解决）
 
-现有模板文件实际是旧式 OLE Excel 文件但扩展名为 `.xlsx`，正式导出仍依赖 Windows Excel COM。按列批量写入已经降低耗时，但 COM 仍受桌面登录会话、Excel 安装状态和进程残留影响。
+旧有依赖 Windows Excel COM 的问题已通过 `OoxmlTemplateWriter` 解决。该写入器直接操作 Office Open XML（ZIP 内 XML），不再依赖 COM。`ExcelTemplateWriter` 保留为旧式 OLE 格式的回退方案。
 
-下一步应将源模板一次性转换为真正的 Office Open XML `.xlsx`，并建立经过模板契约测试的非 COM 导出路径。
+下一步确认：当源模板为纯 Open XML 格式时，`OoxmlTemplateWriter` 的契约测试（工作表顺序、首行、数据验证、保护）是否与原 COM 路径完全一致。
 
 ## 4. 图片内容处理规则
 

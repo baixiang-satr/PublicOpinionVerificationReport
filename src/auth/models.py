@@ -31,6 +31,13 @@ class PlatformAuthPolicy:
     host_suffixes: tuple[str, ...]
     auth_scope: str
     phone_assist: bool = True
+    fallback_probe_urls: tuple[str, ...] = ()
+
+    @property
+    def probe_candidates(self) -> tuple[str, ...]:
+        """Primary probe URL plus fallbacks for dead/rotted content pages."""
+
+        return (self.probe_url, *self.fallback_probe_urls)
 
 
 @dataclass(frozen=True)

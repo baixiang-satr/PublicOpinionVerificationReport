@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from src.auth.models import AuthStatus
+from src.auth.models import AuthProfile, AuthStatus, PlatformAuthPolicy
 from src.auth.registry import auth_policy_for_url
 from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
@@ -39,6 +39,25 @@ class PlatformTaskScheduler:
         return queues
 
     def known_auth_block(self, task: UrlTask) -> str | None:
+        blocking = self._blocking_profile(task)
+        if blocking is None:
+            return None
+        policy, profile = blocking
+        return (
+            f"{policy.display_name}登录态当前为“{profile.status.value}”；"
+            "为避免批量产生无效页面，已在访问前暂停该平台。"
+        )
+
+    def blocked_auth_platform(self, task: UrlTask) -> str | None:
+        """Return the platform key whose stored profile blocks crawling."""
+
+        blocking = self._blocking_profile(task)
+        return blocking[0].platform_key if blocking is not None else None
+
+    def _blocking_profile(
+        self,
+        task: UrlTask,
+    ) -> tuple[PlatformAuthPolicy, AuthProfile] | None:
         if not self._config.enable_auth_health_gate or self._auth_store is None:
             return None
         policy = auth_policy_for_url(task.normalized_url)
@@ -50,15 +69,15 @@ class PlatformTaskScheduler:
             return None
         if profile.status not in {
             AuthStatus.AUTH_REQUIRED,
-            AuthStatus.CHALLENGE,
             AuthStatus.EXPIRED,
             AuthStatus.WAITING_USER,
         }:
+            # CHALLENGE is deliberately excluded: a risk-control challenge is
+            # not an expired login, and pausing the whole platform for it
+            # produced PLATFORM_AUTH_PAUSED batches right after a fresh
+            # login.  CHALLENGE records still crawl with the saved state.
             return None
-        return (
-            f"{policy.display_name}登录态当前为“{profile.status.value}”；"
-            "为避免批量产生无效页面，已在访问前暂停该平台。"
-        )
+        return policy, profile
 
     def auth_paused_result(
         self,

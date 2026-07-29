@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 
 from src.config.settings import TaskConfig
+from src.screenshot.author_evidence import identity_verdict
 from src.screenshot.author_shooter import (
     AuthorShooter,
     AuthorScreenshotError,
-    _validate_author_identity,
 )
 
 
@@ -98,22 +98,6 @@ class StubPageShooter:
         return path
 
 
-class MismatchedIdentityPage:
-    async def evaluate(self, _script: str) -> dict[str, str]:
-        return {
-            "name": "完全不同的账号",
-            "body": "完全不同的账号 作品列表 粉丝 简介",
-        }
-
-
-class NavigationFalsePositiveIdentityPage:
-    async def evaluate(self, _script: str) -> dict[str, str]:
-        return {
-            "name": "新华社",
-            "body": "网易首页 新闻 体育 新华社 作品列表 粉丝 简介",
-        }
-
-
 @pytest.mark.asyncio
 async def test_author_shooter_reuses_context_and_closes_page(tmp_path: Path) -> None:
     author_page = FakeAuthorPage(200)
@@ -172,7 +156,11 @@ async def test_author_shooter_rejects_login_wall_without_creating_evidence(tmp_p
 
     assert caught.value.code == "AUTHOR_ACCESS_RESTRICTED"
     assert author_page.closed
-    assert not list(tmp_path.iterdir())
+    # No image evidence is produced, but the rejection decision is persisted
+    # for the pre-ZIP audit and quality report.
+    assert not list(tmp_path.glob("*.png"))
+    decision_files = list(tmp_path.glob("*.decision.json"))
+    assert len(decision_files) == 1
 
 
 @pytest.mark.asyncio
@@ -193,7 +181,11 @@ async def test_author_shooter_rejects_platform_error_page(tmp_path: Path) -> Non
 
     assert caught.value.code == "AUTHOR_ACCESS_RESTRICTED"
     assert author_page.closed
-    assert not list(tmp_path.iterdir())
+    # No image evidence is produced, but the rejection decision is persisted
+    # for the pre-ZIP audit and quality report.
+    assert not list(tmp_path.glob("*.png"))
+    decision_files = list(tmp_path.glob("*.decision.json"))
+    assert len(decision_files) == 1
 
 
 @pytest.mark.asyncio
@@ -216,28 +208,34 @@ async def test_author_shooter_rejects_page_without_rendered_profile_content(
 
     assert caught.value.code == "AUTHOR_CONTENT_NOT_READY"
     assert author_page.closed
-    assert not list(tmp_path.iterdir())
+    assert not list(tmp_path.glob("*.png"))
+    decision_files = list(tmp_path.glob("*.decision.json"))
+    assert len(decision_files) == 1
 
 
-@pytest.mark.asyncio
-async def test_author_identity_mismatch_is_rejected() -> None:
-    with pytest.raises(AuthorScreenshotError) as caught:
-        await _validate_author_identity(
-            MismatchedIdentityPage(),
-            "正文作者",
-            "author-123",
-        )
+def test_author_identity_mismatch_is_rejected() -> None:
+    state, rejection = identity_verdict(
+        expected_name="正文作者",
+        expected_id="author-123",
+        detected_name="完全不同的账号",
+        detected_id=None,
+        body_text="完全不同的账号 作品列表 粉丝 简介",
+    )
 
-    assert caught.value.code == "AUTHOR_IDENTITY_MISMATCH"
+    assert state == "mismatch"
+    assert rejection == "AUTHOR_IDENTITY_MISMATCH"
 
 
-@pytest.mark.asyncio
-async def test_author_identity_does_not_accept_name_from_navigation() -> None:
-    with pytest.raises(AuthorScreenshotError) as caught:
-        await _validate_author_identity(
-            NavigationFalsePositiveIdentityPage(),
-            "网易",
-            None,
-        )
+def test_author_identity_does_not_accept_name_from_navigation() -> None:
+    # Regression for evidence 047/048: the header names 新华社 while the
+    # navigation bar repeats the expected author 网易; must not pass.
+    state, rejection = identity_verdict(
+        expected_name="网易",
+        expected_id=None,
+        detected_name="新华社",
+        detected_id=None,
+        body_text="网易首页 新闻 体育 新华社 作品列表 粉丝 简介",
+    )
 
-    assert caught.value.code == "AUTHOR_IDENTITY_MISMATCH"
+    assert state == "mismatch"
+    assert rejection == "AUTHOR_IDENTITY_MISMATCH"
