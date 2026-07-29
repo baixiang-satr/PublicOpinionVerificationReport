@@ -288,6 +288,41 @@ async def test_engine_applies_http_retry_policy(
 
 
 @pytest.mark.asyncio
+async def test_engine_short_circuits_manual_only_platform_without_browser(
+    tmp_path: Path,
+) -> None:
+    pool = FakeBrowserPool([200], "https://channels.weixin.qq.com/finder-preview/pages/sph?id=abc")
+    engine = CrawlEngine(
+        TaskConfig(
+            max_retries=2,
+            retry_base_delay_seconds=0,
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+        ),
+        browser_pool=pool,
+        parser=StubParser(),
+        shooter=StubShooter(),
+    )
+
+    [result] = await engine.run(
+        [
+            UrlTask(
+                1,
+                "https://channels.weixin.qq.com/finder-preview/pages/sph?id=abc",
+                "https://channels.weixin.qq.com/finder-preview/pages/sph?id=abc",
+            )
+        ],
+        tmp_path,
+    )
+
+    assert result.status == RecordStatus.NEEDS_REVIEW
+    assert result.attempt_count == 1  # never retried: manual entry is required
+    assert [error.code for error in result.errors] == ["MANUAL_ONLY_PLATFORM"]
+    assert pool.page_count == 0
+    assert pool.closed
+
+
+@pytest.mark.asyncio
 async def test_only_author_screenshot_is_collected_when_body_text_exists(tmp_path: Path) -> None:
     pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
     engine = CrawlEngine(

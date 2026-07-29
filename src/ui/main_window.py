@@ -23,11 +23,13 @@ from PyQt5.QtWidgets import (
 
 from src.auth.store import AuthProfileStore
 from src.config.settings import AppConfig, default_auth_store_dir
+from src.services.checkpoint_store import CheckpointStore
 from src.services.models import JobRequest, JobResult, JobSummary
 from src.ui.widgets.file_selector import FileSelector
 from src.ui.widgets.log_viewer import LogViewer
 from src.ui.widgets.progress_panel import ProgressPanel
 from src.ui.widgets.result_table import ResultTable
+from src.ui.widgets.review_workspace import ReviewWorkspace
 from src.ui.widgets.task_options import TaskOptionsWidget
 from src.ui.widgets.auth_manager import AuthManagerDialog
 from src.ui.workers.task_worker import TaskWorker
@@ -179,8 +181,11 @@ class MainWindow(QMainWindow):
         # ── 结果 / 日志 标签页 ──
         self.result_table = ResultTable()
         self.log_viewer = LogViewer()
+        self.review_workspace = ReviewWorkspace()
+        self.review_workspace.export_requested.connect(self._export_reviewed_job)
         self.tabs = QTabWidget()
         self.tabs.setMinimumHeight(220)
+        self.tabs.addTab(self.review_workspace, "采集与补录")
         self.tabs.addTab(self.result_table, "抓取结果")
         self.tabs.addTab(self.log_viewer, "运行日志")
         layout.addWidget(self.tabs, 1)
@@ -328,6 +333,7 @@ class MainWindow(QMainWindow):
         self._last_output = result.archive_path or result.job_dir
         for record in result.records:
             self.result_table.set_record(record)
+        self.review_workspace.load_records(result.job_dir, list(result.records))
         self._set_running(False)
         if result.archive_path is not None:
             self.statusBar().showMessage(f"已生成：{result.archive_path}")
@@ -337,6 +343,25 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("未生成压缩包")
             QMessageBox.warning(self, "未生成", "没有可安全导出的记录。请查看「抓取结果」后重试。")
+
+    def _export_reviewed_job(self, job_dir: Path) -> None:
+        checkpoint = Path(job_dir) / "job_checkpoint.json"
+        try:
+            snapshot = CheckpointStore.load(checkpoint)
+        except Exception as error:
+            QMessageBox.warning(self, "无法导出", f"任务断点读取失败：{error}")
+            return
+        tasks = tuple(record.task for record in snapshot.records)
+        if not tasks:
+            QMessageBox.warning(self, "无法导出", "断点中没有任何记录。")
+            return
+        request = JobRequest(
+            tasks=tasks,
+            resume_checkpoint_path=checkpoint,
+            reexport_only=True,
+            label="人工补录导出",
+        )
+        self._start_worker(request, clear_results=True)
 
     def _on_job_failed(self, message: str) -> None:
         self._set_running(False)

@@ -41,6 +41,7 @@ from src.services.models import (
     RunnerCallbacks,
 )
 from src.services.checkpoint_store import CheckpointStore
+from src.services.override_flow import OverrideFlowError, apply_job_overrides
 from src.services.retained_records import prepare_retained_records
 from src.utils.time_utils import DEFAULT_TIMEZONE
 from src.screenshot.browser import BrowserUnavailableError
@@ -193,6 +194,21 @@ class TaskRunner:
                     checkpoint.path,
                 )
 
+            try:
+                override_count, staged_count = apply_job_overrides(
+                    resume_checkpoint_path=request.resume_checkpoint_path,
+                    job_dir=prepared.job_dir,
+                    template_dir=prepared.template_dir,
+                    records=records,
+                )
+            except OverrideFlowError as error:
+                raise TaskRunnerError(str(error)) from error
+            if override_count:
+                self._log(
+                    callbacks,
+                    "INFO",
+                    f"已合并 {override_count} 条人工补录记录，暂存 {staged_count} 个人工附件。",
+                )
             rows = self._build_rows(records, callbacks)
             checkpoint.update_many(records)
             if not rows:

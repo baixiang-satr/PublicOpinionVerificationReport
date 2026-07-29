@@ -111,6 +111,16 @@ _FAILURE_ADVICE: dict[str, str] = {
     "ROW_MAPPING_FAILED": "记录无法映射到模板列，请联系开发者检查。",
     "PARTIAL_FIELDS_MISSING": "部分字段缺失但已按现有内容导出，不影响交付。",
     "CONTENT_TRUNCATED_FOR_EXCEL": "正文超过 Excel 单元格安全上限，已保留前 32000 字并记录原始长度。",
+    # 人工补录
+    "MANUAL_ONLY_PLATFORM": (
+        "该平台网页端无法稳定抓取。请在「采集与补录」中点击 URL 打开原页面，"
+        "人工填写字段并用「截全屏」补齐截图证据。"
+    ),
+    "MANUAL_PUBLISHED_AT_INVALID": "人工填写的发布时间无法解析，请按 yyyy-MM-dd HH:mm:ss 格式填写。",
+    "MANUAL_TEXT_TYPE_INVALID": "人工设置的文本类型不在工作表允许值内，已忽略。",
+    "MANUAL_TEXT_TYPE_WITHOUT_ROUTE": "记录尚未路由到工作表，人工设置的文本类型未生效。",
+    "MANUAL_ASSET_MISSING": "人工截图文件不存在，已从导出中移除，请重新截图。",
+    "MANUAL_ASSET_NAME_INVALID": "人工附件文件名不安全，已从导出中移除。",
     # 通用
     "CANCELLED": "任务已被用户取消。",
     "UNEXPECTED": "发生未知错误，请查看运行日志获取详情。",

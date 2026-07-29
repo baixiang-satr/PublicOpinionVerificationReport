@@ -34,6 +34,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
             author_url=("[data-e2e='shop-name'] a", "a[data-e2e='shop-name']", ".shop-name a"),
         ),
         include_patterns=(r"/product", r"product_id=", r"/views/product", r"/ecommerce/trade/detail/"),
+        manual_only=True,
     ),
     PlatformDefinition(
         "xianyu",
@@ -225,6 +226,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         ("channels.weixin.qq.com", "weixin.qq.com"),
         _selectors(content_text=("[class*='finder'] [class*='desc']", "main"), author_name=("[class*='nickname']",), author_url=("[class*='nickname'] a", "[class*='avatar'] a")),
         include_patterns=(r"/video", r"/finder"),
+        manual_only=True,
     ),
     PlatformDefinition(
         "sohu_video",

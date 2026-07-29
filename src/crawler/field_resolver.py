@@ -10,6 +10,7 @@ from src.domain.models import ExtractionSource, PageData
 
 
 _SOURCE_CONFIDENCE = {
+    ExtractionSource.MANUAL: 1.0,
     ExtractionSource.NETWORK_JSON: 0.98,
     ExtractionSource.EMBEDDED_JSON: 0.94,
     ExtractionSource.JSON_LD: 0.90,

@@ -23,6 +23,10 @@ class PlatformDefinition:
     selectors: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     include_patterns: tuple[str, ...] = ()
     exclude_patterns: tuple[str, ...] = ()
+    # Platforms whose web pages cannot be crawled reliably at all (e.g.
+    # WeChat Channels, Douyin merchant backend).  The engine short-circuits
+    # them to manual entry instead of burning navigation timeouts.
+    manual_only: bool = False
 
     def matches(self, url: str) -> bool:
         parsed = urlsplit(url)

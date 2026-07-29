@@ -32,6 +32,7 @@ class ExtractionSource(StrEnum):
     DERIVED_URL = "derived_url"
     NICKNAME_FALLBACK = "nickname_fallback"
     OCR = "ocr"
+    MANUAL = "manual"
     SYSTEM_MARKER = "system_marker"
 
 
@@ -111,13 +112,21 @@ class AssetSet:
     page_screenshot: Path | None = None
     author_screenshot: Path | None = None
     downloaded_images: list[Path] = field(default_factory=list)
+    # Manually captured extra attachments (review workspace); referenced by
+    # safe file name only and staged at export time.
+    extra_attachments: list[Path] = field(default_factory=list)
 
     def attachment_paths(self) -> list[Path]:
         # The delivery contract intentionally exposes at most two screenshots:
         # one content-page screenshot and one optional author-home screenshot.
         # downloaded_images are transient OCR inputs and must never become ZIP
-        # attachments.
-        return [self.author_screenshot] if self.author_screenshot else []
+        # attachments.  Manual extra attachments are operator-supplied evidence
+        # and are allowed alongside the two screenshots.
+        paths: list[Path] = []
+        if self.author_screenshot:
+            paths.append(self.author_screenshot)
+        paths.extend(self.extra_attachments)
+        return paths
 
 
 @dataclass(frozen=True)

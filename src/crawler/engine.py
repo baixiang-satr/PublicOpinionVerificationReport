@@ -278,6 +278,20 @@ class CrawlEngine:
         # Jitter avoids same-host requests starting at the same instant.
         await wait_with_cancellation(random.uniform(0.3, 1.0), cancel_event)
         await self._rate_limiter.wait(result.task.normalized_url, cancel_event)
+        manual_definition = self._router.definition_for(result.task.normalized_url)
+        if manual_definition is not None and manual_definition.manual_only:
+            raise CrawlFailure(
+                TaskError(
+                    "access",
+                    "MANUAL_ONLY_PLATFORM",
+                    (
+                        f"{manual_definition.platform_value} 的网页端无法稳定抓取。"
+                        "请在「采集与补录」中点击 URL 打开原页面，人工填写字段并用全屏截图补齐证据。"
+                    ),
+                    retryable=False,
+                ),
+                RecordStatus.NEEDS_REVIEW,
+            )
         try:
             async with self._browser_pool.page(
                 cancel_event,

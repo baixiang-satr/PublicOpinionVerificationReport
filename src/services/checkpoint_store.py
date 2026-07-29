@@ -168,6 +168,9 @@ def _record_to_dict(record: RecordResult) -> dict[str, Any]:
         "assets": {
             "page_screenshot": _path(record.assets.page_screenshot),
             "author_screenshot": _path(record.assets.author_screenshot),
+            "extra_attachments": [
+                _path(item) for item in record.assets.extra_attachments
+            ],
         },
         "errors": [
             {
@@ -255,6 +258,10 @@ def _record_from_dict(value: dict[str, Any]) -> RecordResult:
         assets=AssetSet(
             _optional_path(assets_value.get("page_screenshot")),
             _optional_path(assets_value.get("author_screenshot")),
+            extra_attachments=[
+                Path(str(item))
+                for item in (assets_value.get("extra_attachments") or ())
+            ],
         ),
         errors=[
             TaskError(
