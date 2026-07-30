@@ -13,9 +13,10 @@ from datetime import datetime
 from pathlib import Path
 import re
 
-from src.domain.models import RecordResult, RecordStatus
+from src.domain.models import RecordResult, RecordStatus, RouteDecision, UrlTask
 from src.domain.overrides import OVERRIDEABLE_FIELDS, ManualOverride
 from src.domain.template_schema import SHEET_LAYOUTS, SheetLayout
+from src.services import job_records
 from src.services.checkpoint_store import CheckpointStore
 from src.services.manual_assets import MANUAL_ASSETS_DIR_NAME
 from src.services.override_store import ManualOverrideStore
@@ -36,6 +37,7 @@ _FALLBACK_LABELS = {
     "store_name": "店铺名称",
     "published_at": "发布时间",
     "text_type": "文本类型",
+    "platform": "发布平台",
 }
 
 
@@ -179,7 +181,31 @@ class ReviewSession:
                 missing.append(self._label_for(layout, field))
         if self._screenshot_required(layout) and not self.primary_screenshot_name(record):
             missing.append("截图")
+        if self._homepage_screenshot_missing(record, override, layout):
+            missing.append("主页截图")
         return tuple(missing)
+
+    def _homepage_screenshot_missing(
+        self,
+        record: RecordResult,
+        override: ManualOverride | None,
+        layout: SheetLayout | None,
+    ) -> bool:
+        """带链接的记录必须有两张截图：主截图 + 作者主页截图。
+
+        主页截图经"其他附件"列交付，因此该列的有效附件名（抓取的主页截图、
+        导入附件或人工添加的附件）为空即视为缺失。判定口径与
+        ``sheet_display.attachment_names`` 保持一致（内联实现以避免循环
+        导入）；无 URL 的手工行没有可截的作者主页，不强制。
+        """
+
+        if layout is None or layout.attachment_column is None:
+            return False
+        if not record.task.original_url.strip():
+            return False
+        if override is not None and override.attachment_names:
+            return False
+        return not record.assets.attachment_paths()
 
     def primary_screenshot_name(self, record: RecordResult) -> str | None:
         override = self.store.get(record.task.evidence_id)
@@ -304,6 +330,44 @@ class ReviewSession:
             return ids[ids.index(evidence_id) - 1]
         return None
 
+    # ── manual rows (群聊/朋友圈 and other URL-less sheets) ──
+    @staticmethod
+    def is_manual_row(record: RecordResult) -> bool:
+        """Rows with an empty original URL only exist via import or manual add."""
+
+        return record.route is not None and not record.task.original_url.strip()
+
+    def add_manual_record(self, sheet_name: str) -> RecordResult:
+        """Append a blank manual row to ``sheet_name`` and persist it."""
+
+        layout = SHEET_LAYOUTS[sheet_name]
+        evidence_id = (max(self._records) + 1) if self._records else 1
+        record = RecordResult(
+            task=UrlTask(evidence_id, "", ""),
+            status=RecordStatus.NEEDS_REVIEW,
+            route=RouteDecision(
+                sheet_name=layout.name,
+                platform_value="",
+                text_type="正文",
+            ),
+        )
+        self._records[evidence_id] = record
+        if job_records.checkpoint_exists(self.job_dir):
+            job_records.append_record(self.job_dir, record)
+        return record
+
+    def remove_manual_record(self, evidence_id: int) -> bool:
+        """Delete a manual row (and its overrides); refuses crawled rows."""
+
+        record = self._records.get(evidence_id)
+        if record is None or not self.is_manual_row(record):
+            return False
+        del self._records[evidence_id]
+        self.store.remove(evidence_id)
+        if job_records.checkpoint_exists(self.job_dir):
+            job_records.remove_record(self.job_dir, evidence_id)
+        return True
+
     # ── internals ──
     def _ordered_records(self) -> list[RecordResult]:
         return [self._records[evidence_id] for evidence_id in self.evidence_ids()]
@@ -341,6 +405,8 @@ class ReviewSession:
             )
         elif field == "text_type":
             crawled = record.route.text_type if record.route else page.text_type_hint
+        elif field == "platform":
+            crawled = record.route.platform_value if record.route else ""
         elif field in {
             "title",
             "author_name",
@@ -378,9 +444,9 @@ class ReviewSession:
         layout: SheetLayout | None,
         field: str,
     ) -> tuple[str, ...]:
-        if layout is None or field != "text_type":
+        if layout is None or field not in {"text_type", "platform"}:
             return ()
-        column = layout.field_columns.get("text_type")
+        column = layout.field_columns.get(field)
         if not column:
             return ()
         return tuple(layout.validation_values.get(column, ()))

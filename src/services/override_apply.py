@@ -61,6 +61,7 @@ def apply_override(record: RecordResult, override: ManualOverride) -> None:
             page.field_confidences[page_field] = 1.0
     _apply_published_at(record, override)
     _apply_text_type(record, override)
+    _apply_platform(record, override)
     if override.primary_screenshot_name:
         record.assets.page_screenshot = Path(override.primary_screenshot_name)
     if override.attachment_names:
@@ -118,6 +119,26 @@ def _apply_text_type(record: RecordResult, override: ManualOverride) -> None:
         )
         return
     record.route = replace(record.route, text_type=value)
+
+
+def _apply_platform(record: RecordResult, override: ManualOverride) -> None:
+    value = (override.values.get("platform") or "").strip()
+    if not value or record.route is None:
+        return
+    layout = get_sheet_layout(record.route.sheet_name)
+    platform_column = layout.field_columns.get("platform")
+    allowed = layout.validation_values.get(platform_column or "", ())
+    if value not in allowed:
+        record.errors.append(
+            TaskError(
+                "manual_override",
+                "MANUAL_PLATFORM_INVALID",
+                f"人工设置的发布平台 {value!r} 不在工作表允许值 {allowed} 内。",
+                retryable=False,
+            )
+        )
+        return
+    record.route = replace(record.route, platform_value=value)
 
 
 def _parse_manual_datetime(raw: str) -> datetime | None:
