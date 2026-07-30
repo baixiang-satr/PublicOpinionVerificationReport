@@ -7,10 +7,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageStat, UnidentifiedImageError
-
 from src.config.settings import TaskConfig
 from src.crawler.platform_catalog import find_platform
+from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
 from src.utils.file_utils import UnsafeFileNameError, require_safe_file_name
 
 
@@ -392,19 +391,9 @@ async def _page_dimensions(
 
 def _is_visually_blank(path: Path) -> bool:
     try:
-        with Image.open(path) as source:
-            image = source.convert("L")
-            minimum_tone, maximum_tone = image.getextrema()
-            image.thumbnail((256, 256))
-            standard_deviation = float(ImageStat.Stat(image).stddev[0])
-            entropy = float(image.entropy())
-    except (OSError, UnidentifiedImageError, ValueError) as error:
-        raise PageScreenshotError(f"Screenshot file is not a readable image: {error}") from error
-    return (
-        standard_deviation < 5.0
-        and entropy < 1.0
-        and maximum_tone - minimum_tone < 32
-    )
+        return is_visually_blank(path)
+    except UnreadableImageError as error:
+        raise PageScreenshotError(str(error)) from error
 
 
 def _raise_if_cancelled(cancel_event: asyncio.Event | None) -> None:

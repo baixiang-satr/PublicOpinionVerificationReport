@@ -118,6 +118,24 @@ export interface InputFileInfo {
   rejected_count: number
 }
 
+export interface ScreenshotInfo {
+  data_url: string
+  name: string
+}
+
+export interface ScreenshotPair {
+  content: ScreenshotInfo | null
+  author: ScreenshotInfo | null
+}
+
+export interface CaptureEventPayload {
+  eid: number
+  target: 'content' | 'author'
+  status: 'saved' | 'cancelled' | 'error'
+  name: string
+  message: string
+}
+
 export type BridgeEventType =
   | 'started'
   | 'progress'
@@ -126,6 +144,7 @@ export type BridgeEventType =
   | 'finished'
   | 'failed'
   | 'auth'
+  | 'capture'
 
 export interface BridgeEvent {
   type: BridgeEventType

@@ -64,6 +64,8 @@ def apply_override(record: RecordResult, override: ManualOverride) -> None:
     _apply_platform(record, override)
     if override.primary_screenshot_name:
         record.assets.page_screenshot = Path(override.primary_screenshot_name)
+    if override.author_screenshot_name:
+        record.assets.author_screenshot = Path(override.author_screenshot_name)
     if override.attachment_names:
         record.assets.extra_attachments = [
             Path(name) for name in override.attachment_names

@@ -2,6 +2,10 @@
 
 本任务清单以 [requirements.md](../requirements.md)、[design.md](../design.md) 和 [template_contract.md](template_contract.md) 为准。每项任务完成后应独立验证，不把未完成的下游功能当作验收前提。
 
+## 当前状态（2026-07-30）
+
+- [x] T13：补录表格精简与交互式框选截图——SheetDialog 工具条只保留「查看截图/截取内容页/截取个人页/手工行」，删除上/下一条待补、复制上一条、只看待补录、批量文本类型、打开链接、上传主截图、添加附件（桥接方法同步移除）；URL 单元格超链接直接跳转；「查看截图」按内容页/个人页两张截图三态展示（无图→提示去截图，缺图→预览并提示补哪张，齐全→并排预览）；新增 `src/screenshot/region_capture.py`（有头 Chromium 最大化 + 平台登录态复用 + 页内浮动框选工具，`context.expose_binding` 回传选区 → clip 截图，空白图拒绝并要求重选）与 `CaptureRunner`；`ManualOverride` 新增 `author_screenshot_name` 个人页截图显式槽位（override_store/review_session/override_apply/manual_assets/sheet_display 全链路，导出经 staging 进附件列，命名避开 `\d{3}主页` 审计正则）；无 URL 手工行点截图按钮时提供本地选图兜底。
+
 ## 当前状态（2026-07-29）
 
 - [x] T01–T08：见 2026-07-28 状态。

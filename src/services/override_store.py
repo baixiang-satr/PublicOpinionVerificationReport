@@ -96,6 +96,17 @@ class ManualOverrideStore:
         )
         return self._touch(override)
 
+    def set_author_screenshot(
+        self,
+        evidence_id: int,
+        name: str | None,
+    ) -> ManualOverride:
+        override = self.get_or_create(evidence_id)
+        override.author_screenshot_name = (
+            require_safe_file_name(name) if name else None
+        )
+        return self._touch(override)
+
     def set_attachments(self, evidence_id: int, names: list[str]) -> ManualOverride:
         override = self.get_or_create(evidence_id)
         override.attachment_names = [require_safe_file_name(name) for name in names]
@@ -128,6 +139,7 @@ def _override_to_dict(override: ManualOverride) -> dict[str, Any]:
             if field in OVERRIDEABLE_FIELDS
         },
         "primary_screenshot_name": override.primary_screenshot_name,
+        "author_screenshot_name": override.author_screenshot_name,
         "attachment_names": list(override.attachment_names),
         "note": override.note,
         "updated_at": override.updated_at.isoformat() if override.updated_at else None,
@@ -150,6 +162,7 @@ def _override_from_dict(entry: Any) -> ManualOverride | None:
             if str(field) in OVERRIDEABLE_FIELDS
         },
         primary_screenshot_name=_safe_name_or_none(entry.get("primary_screenshot_name")),
+        author_screenshot_name=_safe_name_or_none(entry.get("author_screenshot_name")),
         attachment_names=[
             name
             for name in (

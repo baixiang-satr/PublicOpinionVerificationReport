@@ -6,7 +6,7 @@
 3. 能否生成有效截图
 
 运行方式:
-    cd d:\project\PublicOpinionVerificationReport
+    cd d:\\project\\PublicOpinionVerificationReport
     d:/project/PublicOpinionVerificationReport/.venv/Scripts/python.exe tools/test_all_platforms.py
 """
 

@@ -4,6 +4,7 @@ import { bridge } from '@/api/bridge'
 import type {
   AuthPlatform,
   BridgeEvent,
+  CaptureEventPayload,
   JobFinishedPayload,
   JobStartedPayload,
   LogPayload,
@@ -51,6 +52,7 @@ interface JobState {
   authPlatforms: AuthPlatform[]
   sheetDialogOpen: boolean
   sheetDialogMode: 'preview' | 'edit'
+  lastCapture: CaptureEventPayload | null
 }
 
 export const useJobStore = defineStore('job', {
@@ -72,6 +74,7 @@ export const useJobStore = defineStore('job', {
     authPlatforms: [],
     sheetDialogOpen: false,
     sheetDialogMode: 'preview',
+    lastCapture: null,
   }),
   getters: {
     canGoNext(state): boolean {
@@ -132,6 +135,9 @@ export const useJobStore = defineStore('job', {
         case 'auth':
           this.onAuthEvent(payload as unknown as AuthPlatform)
           break
+        case 'capture':
+          this.onCaptureEvent(payload as unknown as CaptureEventPayload)
+          break
       }
     },
     onFinished(result: JobFinishedPayload) {
@@ -148,6 +154,14 @@ export const useJobStore = defineStore('job', {
       const index = this.authPlatforms.findIndex((p) => p.key === platform.key)
       if (index >= 0) this.authPlatforms[index] = platform
       else this.authPlatforms.push(platform)
+    },
+    onCaptureEvent(capture: CaptureEventPayload) {
+      this.lastCapture = capture
+      if (capture.status === 'saved') {
+        this.statusText = `已保存截图 ${capture.name}`
+      } else if (capture.status === 'error') {
+        this.statusText = `截图失败：${capture.message}`
+      }
     },
     async refreshSession() {
       const data = await bridge.getBootstrap()

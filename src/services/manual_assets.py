@@ -42,6 +42,18 @@ def stage_manual_assets(
         record.assets.page_screenshot = staged_path
         if staged_path is not None and manual_primary:
             staged += 1
+        author = record.assets.author_screenshot
+        manual_author = author is not None and not Path(author).is_absolute()
+        staged_author = _stage_path(
+            record,
+            author,
+            source_dir,
+            template_dir,
+            "个人页截图",
+        )
+        record.assets.author_screenshot = staged_author
+        if staged_author is not None and manual_author:
+            staged += 1
         extras: list[Path] = []
         for path in record.assets.extra_attachments:
             staged_extra = _stage_path(

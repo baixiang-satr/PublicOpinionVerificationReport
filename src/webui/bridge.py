@@ -15,7 +15,7 @@ from pathlib import Path
 import shutil
 import webbrowser
 
-from src.auth.registry import AUTH_POLICIES
+from src.auth.registry import AUTH_POLICIES, auth_policy_for_url
 from src.config.settings import AppConfig, TaskConfig
 from src.input.reader import InputReadError, read_url_input
 from src.services.checkpoint_store import CheckpointStore
@@ -23,7 +23,7 @@ from src.services.models import JobRequest
 from src.services.review_session import ReviewSession
 from src.services.zip_import import TemplateZipImportError, TemplateZipImporter
 from src.utils.file_utils import require_safe_file_name
-from src.webui.runner import AuthRunner, EventSink, JobRunner
+from src.webui.runner import AuthRunner, CaptureRunner, EventSink, JobRunner
 from src.webui.serialize import (
     auth_profile_payload,
     history_job_payload,
@@ -49,6 +49,7 @@ class WebUIBridge:
         self._window_provider = window_provider
         self.jobs = JobRunner(self._current_config, self._sink)
         self.auth = AuthRunner(lambda: self._task_config, self._sink)
+        self.capture = CaptureRunner(lambda: self._task_config, self._sink)
         self.jobs.refresh_latest_checkpoint(base_config.template.output_dir)
 
     # ── 基础 ──
@@ -235,30 +236,6 @@ class WebUIBridge:
         session.set_field(int(evidence_id), str(field), str(value))
         return {"ok": True, "row": row_delta(session, int(evidence_id))}
 
-    def batch_text_type(self, evidence_ids: list[int], text_type: str) -> dict:
-        session = self._session()
-        if session is None:
-            return {"skipped": 0}
-        skipped = session.set_text_type_many([int(e) for e in evidence_ids], str(text_type))
-        self._sink.emit("session", {})
-        return {"skipped": len(skipped)}
-
-    def copy_from_previous(self, evidence_id: int) -> dict:
-        session = self._session()
-        if session is None:
-            return {"copied": 0}
-        previous = session.previous_id(int(evidence_id))
-        if previous is None:
-            return {"copied": 0}
-        copied = session.copy_empty_fields_from(previous, int(evidence_id))
-        return {"copied": len(copied)}
-
-    def next_attention(self, evidence_id: int, backwards: bool) -> dict:
-        session = self._session()
-        if session is None:
-            return {"eid": None}
-        return {"eid": session.next_attention_id(int(evidence_id), backwards=bool(backwards))}
-
     def add_manual_row(self, sheet_name: str) -> dict:
         session = self._session()
         if session is None:
@@ -295,6 +272,8 @@ class WebUIBridge:
         shutil.copy2(path, assets_dir / name)
         if mode == "primary":
             session.set_primary_screenshot(eid, name)
+        elif mode == "author":
+            session.set_author_screenshot(eid, name)
         else:
             override = session.get_override(eid)
             names = list(override.attachment_names) if override else []
@@ -303,17 +282,76 @@ class WebUIBridge:
             session.set_attachments(eid, names)
         return {"ok": True, "name": name}
 
-    def screenshot_data_url(self, evidence_id: int) -> dict:
+    def list_screenshots(self, evidence_id: int) -> dict:
+        """内容页/个人页两张截图的预览载荷；缺失的槽位为 None。"""
+
         session = self._session()
         if session is None:
-            return {"data_url": None, "name": ""}
-        record = session.get_record(int(evidence_id))
-        path = session.primary_screenshot_path(record)
+            return {"content": None, "author": None}
+        try:
+            record = session.get_record(int(evidence_id))
+        except KeyError:
+            return {"content": None, "author": None}
+        return {
+            "content": self._image_payload(session.primary_screenshot_path(record)),
+            "author": self._image_payload(session.author_screenshot_path(record)),
+        }
+
+    @staticmethod
+    def _image_payload(path: Path | None) -> dict | None:
         if path is None:
-            return {"data_url": None, "name": ""}
+            return None
         mime = mimetypes.guess_type(path.name)[0] or "image/png"
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         return {"data_url": f"data:{mime};base64,{encoded}", "name": path.name}
+
+    def start_region_capture(self, evidence_id: int, target: str) -> dict:
+        """打开交互式截图窗口（框选截图，参照 FS Capture）。"""
+
+        session = self._session()
+        if session is None:
+            return {"ok": False, "code": "no_session", "message": "还没有打开的任务。"}
+        if target not in ("content", "author"):
+            return {"ok": False, "code": "bad_target", "message": "未知截图目标。"}
+        try:
+            record = session.get_record(int(evidence_id))
+        except KeyError:
+            return {"ok": False, "code": "no_record", "message": "找不到该记录。"}
+        url = (record.page.final_url or record.task.original_url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return {"ok": False, "code": "no_url", "message": "该行没有可打开的链接。"}
+        eid = int(evidence_id)
+        storage_state = self._capture_storage_state(url)
+        assets_dir = session.manual_assets_dir()
+
+        def _on_saved(name: str, *, _eid: int = eid, _target: str = target) -> None:
+            if _target == "content":
+                session.set_primary_screenshot(_eid, name)
+            else:
+                session.set_author_screenshot(_eid, name)
+            self._sink.emit("session", {})
+
+        ok, message = self.capture.start(
+            url=url,
+            evidence_id=eid,
+            target=target,
+            storage_state=storage_state,
+            assets_dir=assets_dir,
+            on_saved=_on_saved,
+        )
+        return {"ok": ok, "message": message}
+
+    def _capture_storage_state(self, url: str) -> dict | None:
+        policy = auth_policy_for_url(url)
+        if policy is None:
+            return None
+        try:
+            return self.auth.store().load_state(
+                policy.platform_key,
+                include_inactive=True,
+            )
+        except Exception:  # noqa: BLE001 — 登录态不可用时以游客模式打开
+            return None
 
     # ── 系统动作 ──
     def open_url(self, url: str) -> dict:

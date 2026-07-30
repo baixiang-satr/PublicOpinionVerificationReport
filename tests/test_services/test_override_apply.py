@@ -101,14 +101,17 @@ def test_apply_overrides_sets_screenshot_and_attachments() -> None:
         evidence_id=1,
         values={},
         primary_screenshot_name="001_manual.png",
+        author_screenshot_name="001_author.png",
         attachment_names=["001_extra.png"],
     )
 
     apply_overrides([record], [override])
 
     assert record.assets.page_screenshot == Path("001_manual.png")
+    assert record.assets.author_screenshot == Path("001_author.png")
     assert record.assets.extra_attachments == [Path("001_extra.png")]
     attachment_names = [path.name for path in record.assets.attachment_paths()]
+    assert "001_author.png" in attachment_names
     assert "001_extra.png" in attachment_names
 
 

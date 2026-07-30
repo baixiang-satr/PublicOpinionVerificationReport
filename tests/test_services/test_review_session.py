@@ -119,6 +119,34 @@ def test_homepage_screenshot_flag_cleared_by_manual_attachment(tmp_path: Path) -
     assert missing == ()
 
 
+def test_homepage_screenshot_flag_cleared_by_author_override(tmp_path: Path) -> None:
+    record = _record(1, title="标题", content="正文", author="昵称")
+    session = _session(tmp_path, [record])
+    session.set_primary_screenshot(1, "001.jpg")
+    session.set_author_screenshot(1, "001_author_20260730.png")
+    missing = session.missing_labels(record, session.get_override(1))
+    assert "主页截图" not in missing
+    assert missing == ()
+
+
+def test_author_screenshot_name_and_path_precedence(tmp_path: Path) -> None:
+    record = _record(1)
+    record.assets.author_screenshot = Path("001主页.jpg")
+    session = _session(tmp_path, [record])
+    # 无 override：回落到抓取资产
+    assert session.author_screenshot_name(record) == "001主页.jpg"
+    assert session.author_screenshot_path(record) is None  # 相对路径文件不存在
+    # override 优先；文件在 manual_assets 中时可解析预览路径
+    session.set_author_screenshot(1, "001_author.png")
+    assert session.author_screenshot_name(record) == "001_author.png"
+    assert session.author_screenshot_path(record) is None
+    manual_dir = session.manual_assets_dir()
+    manual_dir.mkdir(parents=True)
+    capture = manual_dir / "001_author.png"
+    capture.write_bytes(b"png")
+    assert session.author_screenshot_path(record) == capture
+
+
 def test_homepage_screenshot_not_required_for_manual_rows(tmp_path: Path) -> None:
     session = _session(tmp_path, [])
     record = session.add_manual_record("群聊")  # 无 URL 的手工行
@@ -174,6 +202,42 @@ def test_stage_manual_assets_copies_and_audits_missing(tmp_path: Path) -> None:
     assert with_manual.assets.extra_attachments == [template_dir / "shot.png"]
     assert any(
         error.code == "MANUAL_ASSET_MISSING" for error in with_manual.errors
+    )
+
+
+def test_stage_manual_assets_stages_author_screenshot(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    template_dir = tmp_path / "staging" / "template"
+    (job_dir / MANUAL_ASSETS_DIR_NAME).mkdir(parents=True)
+    (job_dir / MANUAL_ASSETS_DIR_NAME / "001_author.png").write_bytes(b"png")
+    template_dir.mkdir(parents=True)
+
+    record = _record(1)
+    record.assets.author_screenshot = Path("001_author.png")  # 人工相对名
+
+    staged = stage_manual_assets(job_dir, template_dir, [record])
+
+    assert staged == 1
+    assert record.assets.author_screenshot == template_dir / "001_author.png"
+    assert (template_dir / "001_author.png").read_bytes() == b"png"
+
+
+def test_stage_manual_assets_reports_missing_author_screenshot(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    template_dir = tmp_path / "staging" / "template"
+    (job_dir / MANUAL_ASSETS_DIR_NAME).mkdir(parents=True)
+    (job_dir / MANUAL_ASSETS_DIR_NAME / "gone.png").write_bytes(b"png")
+    template_dir.mkdir(parents=True)
+
+    record = _record(1)
+    record.assets.author_screenshot = Path("missing.png")
+
+    staged = stage_manual_assets(job_dir, template_dir, [record])
+
+    assert staged == 0
+    assert record.assets.author_screenshot is None
+    assert any(
+        error.code == "MANUAL_ASSET_MISSING" for error in record.errors
     )
 
 

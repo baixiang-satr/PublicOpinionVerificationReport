@@ -32,6 +32,7 @@ class ManualOverride:
     evidence_id: int
     values: dict[str, str] = field(default_factory=dict)
     primary_screenshot_name: str | None = None
+    author_screenshot_name: str | None = None
     attachment_names: list[str] = field(default_factory=list)
     note: str = ""
     updated_at: datetime | None = None
@@ -40,6 +41,7 @@ class ManualOverride:
         return (
             not any(str(value).strip() for value in self.values.values())
             and not self.primary_screenshot_name
+            and not self.author_screenshot_name
             and not self.attachment_names
             and not self.note.strip()
         )

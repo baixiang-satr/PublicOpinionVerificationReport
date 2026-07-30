@@ -96,13 +96,6 @@ def test_open_session_and_review_mutations(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert "昵称" not in result["row"]["missing"]
 
-    assert bridge.copy_from_previous(2)["copied"] >= 0
-    assert bridge.next_attention(1, False)["eid"] is None or isinstance(
-        bridge.next_attention(1, False)["eid"], int
-    )
-    skipped = bridge.batch_text_type([1, 2], "评论回复")
-    assert skipped["skipped"] == 0
-
     added = bridge.add_manual_row("群聊")
     assert added["eid"] is not None
     assert bridge.remove_manual_row(added["eid"])["ok"] is True
@@ -134,12 +127,61 @@ def test_pick_screenshot_stages_manual_asset(tmp_path: Path) -> None:
     assert result["name"].startswith("001_")
     assert (job_dir / "manual_assets" / result["name"]).is_file()
 
-    payload = bridge.screenshot_data_url(1)
-    assert payload["data_url"] is not None
-    assert payload["data_url"].startswith("data:image/png;base64,")
+    payload = bridge.list_screenshots(1)
+    assert payload["content"] is not None
+    assert payload["content"]["data_url"].startswith("data:image/png;base64,")
+    assert payload["content"]["name"] == result["name"]
+    assert payload["author"] is None
+
+    author = bridge.pick_screenshot(1, "author")
+    assert author["ok"] is True
+    both = bridge.list_screenshots(1)
+    assert both["author"] is not None
+    assert both["author"]["name"] == author["name"]
 
     again = bridge.pick_screenshot(1, "attachment")
     assert again["ok"] is True
+    # 附件槽位不影响个人页截图槽位
+    still = bridge.list_screenshots(1)
+    assert still["author"] is not None
+
+
+def test_list_screenshots_empty_without_session_or_files(tmp_path: Path) -> None:
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    assert bridge.list_screenshots(1) == {"content": None, "author": None}
+
+    records = [_record(1, "https://example.com/a", "微博博客", RecordStatus.NEEDS_REVIEW)]
+    job_dir = _make_job(tmp_path, records)
+    bridge.jobs.open_session(job_dir)
+    assert bridge.list_screenshots(1) == {"content": None, "author": None}
+    assert bridge.list_screenshots(999) == {"content": None, "author": None}
+
+
+def test_start_region_capture_guards(tmp_path: Path) -> None:
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    no_session = bridge.start_region_capture(1, "content")
+    assert no_session["ok"] is False
+    assert no_session["code"] == "no_session"
+
+    records = [
+        _record(1, "https://example.com/a", "微博博客", RecordStatus.NEEDS_REVIEW),
+    ]
+    job_dir = _make_job(tmp_path, records)
+    bridge.jobs.open_session(job_dir)
+
+    bad_target = bridge.start_region_capture(1, "wat")
+    assert bad_target["ok"] is False
+    assert bad_target["code"] == "bad_target"
+
+    missing = bridge.start_region_capture(999, "content")
+    assert missing["ok"] is False
+    assert missing["code"] == "no_record"
+
+    added = bridge.add_manual_row("群聊")
+    assert added["eid"] is not None
+    no_url = bridge.start_region_capture(added["eid"], "content")
+    assert no_url["ok"] is False
+    assert no_url["code"] == "no_url"
 
 
 def test_pick_screenshot_cancelled(tmp_path: Path) -> None:

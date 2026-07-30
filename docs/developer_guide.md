@@ -30,7 +30,7 @@ playwright install chromium
 | `input/` | 读取用户文件、抽取和稳定去重 URL | 路由平台、写 Excel。 |
 | `crawler/` | 页面访问、限速、重试、字段提取和平台路由 | 直接生成模板行或控制 GUI。 |
 | `crawler/platforms/` | 按平台注册的专用提取器（内嵌 JSON/网络负载/DOM 探测） | 登录、绕过验证码、修改页面。 |
-| `screenshot/` | 管理浏览器 context、主截图、主页截图和临时 OCR 图片 | 决定 Excel 列。 |
+| `screenshot/` | 管理浏览器 context、主截图、主页截图、交互式框选截图（region_capture）和临时 OCR 图片 | 决定 Excel 列。 |
 | `domain/` | 稳定模型、模板结构和枚举（含 `overrides.py` 人工补录模型） | I/O、UI 或浏览器调用。 |
 | `export/` | 模板复制、行映射、OOXML/Excel COM 写入、资产校验、ZIP | 重新抓取网页。 |
 | `services/` | 协调完整任务、发布进度事件、处理取消、人工补录持久化与合并 | 具体页面 DOM 选择器。 |

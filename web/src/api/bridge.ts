@@ -6,6 +6,7 @@ import type {
   BridgeEvent,
   HistoryJob,
   InputFileInfo,
+  ScreenshotPair,
   SheetPayload,
   TaskOptions,
 } from '@/types'
@@ -23,13 +24,11 @@ interface PyWebviewApi {
   resume_checkpoint(reexport_only: boolean, input_path: string): Promise<{ ok: boolean; message: string }>
   get_sheet_payload(): Promise<SheetPayload[]>
   apply_edit(eid: number, field: string, value: string): Promise<{ ok: boolean }>
-  batch_text_type(eids: number[], text_type: string): Promise<{ skipped: number }>
-  copy_from_previous(eid: number): Promise<{ copied: number }>
-  next_attention(eid: number, backwards: boolean): Promise<{ eid: number | null }>
   add_manual_row(sheet_name: string): Promise<{ eid: number | null }>
   remove_manual_row(eid: number): Promise<{ ok: boolean }>
-  pick_screenshot(eid: number, mode: 'primary' | 'attachment'): Promise<{ ok: boolean; name: string }>
-  screenshot_data_url(eid: number): Promise<{ data_url: string | null; name: string }>
+  pick_screenshot(eid: number, mode: 'primary' | 'author' | 'attachment'): Promise<{ ok: boolean; name: string }>
+  list_screenshots(eid: number): Promise<ScreenshotPair>
+  start_region_capture(eid: number, target: 'content' | 'author'): Promise<{ ok: boolean; code?: string; message: string }>
   open_url(url: string): Promise<{ ok: boolean }>
   open_output_dir(): Promise<{ ok: boolean }>
   export_zip(): Promise<{ ok: boolean; message: string }>
@@ -177,8 +176,10 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
         { key: 'weibo', name: '新浪微博', status: 'unknown', status_text: '未检查', tone: 'muted', message: '尚未验证过该平台。', account: '' },
         { key: 'bilibili', name: '哔哩哔哩', status: 'guest_ok', status_text: '游客可访问', tone: 'ok', message: '无需登录即可访问。', account: '' },
       ])
-    case 'screenshot_data_url':
-      return respond({ data_url: null, name: '' })
+    case 'list_screenshots':
+      return respond({ content: null, author: null })
+    case 'start_region_capture':
+      return respond({ ok: true, message: '' })
     case 'start_crawl': {
       // 模拟一次完整任务：started → progress → finished，驱动向导自动前进
       const emit = (type: string, payload: unknown) =>
@@ -238,17 +239,13 @@ export const bridge = {
   getSheetPayload: () => call<SheetPayload[]>('get_sheet_payload'),
   applyEdit: (eid: number, field: string, value: string) =>
     call<{ ok: boolean }>('apply_edit', eid, field, value),
-  batchTextType: (eids: number[], textType: string) =>
-    call<{ skipped: number }>('batch_text_type', eids, textType),
-  copyFromPrevious: (eid: number) => call<{ copied: number }>('copy_from_previous', eid),
-  nextAttention: (eid: number, backwards: boolean) =>
-    call<{ eid: number | null }>('next_attention', eid, backwards),
   addManualRow: (sheet: string) => call<{ eid: number | null }>('add_manual_row', sheet),
   removeManualRow: (eid: number) => call<{ ok: boolean }>('remove_manual_row', eid),
-  pickScreenshot: (eid: number, mode: 'primary' | 'attachment') =>
+  pickScreenshot: (eid: number, mode: 'primary' | 'author' | 'attachment') =>
     call<{ ok: boolean; name: string }>('pick_screenshot', eid, mode),
-  screenshotDataUrl: (eid: number) =>
-    call<{ data_url: string | null; name: string }>('screenshot_data_url', eid),
+  listScreenshots: (eid: number) => call<ScreenshotPair>('list_screenshots', eid),
+  startRegionCapture: (eid: number, target: 'content' | 'author') =>
+    call<{ ok: boolean; code?: string; message: string }>('start_region_capture', eid, target),
   openUrl: (url: string) => call<{ ok: boolean }>('open_url', url),
   openOutputDir: () => call<{ ok: boolean }>('open_output_dir'),
   exportZip: () => call<{ ok: boolean; message: string }>('export_zip'),

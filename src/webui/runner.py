@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from threading import Event, Lock, Thread
-from typing import Any, Coroutine
+from typing import Any, Callable, Coroutine
 
 from src.auth.models import AuthStatus
 from src.auth.registry import AUTH_POLICIES
 from src.auth.service import AuthManagerService
 from src.auth.store import AuthProfileStore
 from src.config.settings import AppConfig, TaskConfig, default_auth_store_dir
+from src.screenshot.region_capture import RegionCaptureResult, RegionCaptureService
 from src.services.models import JobRequest, JobResult, RunnerCallbacks
 from src.services.review_session import ReviewSession
 from src.services.task_runner import TaskRunner, TaskRunnerError
@@ -223,4 +225,77 @@ class AuthRunner(_AsyncThreadJob):
         self._sink.emit(
             "auth",
             auth_platform_payload(platform_key, display_name, status, message),
+        )
+
+
+class CaptureRunner(_AsyncThreadJob):
+    """Runs one interactive region-capture browser window at a time."""
+
+    def __init__(self, task_config_getter, sink: EventSink) -> None:
+        super().__init__(sink)
+        self._task_config_getter = task_config_getter
+
+    def start(
+        self,
+        *,
+        url: str,
+        evidence_id: int,
+        target: str,
+        storage_state: dict[str, Any] | None,
+        assets_dir: Path,
+        on_saved: Callable[[str], None],
+    ) -> tuple[bool, str]:
+        if self.is_running():
+            return False, "已有截图窗口打开，请先完成或关闭当前窗口。"
+        self._spawn(
+            self._run_capture(
+                url=url,
+                evidence_id=evidence_id,
+                target=target,
+                storage_state=storage_state,
+                assets_dir=assets_dir,
+                on_saved=on_saved,
+            )
+        )
+        return True, ""
+
+    async def _run_capture(
+        self,
+        *,
+        url: str,
+        evidence_id: int,
+        target: str,
+        storage_state: dict[str, Any] | None,
+        assets_dir: Path,
+        on_saved: Callable[[str], None],
+    ) -> None:
+        cancel_event = asyncio.Event()
+        with self._lock:
+            self._asyncio_cancel = cancel_event
+        service = RegionCaptureService(self._task_config_getter())
+        result = await service.capture(
+            url,
+            evidence_id=evidence_id,
+            target=target,
+            storage_state=storage_state,
+            assets_dir=assets_dir,
+            cancel_event=cancel_event,
+        )
+        if result.status == "saved":
+            try:
+                on_saved(result.name)
+            except Exception as error:  # noqa: BLE001 — 统一回吐给 UI
+                result = RegionCaptureResult(
+                    status="error",
+                    message=f"截图已保存但关联记录失败：{error}",
+                )
+        self._sink.emit(
+            "capture",
+            {
+                "eid": evidence_id,
+                "target": target,
+                "status": result.status,
+                "name": result.name,
+                "message": result.message,
+            },
         )

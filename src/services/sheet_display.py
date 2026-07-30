@@ -41,12 +41,23 @@ def row_values(
 
 
 def attachment_names(session: ReviewSession, record: RecordResult) -> list[str]:
-    """Manual attachment names win; otherwise the crawled asset names."""
+    """Slot-wise merge so the display matches the export row exactly.
+
+    The author-home (个人页) screenshot slot and the extra-attachment slot each
+    prefer manual override names over crawled asset names, mirroring how
+    ``apply_override`` rewrites :class:`AssetSet` before row mapping.
+    """
 
     override = session.get_override(record.task.evidence_id)
+    names: list[str] = []
+    author_name = session.author_screenshot_name(record)
+    if author_name:
+        names.append(author_name)
     if override is not None and override.attachment_names:
-        return list(override.attachment_names)
-    return [path.name for path in record.assets.attachment_paths()]
+        names.extend(override.attachment_names)
+    else:
+        names.extend(path.name for path in record.assets.extra_attachments)
+    return names
 
 
 def field_for_column(layout: SheetLayout, column: str) -> str | None:

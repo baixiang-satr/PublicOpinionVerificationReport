@@ -22,7 +22,8 @@ import '@univerjs/preset-sheets-hyper-link/lib/index.css'
 
 import { bridge } from '@/api/bridge'
 import { buildCell, buildWorkbookData, MISSING_COL, STATUS_COL, type SheetModel } from '@/components/sheetModel'
-import type { SheetPayload } from '@/types'
+import { useJobStore } from '@/stores/job'
+import type { SheetPayload, ScreenshotPair } from '@/types'
 
 const visible = defineModel<boolean>({ required: true })
 const props = defineProps<{ mode: 'preview' | 'edit' }>()
@@ -50,10 +51,10 @@ const containerRef = ref<HTMLElement>()
 const loading = ref(false)
 const payload = ref<SheetPayload[]>([])
 const models = ref<SheetModel[]>([])
-const attentionOnly = ref(false)
-const batchType = ref('')
 const manualSheet = ref('')
-const shotPreview = ref<{ url: string; name: string } | null>(null)
+const shotPreview = ref<ScreenshotPair | null>(null)
+
+const store = useJobStore()
 
 let univerInstance: ReturnType<typeof createUniver> | null = null
 let applying = false // 自我写入时屏蔽 CommandExecuted 回环
@@ -125,7 +126,6 @@ async function buildGrid() {
   }
   await decorate(univerAPI)
   listenEdits(univerAPI)
-  if (attentionOnly.value) applyAttentionFilter()
 }
 
 /** 下拉验证 + 超链接。 */
@@ -294,10 +294,6 @@ async function locateEid(eid: number) {
     if (rowIndex < 0) continue
     const sheet = workbook.getSheetBySheetId(model.sheetId)
     if (!sheet) return
-    if (attentionOnly.value) {
-      attentionOnly.value = false
-      applyAttentionFilter()
-    }
     workbook.setActiveSheet(sheet)
     await nextTick()
     sheet.getRange(rowIndex + 1, 0).activate()
@@ -306,60 +302,6 @@ async function locateEid(eid: number) {
 }
 
 // ── 工具栏操作 ─────────────────────────────────────────────────────────────
-async function jumpAttention(backwards: boolean) {
-  const current = activeCell()?.eid ?? 0
-  const { eid } = await bridge.nextAttention(current, backwards)
-  if (eid === null) {
-    ElMessage.success('全部完成，没有待补录的记录了。')
-    return
-  }
-  await locateEid(eid)
-}
-
-async function copyFromPrevious() {
-  const active = activeCell()
-  if (!active) {
-    ElMessage.info('请先选中一条记录。')
-    return
-  }
-  const { copied } = await bridge.copyFromPrevious(active.eid)
-  if (copied > 0) {
-    ElMessage.success(`已复制 ${copied} 个字段`)
-    await refreshRows()
-  } else {
-    ElMessage.info('没有可复制的空字段。')
-  }
-}
-
-async function applyBatchType() {
-  if (!batchType.value) return
-  const workbook = univerInstance?.univerAPI.getActiveWorkbook()
-  const range = workbook?.getActiveRange()
-  if (!workbook || !range) {
-    ElMessage.info('请先在表格中选中一条或多条记录。')
-    return
-  }
-  const sheetId = workbook.getActiveSheet().getSheetId()
-  const model = models.value.find((m) => m.sheetId === sheetId)
-  if (!model) return
-  const start = range.getRow()
-  const end = start + range.getHeight() - 1
-  const eids: number[] = []
-  for (let row = start; row <= end; row += 1) {
-    const payloadRow = model.rowAt(row)
-    if (payloadRow) eids.push(payloadRow.eid)
-  }
-  if (eids.length === 0) {
-    ElMessage.info('请选中至少一条记录行。')
-    return
-  }
-  const { skipped } = await bridge.batchTextType(eids, batchType.value)
-  await refreshRows()
-  if (skipped > 0) ElMessage.warning(`${skipped} 条记录的工作表不允许该文本类型，已跳过。`)
-  else ElMessage.success('已应用。')
-  batchType.value = ''
-}
-
 async function addManualRow() {
   if (!manualSheet.value) return
   const { eid } = await bridge.addManualRow(manualSheet.value)
@@ -391,69 +333,82 @@ async function removeManualRow() {
   await buildGrid()
 }
 
-async function uploadScreenshot(mode: 'primary' | 'attachment') {
+// ── 截图：两张预览 + 框选截取（FS Capture 式）────────────────────────────
+async function viewScreenshots() {
   const active = activeCell()
   if (!active) {
     ElMessage.info('请先选中一条记录。')
     return
   }
-  const { ok, name } = await bridge.pickScreenshot(active.eid, mode)
+  const pair = await bridge.listScreenshots(active.eid)
+  if (!pair.content && !pair.author) {
+    ElMessageBox.alert(
+      '本地没有截图。请点击工具条的「截取内容页」/「截取个人页」，在打开的页面中框选截图区域。',
+      '查看截图',
+      { confirmButtonText: '知道了' },
+    )
+    return
+  }
+  shotPreview.value = pair
+  if (!pair.content || !pair.author) {
+    const missingLabel = pair.content ? '个人页' : '内容页'
+    ElMessageBox.alert(
+      `还缺「${missingLabel}截图」。请选中该行后点击「截取${missingLabel}」补充。`,
+      '截图未齐全',
+      { confirmButtonText: '知道了' },
+    )
+  }
+}
+
+async function captureRegion(target: 'content' | 'author') {
+  const active = activeCell()
+  if (!active) {
+    ElMessage.info('请先选中一条记录。')
+    return
+  }
+  const result = await bridge.startRegionCapture(active.eid, target)
+  if (result.ok) {
+    ElMessage.success('已打开截图窗口：浏览到目标内容后点「开始框选」，拖拽框选并保存。')
+    return
+  }
+  if (result.code === 'no_url') {
+    await pickLocalImage(active.eid, target)
+    return
+  }
+  ElMessage.warning(result.message || '无法打开截图窗口。')
+}
+
+async function pickLocalImage(eid: number, target: 'content' | 'author') {
+  const label = target === 'content' ? '内容页' : '个人页'
+  try {
+    await ElMessageBox.confirm(
+      `该行没有链接，无法打开页面截图。是否从本地选择${label}截图图片？`,
+      '没有链接',
+      { confirmButtonText: '选择图片…', cancelButtonText: '取消', type: 'info' },
+    )
+  } catch {
+    return
+  }
+  const { ok, name } = await bridge.pickScreenshot(eid, target === 'content' ? 'primary' : 'author')
   if (!ok) return
   ElMessage.success(`已保存截图 ${name}`)
   await refreshRows()
 }
 
-async function viewScreenshot() {
-  const active = activeCell()
-  if (!active) {
-    ElMessage.info('请先选中一条记录。')
-    return
-  }
-  const { data_url: dataUrl, name } = await bridge.screenshotDataUrl(active.eid)
-  if (!dataUrl) {
-    ElMessage.info('该记录还没有截图。')
-    return
-  }
-  shotPreview.value = { url: dataUrl, name }
-}
-
-async function openCurrentLink() {
-  const active = activeCell()
-  if (!active) return
-  const row = active.model.rowAt(active.row)
-  const url = row?.final_url || row?.url
-  if (url?.startsWith('http')) {
-    await bridge.openUrl(url)
-  } else {
-    ElMessage.info('该记录没有可打开的链接。')
-  }
-}
-
-// ── 只看待补录 ─────────────────────────────────────────────────────────────
-function applyAttentionFilter() {
-  const workbook = univerInstance?.univerAPI.getActiveWorkbook()
-  if (!workbook) return
-  applying = true
-  for (const model of models.value) {
-    const sheet = workbook.getSheetBySheetId(model.sheetId)
-    if (!sheet) continue
-    const rows = model.sheet.rows
-    sheet.showRows(1, rows.length)
-    if (!attentionOnly.value) continue
-    let runStart = -1
-    for (let i = 0; i <= rows.length; i += 1) {
-      const hide = i < rows.length && !rows[i].attention
-      if (hide && runStart < 0) runStart = i
-      if ((!hide || i === rows.length) && runStart >= 0) {
-        sheet.hideRows(runStart + 1, i - runStart)
-        runStart = -1
-      }
+// ── 截图窗口结果回写 ───────────────────────────────────────────────────────
+watch(
+  () => store.lastCapture,
+  async (capture) => {
+    if (!capture) return
+    store.lastCapture = null
+    if (capture.status === 'saved') {
+      ElMessage.success(`已保存截图 ${capture.name}`)
+    } else if (capture.status === 'error') {
+      ElMessage.error(capture.message || '截图失败。')
     }
-  }
-  applying = false
-}
-
-watch(attentionOnly, applyAttentionFilter)
+    if (visible.value && capture.status === 'saved') await refreshRows()
+  },
+)
 
 // ── 打开/关闭 ──────────────────────────────────────────────────────────────
 watch(visible, async (open) => {
@@ -484,33 +439,16 @@ watch(visible, async (open) => {
     :z-index="900"
   >
     <div v-if="editable" class="sheet-toolbar">
-      <el-button size="small" @click="jumpAttention(true)">◀ 上一条待补</el-button>
-      <el-button size="small" @click="jumpAttention(false)">下一条待补 ▶</el-button>
-      <el-button size="small" @click="copyFromPrevious">复制上一条空字段</el-button>
-      <el-checkbox v-model="attentionOnly" class="toolbar-item">只看待补录</el-checkbox>
-      <el-divider direction="vertical" />
-      <el-select
-        v-model="batchType"
-        size="small"
-        placeholder="批量文本类型"
-        class="toolbar-select"
-      >
-        <el-option label="正文" value="正文" />
-        <el-option label="评论回复" value="评论回复" />
-        <el-option label="商家" value="商家" />
-      </el-select>
-      <el-button size="small" :disabled="!batchType" @click="applyBatchType">应用</el-button>
-      <el-divider direction="vertical" />
-      <el-button size="small" @click="openCurrentLink">打开链接</el-button>
-      <el-button size="small" @click="viewScreenshot">查看截图</el-button>
-      <el-button size="small" @click="uploadScreenshot('primary')">上传主截图…</el-button>
-      <el-button size="small" @click="uploadScreenshot('attachment')">添加附件…</el-button>
+      <el-button size="small" @click="viewScreenshots">查看截图</el-button>
+      <el-button size="small" type="primary" plain @click="captureRegion('content')">截取内容页</el-button>
+      <el-button size="small" type="primary" plain @click="captureRegion('author')">截取个人页</el-button>
       <el-divider direction="vertical" />
       <el-select v-model="manualSheet" size="small" class="toolbar-select" placeholder="手工行工作表">
         <el-option v-for="s in manualSheets" :key="s.name" :label="s.name" :value="s.name" />
       </el-select>
       <el-button size="small" :disabled="!manualSheet" @click="addManualRow">添加手工行</el-button>
       <el-button size="small" type="danger" plain @click="removeManualRow">删除手工行</el-button>
+      <span class="muted toolbar-hint">URL 单元格点击即可打开原页面</span>
       <span class="muted toolbar-stats">共 {{ stats.total }} 条 · 已完整 {{ stats.done }}</span>
     </div>
     <div v-else class="sheet-toolbar">
@@ -525,13 +463,19 @@ watch(visible, async (open) => {
     <el-dialog
       :model-value="shotPreview !== null"
       title="截图预览"
-      width="min(860px, 92vw)"
+      width="min(1080px, 94vw)"
       append-to-body
       @update:model-value="shotPreview = null"
     >
-      <div v-if="shotPreview" class="shot-preview">
-        <div class="muted">{{ shotPreview.name }}</div>
-        <img :src="shotPreview.url" alt="截图预览" />
+      <div v-if="shotPreview" class="shot-pair">
+        <figure v-if="shotPreview.content" class="shot-item">
+          <figcaption>内容页截图 · {{ shotPreview.content.name }}</figcaption>
+          <img :src="shotPreview.content.data_url" alt="内容页截图" />
+        </figure>
+        <figure v-if="shotPreview.author" class="shot-item">
+          <figcaption>个人页截图 · {{ shotPreview.author.name }}</figcaption>
+          <img :src="shotPreview.author.data_url" alt="个人页截图" />
+        </figure>
       </div>
     </el-dialog>
   </el-dialog>
@@ -550,12 +494,16 @@ watch(visible, async (open) => {
   width: 130px;
 }
 
+.toolbar-hint {
+  font-size: 12px;
+}
+
 .toolbar-stats {
   margin-left: auto;
 }
 
 .grid-wrap {
-  height: 66vh;
+  height: 74vh;
   min-height: 320px;
   border: 1px solid var(--poir-border);
   border-radius: 6px;
@@ -567,13 +515,26 @@ watch(visible, async (open) => {
   height: 100%;
 }
 
-.shot-preview {
+.shot-pair {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.shot-item {
+  flex: 1 1 420px;
+  margin: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.shot-preview img {
+.shot-item figcaption {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.shot-item img {
   max-width: 100%;
   border: 1px solid var(--poir-border);
   border-radius: 4px;

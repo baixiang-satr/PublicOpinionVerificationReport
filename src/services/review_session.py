@@ -194,14 +194,16 @@ class ReviewSession:
         """带链接的记录必须有两张截图：主截图 + 作者主页截图。
 
         主页截图经"其他附件"列交付，因此该列的有效附件名（抓取的主页截图、
-        导入附件或人工添加的附件）为空即视为缺失。判定口径与
-        ``sheet_display.attachment_names`` 保持一致（内联实现以避免循环
+        人工区域截图的个人页槽位或人工添加的附件）为空即视为缺失。判定口径
+        与 ``sheet_display.attachment_names`` 保持一致（内联实现以避免循环
         导入）；无 URL 的手工行没有可截的作者主页，不强制。
         """
 
         if layout is None or layout.attachment_column is None:
             return False
         if not record.task.original_url.strip():
+            return False
+        if override is not None and override.author_screenshot_name:
             return False
         if override is not None and override.attachment_names:
             return False
@@ -215,6 +217,16 @@ class ReviewSession:
             return record.assets.page_screenshot.name
         return None
 
+    def author_screenshot_name(self, record: RecordResult) -> str | None:
+        """Effective author-home (个人页) screenshot name; manual wins."""
+
+        override = self.store.get(record.task.evidence_id)
+        if override is not None and override.author_screenshot_name:
+            return override.author_screenshot_name
+        if record.assets.author_screenshot is not None:
+            return record.assets.author_screenshot.name
+        return None
+
     def primary_screenshot_path(self, record: RecordResult) -> Path | None:
         """Best-effort existing file for thumbnail preview."""
 
@@ -225,6 +237,20 @@ class ReviewSession:
                 return candidate
             return None
         path = record.assets.page_screenshot
+        if path is not None and Path(path).exists():
+            return Path(path)
+        return None
+
+    def author_screenshot_path(self, record: RecordResult) -> Path | None:
+        """Best-effort existing file for the author-home screenshot preview."""
+
+        override = self.store.get(record.task.evidence_id)
+        if override is not None and override.author_screenshot_name:
+            candidate = self.manual_assets_dir() / override.author_screenshot_name
+            if candidate.exists():
+                return candidate
+            return None
+        path = record.assets.author_screenshot
         if path is not None and Path(path).exists():
             return Path(path)
         return None
@@ -264,6 +290,9 @@ class ReviewSession:
 
     def set_primary_screenshot(self, evidence_id: int, name: str | None) -> None:
         self.store.set_primary_screenshot(evidence_id, name)
+
+    def set_author_screenshot(self, evidence_id: int, name: str | None) -> None:
+        self.store.set_author_screenshot(evidence_id, name)
 
     def set_attachments(self, evidence_id: int, names: list[str]) -> None:
         self.store.set_attachments(evidence_id, names)

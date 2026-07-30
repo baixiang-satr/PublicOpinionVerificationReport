@@ -16,8 +16,8 @@ const sheets = computed(() => (store.session?.sheets ?? []).filter((s) => s.tota
       表格和 template 一模一样：红色空格是必补项，下拉选项与模板完全相同，修改会自动保存。
     </p>
     <div class="notice-banner">
-      缺截图：先在表格里点击链接打开原页面人工截图，再回到表格点截图单元格上传图片。
-      群聊 / 朋友圈没有 URL，可以在表格里直接添加手工行。
+      缺截图：选中记录行后点「截取内容页」或「截取个人页」，在打开的页面中框选区域即自动保存；
+      URL 单元格点击即可打开原页面。群聊 / 朋友圈没有 URL，可以在表格里直接添加手工行。
     </div>
 
     <div class="card" v-if="store.session">
