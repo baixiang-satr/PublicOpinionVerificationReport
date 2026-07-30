@@ -140,6 +140,8 @@ def _ignored(relative: Path) -> bool:
             "references",
             "output",
             "__pycache__",
+            "node_modules",
+            "dist",
         }
     )
 

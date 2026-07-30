@@ -7,10 +7,10 @@ import sys
 
 def main() -> int:
     try:
-        from src.ui.app import run_app
+        from src.webui.app import run_app
     except ImportError as error:
-        if error.name and error.name.startswith("PyQt5"):
-            print("缺少 PyQt5，请先运行：pip install -r requirements.txt", file=sys.stderr)
+        if error.name and error.name.startswith("webview"):
+            print("缺少 pywebview，请先运行：pip install -r requirements.txt", file=sys.stderr)
             return 2
         raise
     return run_app()
