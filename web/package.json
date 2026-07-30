@@ -1,0 +1,28 @@
+{
+  "name": "poir-web",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "description": "舆情验证报告工具 — Vue 3 + Element Plus 前端（pywebview 桌面壳）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@univerjs/preset-sheets-core": "^0.25.1",
+    "@univerjs/preset-sheets-data-validation": "^0.25.1",
+    "@univerjs/preset-sheets-hyper-link": "^0.25.1",
+    "@univerjs/presets": "^0.25.1",
+    "element-plus": "^2.14.3",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.40"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.5",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.5",
+    "vue-tsc": "^3.2.4"
+  }
+}
