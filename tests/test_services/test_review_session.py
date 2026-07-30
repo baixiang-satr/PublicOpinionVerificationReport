@@ -46,13 +46,15 @@ def test_field_views_follow_sheet_column_order(tmp_path: Path) -> None:
     fields = [view.field for view in views]
     # 微博博客 columns: url A, author_name B, platform C, text_type D,
     # published_at E, content F — editable fields keep that order.
-    assert fields == ["author_name", "text_type", "published_at", "content"]
+    assert fields == ["author_name", "platform", "text_type", "published_at", "content"]
     labels = {view.field: view.label for view in views}
     assert labels["author_name"] == "昵称"
     assert labels["text_type"] == "文本类型"
     assert labels["content"] == "信息内容"
     text_type_view = next(view for view in views if view.field == "text_type")
     assert text_type_view.choices == ("正文", "评论回复")
+    platform_view = next(view for view in views if view.field == "platform")
+    assert "新浪_新浪微博_博客贴吧" in platform_view.choices
 
 
 def test_effective_value_manual_wins_and_marks_source(tmp_path: Path) -> None:
@@ -74,6 +76,7 @@ def test_missing_labels_cover_required_fields_and_screenshot(tmp_path: Path) -> 
     assert "昵称" in missing
     assert "信息内容" in missing
     assert "截图" in missing
+    assert "主页截图" in missing  # 带链接记录必须有两张截图
     assert "文本类型" not in missing  # has route default
     summary = session.summary_for(record)
     assert summary.needs_attention
@@ -85,12 +88,42 @@ def test_missing_labels_satisfied_by_override_and_screenshot(tmp_path: Path) -> 
     session.set_field(1, "author_name", "人工昵称")
     session.set_field(1, "content", "人工正文")
     session.set_primary_screenshot(1, "001_manual.png")
+    session.set_attachments(1, ["001主页_manual.png"])
     assert session.missing_labels(record, session.get_override(1)) == ()
     summary = session.summary_for(record)
     assert not summary.needs_attention
     assert summary.has_override
     done, total = session.completion_counts()
     assert (done, total) == (1, 1)
+
+
+def test_homepage_screenshot_flag_cleared_by_crawled_asset(tmp_path: Path) -> None:
+    record = _record(1, title="标题", content="正文", author="昵称")
+    session = _session(tmp_path, [record])
+    session.set_primary_screenshot(1, "001.jpg")
+    missing = session.missing_labels(record, session.get_override(1))
+    assert "主页截图" in missing
+    record.assets.author_screenshot = Path("001主页.jpg")
+    missing = session.missing_labels(record, session.get_override(1))
+    assert "主页截图" not in missing
+    assert missing == ()
+
+
+def test_homepage_screenshot_flag_cleared_by_manual_attachment(tmp_path: Path) -> None:
+    record = _record(1, title="标题", content="正文", author="昵称")
+    session = _session(tmp_path, [record])
+    session.set_primary_screenshot(1, "001.jpg")
+    session.set_attachments(1, ["001主页_manual.png"])
+    missing = session.missing_labels(record, session.get_override(1))
+    assert "主页截图" not in missing
+    assert missing == ()
+
+
+def test_homepage_screenshot_not_required_for_manual_rows(tmp_path: Path) -> None:
+    session = _session(tmp_path, [])
+    record = session.add_manual_record("群聊")  # 无 URL 的手工行
+    missing = session.missing_labels(record, session.get_override(record.task.evidence_id))
+    assert "主页截图" not in missing
 
 
 def test_next_attention_id_wraps_and_skips_complete(tmp_path: Path) -> None:
@@ -102,6 +135,7 @@ def test_next_attention_id_wraps_and_skips_complete(tmp_path: Path) -> None:
         content="c",
         author="a",
     )
+    complete.assets.author_screenshot = Path("002主页.png")
     session = _session(tmp_path, [incomplete, complete])
     session.set_primary_screenshot(2, "002.png")
     assert session.next_attention_id(1) is None  # only #1 needs attention

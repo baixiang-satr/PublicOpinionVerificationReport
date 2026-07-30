@@ -92,6 +92,7 @@ def test_sheet_completion_groups_by_sheet(tmp_path: Path) -> None:
         author_name="a",
         content_text="c",
     )
+    complete.assets.author_screenshot = Path("001主页.png")
     incomplete = _record(2)
     session = ReviewSession.from_records(tmp_path, [complete, incomplete])
     session.set_primary_screenshot(1, "001.png")
