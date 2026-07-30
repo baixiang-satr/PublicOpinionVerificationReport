@@ -50,14 +50,56 @@ ANTI_DETECTION_ARGS = (
 
 def browser_launch_options(config: TaskConfig) -> dict[str, Any]:
     launch_args = [*ANTI_DETECTION_ARGS, *config.extra_chromium_args]
+    if not config.headless:
+        # Headed windows must render video: --disable-gpu forces software
+        # decode paths that leave douyin players black.
+        launch_args = [arg for arg in launch_args if arg != "--disable-gpu"]
     options: dict[str, Any] = {
         "headless": config.headless,
         "args": launch_args,
     }
+    if config.browser_channel:
+        options["channel"] = config.browser_channel
     if config.proxy_url:
         options["proxy"] = {"server": config.proxy_url}
         logger.info("Browser configured with proxy: %s", mask_proxy(config.proxy_url))
     return options
+
+
+def headed_channel_candidates(config: TaskConfig) -> tuple[str | None, ...]:
+    """Channels to try for interactive (headed) browsers, best first.
+
+    Real Edge/Chrome ships proprietary H.264/H.265 codecs (black video fix)
+    and carries a genuine browser fingerprint (fewer risk-control login
+    popups); bundled Chromium remains the final fallback.
+    """
+
+    if config.browser_channel:
+        return (config.browser_channel, "msedge", "chrome", None)
+    return ("msedge", "chrome", None)
+
+
+async def launch_headed_with_fallback(
+    playwright: Any,
+    config: TaskConfig,
+    launch_options: dict[str, Any],
+) -> Any:
+    """Launch a headed browser trying each channel candidate in order."""
+
+    last_error: Exception | None = None
+    for channel in headed_channel_candidates(config):
+        options = dict(launch_options)
+        options.pop("channel", None)
+        if channel:
+            options["channel"] = channel
+        try:
+            return await playwright.chromium.launch(**options)
+        except Exception as error:  # noqa: BLE001 — 尝试下一个候选
+            last_error = error
+            logger.warning("Headed launch with channel=%s failed: %s", channel, error)
+    raise RuntimeError(
+        "Unable to launch a headed browser with any channel candidate."
+    ) from last_error
 
 
 def browser_context_options(

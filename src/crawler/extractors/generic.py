@@ -18,19 +18,22 @@ from src.utils.time_utils import parse_web_published_at
 DOCUMENT_SCRIPT = r"""
 (platformSelectors) => {
   const text = (element) => element ? (element.innerText || element.textContent || '').trim() : '';
+  const isSelfProfile = (href) => /\/user\/self(?:[/?#]|$)/i.test(href || '');
   const pick = (selectors, field) => {
     for (const selector of selectors || []) {
-      const element = document.querySelector(selector);
-      if (!element) continue;
-      if (field.endsWith('_url')) {
-        const link = element.matches?.('a[href]')
-          ? element
-          : (element.closest?.('a[href]') || element.querySelector?.('a[href]'));
-        if (link?.href) return link.href;
-        continue;
+      const elements = Array.from(document.querySelectorAll(selector)).slice(0, 20);
+      for (const element of elements) {
+        if (field.endsWith('_url')) {
+          const link = element.matches?.('a[href]')
+            ? element
+            : (element.closest?.('a[href]') || element.querySelector?.('a[href]'));
+          // /user/self 是查看者自己的主页（抖音登录后导航栏），绝非作者
+          if (link?.href && !isSelfProfile(link.href)) return link.href;
+          continue;
+        }
+        const value = text(element) || element.getAttribute('content') || element.getAttribute('datetime') || '';
+        if (value) return value.trim();
       }
-      const value = text(element) || element.getAttribute('content') || element.getAttribute('datetime') || '';
-      if (value) return value.trim();
     }
     return '';
   };
@@ -106,6 +109,7 @@ DOCUMENT_SCRIPT = r"""
       try { target = new URL(anchor.href, location.href); } catch (_) { return null; }
       if (!['http:', 'https:'].includes(target.protocol)) return null;
       if (target.href.split('#')[0] === currentUrl.href.split('#')[0]) return null;
+      if (/\/user\/self(?:\/|$)/i.test(target.pathname)) return null;
       if (/\/(?:login|signin|register|share|search|topic|tag|comment)(?:\/|$)/i.test(target.pathname)) return null;
       const context = [
         anchor.getAttribute('rel') || '',

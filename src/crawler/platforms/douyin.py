@@ -80,34 +80,55 @@ class DouyinExtractor:
             payloads.append(render_data)
         payloads.extend(document.network_payloads)
         payloads.extend(document.embedded_payloads)
+        wanted_id = douyin_aweme_id(document.url)
+        # Video pages also load detail payloads for *recommendations*; only
+        # the node matching the requested aweme id is truthful evidence.
+        # When the URL carries an id and no node matches, return None and
+        # let the generic DOM extraction describe the *visible* page instead
+        # of pinning a recommendation's fields onto this URL.
+        if wanted_id:
+            for payload in payloads:
+                detail = _aweme_detail(payload, wanted_id=wanted_id)
+                if detail is not None:
+                    return detail, False
+            detail = await douyin_aweme_detail(page, wanted_id)
+            if detail is not None:
+                return detail, True
+            return None, False
         for payload in payloads:
             detail = _aweme_detail(payload)
             if detail is not None:
                 return detail, False
-        # Additive fallback: the render pipeline found nothing (login wall or
-        # empty shell), so ask the public iesdouyin endpoints through the
-        # live browser session.  The returned item node uses the same
-        # desc/author keys the field mapping above already understands.
-        aweme_id = douyin_aweme_id(document.url)
-        if aweme_id:
-            detail = await douyin_aweme_detail(page, aweme_id)
-            if detail is not None:
-                return detail, True
         return None, False
 
 
-def _aweme_detail(payload: Any) -> Mapping[str, Any] | None:
+def _aweme_detail(
+    payload: Any,
+    wanted_id: str | None = None,
+) -> Mapping[str, Any] | None:
     holder = find_mapping_with(payload, ("aweme",))
     if holder is not None:
         aweme = holder.get("aweme")
         if isinstance(aweme, Mapping):
             detail = aweme.get("detail")
             if isinstance(detail, Mapping) and ("desc" in detail or "author" in detail):
-                return detail
+                if _id_matches(detail, wanted_id):
+                    return detail
     for mapping in iter_mappings(payload):
         if "desc" in mapping and "createTime" in mapping and "author" in mapping:
-            return mapping
+            if _id_matches(mapping, wanted_id):
+                return mapping
     return None
+
+
+def _id_matches(node: Mapping[str, Any], wanted_id: str | None) -> bool:
+    if not wanted_id:
+        return True
+    candidate = node.get("aweme_id") or node.get("awemeId")
+    if candidate is None and isinstance(node.get("statistics"), Mapping):
+        statistics = node["statistics"]
+        candidate = statistics.get("aweme_id") or statistics.get("awemeId")
+    return candidate is not None and str(candidate) == wanted_id
 
 
 register(DouyinExtractor())

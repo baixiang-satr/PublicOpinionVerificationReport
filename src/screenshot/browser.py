@@ -20,6 +20,7 @@ from src.screenshot.browser_options import (
     STEALTH_SCRIPT_PATH as _STEALTH_SCRIPT_PATH,
     browser_context_options,
     browser_launch_options,
+    launch_headed_with_fallback,
 )
 from src.screenshot.browser_runtime import (
     close_quietly,
@@ -85,7 +86,16 @@ class BrowserPool:
                 self._playwright = await async_playwright().start()
 
                 launch_options = browser_launch_options(self._config)
-                self._browser = await self._playwright.chromium.launch(**launch_options)
+                if self._config.headless:
+                    self._browser = await self._playwright.chromium.launch(**launch_options)
+                else:
+                    # Interactive windows get real codecs + fingerprint via
+                    # the Edge→Chrome→Chromium channel fallback chain.
+                    self._browser = await launch_headed_with_fallback(
+                        self._playwright,
+                        self._config,
+                        launch_options,
+                    )
 
                 # Pre-load stealth script
                 if self._config.enable_stealth and _STEALTH_SCRIPT_PATH.is_file():

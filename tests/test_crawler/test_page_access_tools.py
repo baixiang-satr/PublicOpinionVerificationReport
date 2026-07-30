@@ -4,7 +4,12 @@ import asyncio
 import pytest
 
 from src.domain.models import RecordStatus
-from src.tools.page_access import AccessKind, inspect_page_access, wait_for_manual_access
+from src.tools.page_access import (
+    AccessKind,
+    _read_page_snapshot,
+    inspect_page_access,
+    wait_for_manual_access,
+)
 
 
 class SnapshotPage:
@@ -18,6 +23,27 @@ class SnapshotPage:
 
     async def wait_for_timeout(self, _milliseconds: int) -> None:
         self._index = min(self._index + 1, len(self._snapshots) - 1)
+
+
+@pytest.mark.asyncio
+async def test_read_page_snapshot_is_bounded_when_renderer_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """渲染线程卡死时快照读取必须有界（反爬卡死回归）。"""
+
+    monkeypatch.setattr(
+        "src.tools.page_access._EVALUATE_TIMEOUT_SECONDS", 0.1
+    )
+
+    class HangingPage:
+        async def evaluate(self, *_args: object, **_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+    title, body = await asyncio.wait_for(
+        _read_page_snapshot(HangingPage()),
+        timeout=2,
+    )
+    assert (title, body) == ("", "")
 
 
 @pytest.mark.asyncio

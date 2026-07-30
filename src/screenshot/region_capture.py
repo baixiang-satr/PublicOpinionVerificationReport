@@ -12,9 +12,7 @@ from the page, capturing never scrolls or shifts the page.
 from __future__ import annotations
 
 import asyncio
-import base64
 from dataclasses import dataclass, replace
-import io
 import json
 import logging
 from pathlib import Path
@@ -27,18 +25,39 @@ from src.screenshot.browser_options import (
     browser_context_options,
     browser_launch_options,
 )
+from src.screenshot.capture_session import GUEST_KEY, CaptureSession
 from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
-from src.screenshot.region_capture_scripts import OVERLAY_JS, SELECTION_HTML
-from src.utils.file_utils import require_safe_file_name
+from src.screenshot.region_capture_helpers import (
+    _CaptureState,
+    _capture_name,
+    _clip_from_payload,
+    _grab_full_screen,
+    _hide_overlay,
+    _reset_overlay,
+    _reset_selection,
+    _save_region,
+    _selection_html,
+)
+from src.screenshot.region_capture_scripts import BINDING_NAME, OVERLAY_JS
 
 if TYPE_CHECKING:
     from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-BINDING_NAME = "__poirRegionCapture"
+# Re-exported for the offline test-suite (tests import from this module).
+__all__ = [
+    "CAPTURE_TARGETS",
+    "RegionCaptureResult",
+    "RegionCaptureService",
+    "_CaptureState",
+    "_capture_name",
+    "_clip_from_payload",
+    "_save_region",
+    "_selection_html",
+]
+
 CAPTURE_TARGETS = ("content", "author")
-_MIN_REGION_PX = 8
 _ARM_DELAY_SECONDS = 0.35
 
 
@@ -49,26 +68,18 @@ class RegionCaptureResult:
     message: str = ""
 
 
-@dataclass
-class _CaptureState:
-    """Mutable per-window state shared between binding callbacks."""
-
-    context: Any = None
-    browse_page: Any = None
-    select_page: Any = None
-    image: Any = None  # PIL.Image of the frozen full screen
-
-
 class RegionCaptureService:
-    """Owns one interactive capture browser until the user finishes."""
+    """Owns one interactive capture flow; with a session the window persists."""
 
     def __init__(
         self,
         config: TaskConfig,
         screen_grabber: Callable[[], "Image.Image"] | None = None,
+        session: CaptureSession | None = None,
     ) -> None:
         self._config = config
         self._grabber = screen_grabber or _grab_full_screen
+        self._session = session
 
     async def capture(
         self,
@@ -79,6 +90,120 @@ class RegionCaptureService:
         storage_state: dict[str, Any] | None,
         assets_dir: Path,
         cancel_event: asyncio.Event | None = None,
+        platform_key: str | None = None,
+    ) -> RegionCaptureResult:
+        if self._session is not None:
+            return await self._capture_in_session(
+                url,
+                evidence_id=evidence_id,
+                target=target,
+                platform_key=platform_key,
+                storage_state=storage_state,
+                assets_dir=assets_dir,
+                cancel_event=cancel_event,
+            )
+        return await self._capture_standalone(
+            url,
+            evidence_id=evidence_id,
+            target=target,
+            storage_state=storage_state,
+            assets_dir=assets_dir,
+            cancel_event=cancel_event,
+        )
+
+    async def _capture_in_session(
+        self,
+        url: str,
+        *,
+        evidence_id: int,
+        target: str,
+        platform_key: str | None,
+        storage_state: dict[str, Any] | None,
+        assets_dir: Path,
+        cancel_event: asyncio.Event | None,
+    ) -> RegionCaptureResult:
+        """Run the capture inside the persistent session window."""
+
+        session = self._session
+        assert session is not None
+        key = platform_key or GUEST_KEY
+        context = await session.context_for(key, storage_state)
+        page = await session.browse_page_for(key, context)
+
+        state = _CaptureState(context=context, browse_page=page)
+        loop = asyncio.get_running_loop()
+        done: asyncio.Future[RegionCaptureResult] = loop.create_future()
+
+        def _finish(result: RegionCaptureResult) -> None:
+            if not done.done():
+                done.set_result(result)
+
+        async def _on_binding(source: dict[str, Any], payload: Any) -> None:
+            if done.done():
+                return
+            source_page = source.get("page")
+            if source_page is not None and source_page is not state.select_page:
+                # The toolbar the user actually clicked lives on the current
+                # front page; follow it across SPA/full navigations.
+                state.browse_page = source_page
+            await self._handle_action(
+                source_page,
+                payload,
+                evidence_id=evidence_id,
+                target=target,
+                assets_dir=Path(assets_dir),
+                state=state,
+                finish=_finish,
+            )
+
+        def _on_context_page(new_page: Any) -> None:
+            if not state.select_pending and new_page is not state.select_page:
+                state.browse_page = new_page
+
+        def _on_browse_close(*_args: Any) -> None:
+            _finish(RegionCaptureResult(status="cancelled"))
+
+        session.set_binding_handler(_on_binding)
+        context.on("page", _on_context_page)
+        page.on("close", _on_browse_close)
+        try:
+            try:
+                await navigate_page(
+                    page,
+                    url,
+                    self._config.page_timeout_seconds * 1000,
+                    cancel_event,
+                )
+                await stabilize_rendered_page(
+                    page,
+                    self._config.page_stabilize_milliseconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # 导航失败不致命：窗口保持打开，用户可自行跳转/登录后再框选。
+                logger.warning(
+                    "Region capture navigation failed, window left open: %s", error
+                )
+            return await self._wait_for_result(done, cancel_event)
+        finally:
+            try:
+                context.remove_listener("page", _on_context_page)
+                page.remove_listener("close", _on_browse_close)
+            except Exception:  # noqa: BLE001 — 页面/上下文可能已关闭
+                pass
+            session.set_binding_handler(None)
+            await session.save_states()
+
+    async def _capture_standalone(
+        self,
+        url: str,
+        *,
+        evidence_id: int,
+        target: str,
+        storage_state: dict[str, Any] | None,
+        assets_dir: Path,
+        cancel_event: asyncio.Event | None,
     ) -> RegionCaptureResult:
         from playwright.async_api import async_playwright
 
@@ -111,8 +236,11 @@ class RegionCaptureService:
             async def _on_binding(source: dict[str, Any], payload: Any) -> None:
                 if done.done():
                     return
+                source_page = source.get("page")
+                if source_page is not None and source_page is not state.select_page:
+                    state.browse_page = source_page
                 await self._handle_action(
-                    source.get("page"),
+                    source_page,
                     payload,
                     evidence_id=evidence_id,
                     target=target,
@@ -243,7 +371,11 @@ class RegionCaptureService:
             return
         state.image = image
         try:
-            select_page = await state.context.new_page()
+            state.select_pending = True
+            try:
+                select_page = await state.context.new_page()
+            finally:
+                state.select_pending = False
             state.select_page = select_page
             select_page.on(
                 "close",
@@ -271,117 +403,5 @@ class RegionCaptureService:
             except Exception:  # noqa: BLE001 — 页面可能已关闭
                 pass
         await _reset_overlay(state.browse_page, None)
-
-
-async def _hide_overlay(page: Any) -> None:
-    if page is None:
-        return
-    try:
-        await page.evaluate(
-            "() => window.__poirRegionCaptureHide && window.__poirRegionCaptureHide()"
-        )
-    except Exception:  # noqa: BLE001 — 页面可能已关闭
-        pass
-
-
-async def _reset_overlay(page: Any, message: str | None) -> None:
-    if page is None:
-        return
-    try:
-        await page.evaluate(
-            "(msg) => window.__poirRegionCaptureReset && window.__poirRegionCaptureReset(msg)",
-            message or "",
-        )
-    except Exception:  # noqa: BLE001 — 页面可能已关闭
-        pass
-
-
-async def _reset_selection(state: _CaptureState, message: str) -> None:
-    page = state.select_page
-    if page is None:
-        return
-    try:
-        await page.evaluate(
-            "(msg) => window.__poirSelectReset && window.__poirSelectReset(msg)",
-            message,
-        )
-    except Exception:  # noqa: BLE001 — 页面可能已关闭
-        pass
-
-
-def _clip_from_payload(data: dict[str, Any]) -> dict[str, int] | None:
-    """Validate the JS-reported frozen-image rect into a crop box dict."""
-
-    try:
-        x = float(data["x"])
-        y = float(data["y"])
-        width = float(data["width"])
-        height = float(data["height"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if width < _MIN_REGION_PX or height < _MIN_REGION_PX:
-        return None
-    return {
-        "x": max(0, int(x)),
-        "y": max(0, int(y)),
-        "width": min(32_767, int(width)),
-        "height": min(32_767, int(height)),
-    }
-
-
-def _capture_name(evidence_id: int, target: str, screenshot_format: str) -> str:
-    """标准化命名：``001_content.jpg`` / ``001_author.jpg``。
-
-    同一记录同一槽位重新截取时直接覆盖同名文件，避免 manual_assets 里
-    堆积失效的旧截图；命名刻意避开审计正则 ``\\d{3}主页``。
-    """
-
-    extension = "jpg" if screenshot_format == "jpeg" else "png"
-    return require_safe_file_name(f"{evidence_id:03d}_{target}.{extension}")
-
-
-def _grab_full_screen() -> "Image.Image":
-    """OS-level screenshot of the whole virtual screen (all monitors)."""
-
-    from PIL import ImageGrab
-
-    return ImageGrab.grab(all_screens=True)
-
-
-def _save_region(
-    config: TaskConfig,
-    image: "Image.Image",
-    clip: dict[str, int],
-    output: Path,
-) -> None:
-    """Crop the confirmed region out of the frozen screen image."""
-
-    box = (
-        clip["x"],
-        clip["y"],
-        clip["x"] + clip["width"],
-        clip["y"] + clip["height"],
-    )
-    region = image.crop(box)
-    if config.screenshot_format == "jpeg":
-        region.convert("RGB").save(
-            str(output), format="JPEG", quality=config.screenshot_jpeg_quality
-        )
-    else:
-        region.save(str(output), format="PNG")
-
-
-def _selection_html(image: "Image.Image") -> str:
-    """Selection-tab document: frozen screen + rubber band, image-space coords."""
-
-    width, height = image.size
-    buffer = io.BytesIO()
-    image.convert("RGB").save(buffer, format="JPEG", quality=82)
-    data_url = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-    return (
-        SELECTION_HTML.replace("__IMG_SRC__", data_url)
-        .replace("__IMG_W__", str(width))
-        .replace("__IMG_H__", str(height))
-    )
 
 

@@ -9,6 +9,40 @@ from typing import Any
 
 from src.domain.models import TaskError
 
+# A jammed renderer (anti-bot loops) must never block the crawl pipeline.
+_EVALUATE_TIMEOUT_SECONDS = 5.0
+
+# Douyin-style JS challenge interstitials (「验证码中间页」) usually
+# self-redirect to the real page within a few seconds.
+_CHALLENGE_TITLE_MARKERS = ("验证码中间页", "安全验证", "访问验证", "人机验证")
+_CHALLENGE_WAIT_MILLISECONDS = 8_000
+
+
+async def wait_out_challenge_interstitial(
+    page: Any,
+    timeout_milliseconds: int = _CHALLENGE_WAIT_MILLISECONDS,
+) -> None:
+    """Bounded wait for a JS challenge interstitial to self-resolve.
+
+    Slider pages that need a human simply time out here (bounded); the
+    barrier inspection afterwards still classifies them as CAPTCHA.
+    """
+
+    if not hasattr(page, "title") or not hasattr(page, "wait_for_timeout"):
+        return
+    try:
+        title = str(await page.title() or "")
+    except Exception:
+        return
+    remaining = max(0, timeout_milliseconds)
+    while any(marker in title for marker in _CHALLENGE_TITLE_MARKERS) and remaining > 0:
+        await page.wait_for_timeout(500)
+        remaining -= 500
+        try:
+            title = str(await page.title() or "")
+        except Exception:
+            return
+
 
 async def navigate_page(
     page: Any,
@@ -164,8 +198,11 @@ async def _has_rendered_content(page: Any) -> bool:
     if not hasattr(page, "evaluate"):
         return False
     try:
-        length = await page.evaluate(
-            "() => (document.body?.innerText || document.body?.textContent || '').trim().length"
+        length = await asyncio.wait_for(
+            page.evaluate(
+                "() => (document.body?.innerText || document.body?.textContent || '').trim().length"
+            ),
+            timeout=_EVALUATE_TIMEOUT_SECONDS,
         )
         return int(length or 0) >= 12
     except Exception:

@@ -120,6 +120,110 @@ def test_save_region_crops_frozen_image(tmp_path: Path) -> None:
         assert saved.format == "JPEG"
 
 
+# ── 常驻会话模式 ──
+
+
+def test_overlay_js_self_heals_after_spa_navigation() -> None:
+    """工具条必须有自愈钩子：SPA 跳转/框架重渲染清 DOM 后自动重建。"""
+
+    from src.screenshot.region_capture_scripts import OVERLAY_JS
+
+    assert "setInterval" in OVERLAY_JS
+    assert "__poir-shot-host" in OVERLAY_JS
+    assert "location.href" in OVERLAY_JS
+    assert "popstate" in OVERLAY_JS
+
+
+class FakeNavPage(FakePage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.navigated: list[str] = []
+        self.listeners: dict[str, list] = {}
+
+    async def goto(self, url: str, **_kwargs: object) -> None:
+        self.navigated.append(url)
+        return None
+
+    def on(self, event: str, handler: object) -> None:
+        self.listeners.setdefault(event, []).append(handler)
+
+    def remove_listener(self, event: str, handler: object) -> None:
+        if handler in self.listeners.get(event, []):
+            self.listeners[event].remove(handler)
+
+
+class FakeSessionContext:
+    def __init__(self) -> None:
+        self.pages: list[FakeNavPage] = []
+        self.listeners: dict[str, list] = {}
+
+    def on(self, event: str, handler: object) -> None:
+        self.listeners.setdefault(event, []).append(handler)
+
+    def remove_listener(self, event: str, handler: object) -> None:
+        if handler in self.listeners.get(event, []):
+            self.listeners[event].remove(handler)
+
+    async def new_page(self) -> FakeNavPage:
+        page = FakeNavPage()
+        self.pages.append(page)
+        return page
+
+
+class FakeSession:
+    def __init__(self, context: FakeSessionContext, page: FakeNavPage) -> None:
+        self._context = context
+        self._page = page
+        self.handler = None
+        self.saved = 0
+
+    async def context_for(self, _key: str, _storage_state: object) -> FakeSessionContext:
+        return self._context
+
+    async def browse_page_for(self, _key: str, _context: object) -> FakeNavPage:
+        return self._page
+
+    def set_binding_handler(self, handler: object) -> None:
+        self.handler = handler
+
+    async def save_states(self) -> None:
+        self.saved += 1
+
+
+@pytest.mark.asyncio
+async def test_session_capture_registers_and_clears_binding_handler(
+    tmp_path: Path,
+) -> None:
+    context = FakeSessionContext()
+    page = FakeNavPage()
+    session = FakeSession(context, page)
+    service = RegionCaptureService(TaskConfig(), session=session)
+
+    task = asyncio.create_task(
+        service.capture(
+            "https://www.douyin.com/video/123",
+            evidence_id=7,
+            target="content",
+            platform_key="douyin",
+            storage_state=None,
+            assets_dir=tmp_path,
+        )
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert session.handler is not None
+
+    await session.handler({"page": page}, json.dumps({"action": "cancel"}))
+    result = await task
+
+    assert result.status == "cancelled"
+    assert session.handler is None  # 结束后清空，不影响下一次截图
+    assert session.saved == 1  # 会话登录态回写
+    assert page.navigated == ["https://www.douyin.com/video/123"]
+    assert context.listeners.get("page") == []  # 监听不累积
+    assert page.listeners.get("close") == []
+
+
 def test_selection_html_embeds_frozen_image() -> None:
     html = _selection_html(_striped_image((640, 480)))
     assert html.startswith("<!doctype html>")

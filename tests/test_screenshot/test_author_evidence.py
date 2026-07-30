@@ -130,6 +130,51 @@ def test_identity_rejects_comment_user_that_is_not_the_author_050() -> None:
     assert rejection == "AUTHOR_IDENTITY_MISMATCH"
 
 
+def test_identity_cross_namespace_id_conflict_does_not_disprove_name_match() -> None:
+    """抖音 uid（期望）与主页抖音号（检测）不同命名空间，不得否决名字匹配。"""
+
+    state, rejection = identity_verdict(
+        expected_name="建柱种苗-李文亮",
+        expected_id="7541599308718883897",
+        detected_name="建柱种苗-李文亮",
+        detected_id="83699722623",
+        body_text="建柱种苗-李文亮 抖音号：83699722623",
+        page_url="https://www.douyin.com/user/MS4wLjABAAAAxxxx",
+    )
+
+    assert state == "verified"
+    assert rejection is None
+
+
+def test_identity_id_conflict_with_name_mismatch_still_rejects() -> None:
+    state, rejection = identity_verdict(
+        expected_name="张三",
+        expected_id="111111",
+        detected_name="李四",
+        detected_id="222222",
+        body_text="李四的主页",
+    )
+
+    assert state == "mismatch"
+    assert rejection == "AUTHOR_IDENTITY_MISMATCH"
+
+
+def test_identity_url_echoing_detected_id_is_neutral() -> None:
+    """检测 id 只是主页 URL 里的 sec_uid 时不携带证据，按名字裁决。"""
+
+    state, rejection = identity_verdict(
+        expected_name="方恨少",
+        expected_id="52537346233",
+        detected_name="方恨少",
+        detected_id="MS4wLjABAAAAxxxx",
+        body_text="方恨少的主页",
+        page_url="https://www.douyin.com/user/MS4wLjABAAAAxxxx",
+    )
+
+    assert state == "verified"
+    assert rejection is None
+
+
 def test_identity_rejects_media_header_for_personal_author_051() -> None:
     state, rejection = identity_verdict(
         expected_name="壮壮科普",

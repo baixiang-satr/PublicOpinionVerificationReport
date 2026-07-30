@@ -8,7 +8,13 @@ import pytest
 
 from src.auth.registry import AUTH_POLICIES
 from src.config.settings import AppConfig, TaskConfig, TemplateConfig
-from src.domain.models import RecordResult, RecordStatus, RouteDecision, UrlTask
+from src.domain.models import (
+    PageData,
+    RecordResult,
+    RecordStatus,
+    RouteDecision,
+    UrlTask,
+)
 from src.services.checkpoint_store import CheckpointStore
 from src.webui.bridge import WebUIBridge
 from src.webui.runner import EventSink
@@ -182,6 +188,73 @@ def test_start_region_capture_guards(tmp_path: Path) -> None:
     no_url = bridge.start_region_capture(added["eid"], "content")
     assert no_url["ok"] is False
     assert no_url["code"] == "no_url"
+
+
+class _FakeCapture:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def start(self, **kwargs):
+        self.calls.append(kwargs)
+        return True, ""
+
+
+def _paged_record(
+    eid: int,
+    url: str,
+    *,
+    final_url: str | None,
+    author_url: str | None,
+) -> RecordResult:
+    return RecordResult(
+        task=UrlTask(eid, url, url),
+        status=RecordStatus.NEEDS_REVIEW,
+        route=RouteDecision(sheet_name="图文视频", platform_value="", text_type="正文"),
+        page=PageData(final_url=final_url, author_url=author_url),
+    )
+
+
+def test_start_region_capture_author_target_opens_profile_url_directly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """截取个人页有 author_url 时直达，不再要求窗口内手动跳转。"""
+
+    records = [
+        _paged_record(
+            1,
+            "https://v.douyin.com/erOICsACek8/",
+            final_url="https://www.douyin.com/video/7557",
+            author_url="https://www.douyin.com/user/secABC123",
+        ),
+        _paged_record(
+            2,
+            "https://v.douyin.com/6OYduQ_wgKk/",
+            final_url="https://www.douyin.com/video/7558",
+            author_url=None,
+        ),
+    ]
+    job_dir = _make_job(tmp_path, records)
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    ok, _message = bridge.jobs.open_session(job_dir)
+    assert ok
+    capture = _FakeCapture()
+    monkeypatch.setattr(bridge, "capture", capture)
+
+    result = bridge.start_region_capture(1, "author")
+    assert result["ok"] is True
+    assert capture.calls[-1]["url"] == "https://www.douyin.com/user/secABC123"
+    assert capture.calls[-1]["platform_key"] == "douyin"
+
+    # 无 author_url 时回落到内容页
+    result = bridge.start_region_capture(2, "author")
+    assert result["ok"] is True
+    assert capture.calls[-1]["url"] == "https://www.douyin.com/video/7558"
+
+    # 截取内容页始终用内容 URL
+    result = bridge.start_region_capture(1, "content")
+    assert result["ok"] is True
+    assert capture.calls[-1]["url"] == "https://www.douyin.com/video/7557"
 
 
 def test_pick_screenshot_cancelled(tmp_path: Path) -> None:

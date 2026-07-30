@@ -28,6 +28,7 @@ from src.config.settings import TaskConfig
 from src.screenshot.browser_options import (
     browser_context_options,
     browser_launch_options,
+    launch_headed_with_fallback,
 )
 from src.tools.page_access import inspect_http_response, inspect_page_access
 
@@ -180,9 +181,15 @@ class AuthManagerService:
                     headless=not interactive,
                     max_concurrency=1,
                 )
-                browser = await playwright.chromium.launch(
-                    **browser_launch_options(auth_config)
-                )
+                launch_options = browser_launch_options(auth_config)
+                if interactive:
+                    browser = await launch_headed_with_fallback(
+                        playwright,
+                        auth_config,
+                        launch_options,
+                    )
+                else:
+                    browser = await playwright.chromium.launch(**launch_options)
                 context = await browser.new_context(
                     **browser_context_options(auth_config, saved_state)
                 )

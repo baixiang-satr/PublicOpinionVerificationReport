@@ -136,6 +136,17 @@ class TaskConfig:
     #   ["--window-size=1920,1080", "--disable-webgl"]
     extra_chromium_args: tuple[str, ...] = ()
 
+    # ── Browser channel ───────────────────────────────────────────────
+    # Playwright 浏览器内核通道（"msedge"/"chrome"）；None 使用内置
+    # Chromium。截图与有头兜底浏览器始终优先 msedge（含专有视频解码器，
+    # 真实指纹不易触发风控），本项用于全局切换爬取浏览器。
+    browser_channel: str | None = None
+
+    # ── Headed fallback ───────────────────────────────────────────────
+    # 无头爬取因导航/访问类错误失败时，自动用可见浏览器重试一轮，给用户
+    # manual_intervention_timeout_seconds 的时间人工过滑块/扫码。
+    enable_headed_fallback: bool = True
+
     def __post_init__(self) -> None:
         if not 1 <= self.max_concurrency <= 10:
             raise ValueError("max_concurrency must be between 1 and 10.")
@@ -182,6 +193,8 @@ class TaskConfig:
             raise ValueError("viewport dimensions must be at least 800x600.")
         if self.proxy_url and not self.proxy_url.startswith(("http://", "https://", "socks5://", "socks4://")):
             raise ValueError("proxy_url must start with http://, https://, socks5://, or socks4://")
+        if self.browser_channel is not None and not self.browser_channel.strip():
+            raise ValueError("browser_channel must be None or a non-empty channel name.")
 
 
 @dataclass(frozen=True)
@@ -342,6 +355,11 @@ class AppConfig:
             viewport_width=int(os.getenv("POR_VIEWPORT_WIDTH", str(defaults.task.viewport_width))),
             viewport_height=int(os.getenv("POR_VIEWPORT_HEIGHT", str(defaults.task.viewport_height))),
             extra_chromium_args=_parse_extra_args(os.getenv("POR_EXTRA_CHROMIUM_ARGS", "")),
+            browser_channel=os.getenv("POR_BROWSER_CHANNEL", defaults.task.browser_channel) or None,
+            enable_headed_fallback=_bool_env(
+                "POR_ENABLE_HEADED_FALLBACK",
+                defaults.task.enable_headed_fallback,
+            ),
         )
         return cls(template=defaults.template, task=task)
 

@@ -6,6 +6,11 @@ toolbar injected into every browsed page; ``SELECTION_HTML`` is the
 frozen-screen rubber-band selection tab opened after the OS-level grab.
 """
 
+# Binding shared by the toolbar and the Python capture service.  Defined
+# here so both region_capture and capture_session can reference it without
+# importing each other.
+BINDING_NAME = "__poirRegionCapture"
+
 OVERLAY_JS = r"""
 (() => {
   // 选区在独立的“冻结屏幕”页进行，about: 页面不注入工具条。
@@ -92,6 +97,22 @@ OVERLAY_JS = r"""
   } else {
     tryBoot();
   }
+
+  // 自愈：SPA 客户端路由不会重跑 init script，且平台前端框架重渲染可能
+  // 把注入的工具条 DOM 清掉（抖音视频页→个人页即如此）。轮询宿主是否还
+  // 在 DOM 里，不在就重建；boot() 幂等，宿主存在时直接返回。
+  let lastHref = location.href;
+  window.setInterval(() => {
+    try {
+      const hrefChanged = location.href !== lastHref;
+      lastHref = location.href;
+      if (hrefChanged || !document.getElementById('__poir-shot-host')) {
+        tryBoot();
+      }
+    } catch (err) { /* noop */ }
+  }, 700);
+  window.addEventListener('pageshow', tryBoot);
+  window.addEventListener('popstate', tryBoot);
 })();
 """
 

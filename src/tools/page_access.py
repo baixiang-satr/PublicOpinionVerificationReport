@@ -12,6 +12,9 @@ from urllib.parse import urlsplit
 from src.crawler.structured_data import payload_has_content
 from src.domain.models import RecordStatus
 
+# A jammed renderer (anti-bot loops) must never block barrier inspection.
+_EVALUATE_TIMEOUT_SECONDS = 5.0
+
 
 class AccessKind(StrEnum):
     LOGIN = "login"
@@ -85,6 +88,7 @@ _CAPTCHA_TEXT_MARKERS = (
     "点击按钮进行验证",
     "安全验证",
     "人机验证",
+    "验证码中间页",
     "拖动下方滑块完成拼图",
     "请完成安全验证",
     "滑动拼图验证",
@@ -264,7 +268,11 @@ async def inspect_page_access(
             "页面返回 JSON/API 数据而不是可截图正文；请提供浏览器内容页 URL。",
             RecordStatus.NEEDS_REVIEW,
         )
-    if hasattr(page, "locator") and len(normalized) < 12:
+    # A real page title means the document rendered something (SSR video
+    # pages keep their title even before hydration finishes); "empty" may
+    # only be declared when the title is missing too — otherwise slow/
+    # jammed hydration gets misclassified as an empty shell.
+    if hasattr(page, "locator") and len(normalized) < 12 and not title.strip():
         return AccessBarrier(
             AccessKind.EMPTY_RENDERED_PAGE,
             "EMPTY_RENDERED_PAGE",
@@ -343,11 +351,14 @@ def _redirected_to_home(original_url: str | None, final_url: str) -> bool:
 async def _read_page_snapshot(page: Any) -> tuple[str, str]:
     if hasattr(page, "evaluate"):
         try:
-            payload = await page.evaluate(
-                """() => ({
+            payload = await asyncio.wait_for(
+                page.evaluate(
+                    """() => ({
                     title: document.title || "",
                     body: (document.body?.innerText || "").slice(0, 12000)
                 })"""
+                ),
+                timeout=_EVALUATE_TIMEOUT_SECONDS,
             )
             if isinstance(payload, dict):
                 return str(payload.get("title") or ""), str(payload.get("body") or "")
@@ -394,6 +405,7 @@ def _looks_like_barrier_only_page(title: str, body: str, kind: AccessKind) -> bo
             "安全验证",
             "访问验证",
             "人机验证",
+            "验证码中间页",
             "captcha",
             "verify you are human",
         },

@@ -17,6 +17,7 @@ from src.auth.registry import AUTH_POLICIES
 from src.auth.service import AuthManagerService
 from src.auth.store import AuthProfileStore
 from src.config.settings import AppConfig, TaskConfig, default_auth_store_dir
+from src.screenshot.capture_session import CaptureSession
 from src.screenshot.region_capture import RegionCaptureResult, RegionCaptureService
 from src.services.models import JobRequest, JobResult, RunnerCallbacks
 from src.services.review_session import ReviewSession
@@ -228,12 +229,38 @@ class AuthRunner(_AsyncThreadJob):
         )
 
 
-class CaptureRunner(_AsyncThreadJob):
-    """Runs one interactive region-capture browser window at a time."""
+class CaptureRunner:
+    """Runs interactive region captures on one persistent loop thread.
+
+    Playwright objects are bound to the event loop that created them, so a
+    long-lived capture browser requires a long-lived loop: this runner owns
+    a dedicated daemon thread running ``loop.run_forever()`` and dispatches
+    capture coroutines to it.  The :class:`CaptureSession` (browser +
+    per-platform contexts) survives between captures, so a login completed
+    in the capture window persists until the app closes.
+    """
 
     def __init__(self, task_config_getter, sink: EventSink) -> None:
-        super().__init__(sink)
         self._task_config_getter = task_config_getter
+        self._sink = sink
+        self._lock = Lock()
+        self._thread: Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_ready = Event()
+        self._session: CaptureSession | None = None
+        self._busy = False
+        self._asyncio_cancel: asyncio.Event | None = None
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._busy
+
+    def cancel(self) -> None:
+        with self._lock:
+            loop = self._loop
+            event = self._asyncio_cancel
+        if loop is not None and event is not None:
+            loop.call_soon_threadsafe(event.set)
 
     def start(
         self,
@@ -241,23 +268,82 @@ class CaptureRunner(_AsyncThreadJob):
         url: str,
         evidence_id: int,
         target: str,
+        platform_key: str | None = None,
         storage_state: dict[str, Any] | None,
         assets_dir: Path,
         on_saved: Callable[[str], None],
     ) -> tuple[bool, str]:
-        if self.is_running():
-            return False, "已有截图窗口打开，请先完成或关闭当前窗口。"
-        self._spawn(
+        with self._lock:
+            if self._busy:
+                return False, "已有截图窗口打开，请先完成或关闭当前窗口。"
+            self._busy = True
+        try:
+            loop = self._ensure_loop()
+        except Exception as error:  # noqa: BLE001 — 统一回吐给 UI
+            with self._lock:
+                self._busy = False
+            return False, f"无法启动截图线程：{type(error).__name__}: {error}"
+        asyncio.run_coroutine_threadsafe(
             self._run_capture(
                 url=url,
                 evidence_id=evidence_id,
                 target=target,
+                platform_key=platform_key,
                 storage_state=storage_state,
                 assets_dir=assets_dir,
                 on_saved=on_saved,
-            )
+            ),
+            loop,
         )
         return True, ""
+
+    def shutdown(self) -> None:
+        """Persist session login states and stop the loop (app exit)."""
+
+        with self._lock:
+            loop = self._loop
+            session = self._session
+            thread = self._thread
+        if loop is not None and session is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(session.close(), loop).result(timeout=10)
+            except Exception:  # noqa: BLE001 — 退出阶段尽力而为
+                pass
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None:
+            thread.join(timeout=5)
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        with self._lock:
+            loop = self._loop
+        if loop is not None and loop.is_running():
+            return loop
+        self._loop_ready.clear()
+
+        def runner() -> None:
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            with self._lock:
+                self._loop = new_loop
+            self._loop_ready.set()
+            try:
+                new_loop.run_forever()
+            finally:
+                new_loop.close()
+                with self._lock:
+                    self._loop = None
+
+        thread = Thread(target=runner, daemon=True, name="poir-capture")
+        with self._lock:
+            self._thread = thread
+        thread.start()
+        if not self._loop_ready.wait(timeout=10):
+            raise RuntimeError("截图线程启动超时。")
+        with self._lock:
+            if self._loop is None:
+                raise RuntimeError("截图线程启动失败。")
+            return self._loop
 
     async def _run_capture(
         self,
@@ -265,6 +351,7 @@ class CaptureRunner(_AsyncThreadJob):
         url: str,
         evidence_id: int,
         target: str,
+        platform_key: str | None,
         storage_state: dict[str, Any] | None,
         assets_dir: Path,
         on_saved: Callable[[str], None],
@@ -272,15 +359,32 @@ class CaptureRunner(_AsyncThreadJob):
         cancel_event = asyncio.Event()
         with self._lock:
             self._asyncio_cancel = cancel_event
-        service = RegionCaptureService(self._task_config_getter())
-        result = await service.capture(
-            url,
-            evidence_id=evidence_id,
-            target=target,
-            storage_state=storage_state,
-            assets_dir=assets_dir,
-            cancel_event=cancel_event,
-        )
+        try:
+            config: TaskConfig = self._task_config_getter()
+            if self._session is None:
+                store_dir = config.auth_store_dir or default_auth_store_dir()
+                self._session = CaptureSession(config, AuthProfileStore(store_dir))
+            service = RegionCaptureService(config, session=self._session)
+            result = await service.capture(
+                url,
+                evidence_id=evidence_id,
+                target=target,
+                platform_key=platform_key,
+                storage_state=storage_state,
+                assets_dir=assets_dir,
+                cancel_event=cancel_event,
+            )
+        except asyncio.CancelledError:
+            result = RegionCaptureResult(status="cancelled")
+        except Exception as error:  # noqa: BLE001 — 统一回吐给 UI
+            result = RegionCaptureResult(
+                status="error",
+                message=f"{type(error).__name__}: {error}",
+            )
+        finally:
+            with self._lock:
+                self._asyncio_cancel = None
+                self._busy = False
         if result.status == "saved":
             try:
                 on_saved(result.name)

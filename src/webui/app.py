@@ -43,9 +43,13 @@ def run_app() -> int:
     )
     window_box["window"] = window
     sink.bind(window)
-    # http_server=True：内置 HTTP 服务加载 dist，规避 file:// 下
-    # ES module / 动态 import 的 CORS 限制（WebView2 会拦截）。
-    webview.start(debug=bool(dev_url), http_server=True)
+    try:
+        # http_server=True：内置 HTTP 服务加载 dist，规避 file:// 下
+        # ES module / 动态 import 的 CORS 限制（WebView2 会拦截）。
+        webview.start(debug=bool(dev_url), http_server=True)
+    finally:
+        # 关闭常驻截图浏览器并把会话内刷新的登录态写回加密库。
+        bridge.capture.shutdown()
     return 0
 
 

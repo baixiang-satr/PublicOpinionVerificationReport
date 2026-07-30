@@ -88,13 +88,22 @@ class WebUIBridge:
 
     # ── 文件对话框 ──
     def _pick_file(self, file_types: tuple[str, ...], *, directory: bool = False) -> Path | None:
-        import webview
-
-        window = self._window_provider() if self._window_provider else webview.windows[0]
-        if directory:
-            result = window.create_file_dialog(webview.FOLDER_DIALOG)
+        if self._window_provider:
+            window = self._window_provider()
+            result = window.create_file_dialog(
+                "folder" if directory else "open",
+                file_types=file_types,
+            )
         else:
-            result = window.create_file_dialog(webview.OPEN_DIALOG, file_types=file_types)
+            import webview
+
+            window = webview.windows[0]
+            if directory:
+                result = window.create_file_dialog(webview.FOLDER_DIALOG)
+            else:
+                result = window.create_file_dialog(
+                    webview.OPEN_DIALOG, file_types=file_types
+                )
         if not result:
             return None
         return Path(result[0] if isinstance(result, (list, tuple)) else result)
@@ -295,9 +304,16 @@ class WebUIBridge:
         except KeyError:
             return {"ok": False, "code": "no_record", "message": "找不到该记录。"}
         url = (record.page.final_url or record.task.original_url or "").strip()
+        if target == "author":
+            # 有已核验的作者主页 URL 时直达个人页，避免用户在窗口里手动
+            # 跳转（SPA 路由不再需要工具条跨页跟随）。
+            author_url = (record.page.author_url or "").strip()
+            if author_url.startswith(("http://", "https://")):
+                url = author_url
         if not url.startswith(("http://", "https://")):
             return {"ok": False, "code": "no_url", "message": "该行没有可打开的链接。"}
         eid = int(evidence_id)
+        policy = auth_policy_for_url(url)
         storage_state = self._capture_storage_state(url)
         assets_dir = session.manual_assets_dir()
 
@@ -312,6 +328,7 @@ class WebUIBridge:
             url=url,
             evidence_id=eid,
             target=target,
+            platform_key=policy.platform_key if policy is not None else None,
             storage_state=storage_state,
             assets_dir=assets_dir,
             on_saved=_on_saved,

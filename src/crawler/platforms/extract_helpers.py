@@ -6,6 +6,7 @@ page, HTML stripping, epoch conversion and field application with the right
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from html import unescape
 import json
@@ -15,6 +16,9 @@ from typing import Any
 from src.crawler.field_resolver import consider_field
 from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import DEFAULT_TIMEZONE
+
+# A jammed renderer (anti-bot loops) must never block extraction.
+_EVALUATE_TIMEOUT_SECONDS = 5.0
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S | re.I)
@@ -26,7 +30,10 @@ async def evaluate_json(page: Any, script: str) -> Any | None:
     """Evaluate *script* on the page and JSON-parse a string result."""
 
     try:
-        raw = await page.evaluate(script)
+        raw = await asyncio.wait_for(
+            page.evaluate(script),
+            timeout=_EVALUATE_TIMEOUT_SECONDS,
+        )
     except Exception:
         return None
     if raw is None:
@@ -48,7 +55,10 @@ async def evaluate_value(page: Any, script: str) -> Any:
     """Evaluate *script* and return the raw value, ``None`` on failure."""
 
     try:
-        return await page.evaluate(script)
+        return await asyncio.wait_for(
+            page.evaluate(script),
+            timeout=_EVALUATE_TIMEOUT_SECONDS,
+        )
     except Exception:
         return None
 

@@ -22,9 +22,9 @@ import json
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,87 @@ async def fetch_json(
 # ── Douyin ──────────────────────────────────────────────────────────
 
 
+async def fetch_text(
+    page: Any,
+    url: str,
+    *,
+    referer: str | None = None,
+) -> str | None:
+    """GET *url* through the page's browser context and return body text.
+
+    Same bounded, read-only semantics as :func:`fetch_json`, for endpoints
+    that answer HTML with embedded SSR JSON rather than a JSON document.
+    """
+
+    if not api_assist_enabled():
+        return None
+    context = getattr(page, "context", None)
+    request = getattr(context, "request", None)
+    get = getattr(request, "get", None)
+    if get is None:
+        return None
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+    if referer:
+        headers["Referer"] = referer
+    response = None
+    try:
+        response = await get(url, headers=headers, timeout=_TIMEOUT_MS, fail_on_status_code=False)
+        status = int(getattr(response, "status", 0) or 0)
+        if status < 200 or status >= 300:
+            logger.debug("api_assist text %s -> HTTP %s", url, status)
+            return None
+        body = await response.body()
+        if not body or len(body) > _MAX_BODY_BYTES:
+            return None
+        return body.decode("utf-8", errors="replace")
+    except Exception as error:
+        logger.debug("api_assist text fetch failed for %s: %s", url, error)
+        return None
+    finally:
+        if response is not None:
+            try:
+                await response.dispose()
+            except Exception:
+                pass
+
+
+_RENDER_DATA_RE = re.compile(
+    r"<script[^>]*id=[\"']RENDER_DATA[\"'][^>]*>(.*?)</script>", re.S | re.I
+)
+_ROUTER_DATA_RE = re.compile(r"window\._ROUTER_DATA\s*=\s*(\{.*?\})\s*;?\s*</script>", re.S)
+
+
+def _share_html_payloads(html: str) -> Iterator[Any]:
+    """Yield parsed SSR JSON objects embedded in a douyin share-page HTML."""
+
+    for match in _RENDER_DATA_RE.finditer(html):
+        try:
+            yield json.loads(unquote(match.group(1) or ""))
+        except (ValueError, TypeError):
+            continue
+    match = _ROUTER_DATA_RE.search(html)
+    if match is not None:
+        try:
+            yield json.loads(match.group(1))
+        except (ValueError, TypeError):
+            return
+
+
+def _share_payloads(text: str) -> Iterator[Any]:
+    """Yield candidate payloads from a share response: raw JSON or HTML."""
+
+    stripped = text.lstrip()
+    if stripped.startswith(("{", "[")):
+        try:
+            yield json.loads(stripped)
+        except (ValueError, TypeError):
+            pass
+    yield from _share_html_payloads(text)
+
+
 def douyin_aweme_id(url: str) -> str | None:
     """Extract the numeric aweme id from a douyin video/note URL."""
 
@@ -117,9 +198,19 @@ async def douyin_aweme_detail(page: Any, aweme_id: str) -> Mapping[str, Any] | N
     if detail is not None:
         return detail
 
-    share_url = f"https://www.iesdouyin.com/share/video/{quote(aweme_id)}/"
-    payload = await fetch_json(page, share_url, referer="https://www.iesdouyin.com/")
-    return _first_item(payload)
+    # The iteminfo endpoint is deprecated on some accounts/regions; the
+    # share page still ships the same item node inside its embedded SSR
+    # JSON (RENDER_DATA / _ROUTER_DATA), served as HTML rather than JSON.
+    for kind in ("video", "note"):
+        share_url = f"https://www.iesdouyin.com/share/{kind}/{quote(aweme_id)}/"
+        text = await fetch_text(page, share_url, referer="https://www.iesdouyin.com/")
+        if not text:
+            continue
+        for payload in _share_payloads(text):
+            detail = _first_item(payload)
+            if detail is not None:
+                return detail
+    return None
 
 
 def _first_item(payload: Any) -> Mapping[str, Any] | None:

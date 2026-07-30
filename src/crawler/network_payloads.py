@@ -7,10 +7,20 @@ import json
 import logging
 from typing import Any
 
-from src.crawler.structured_data import payload_has_content
+from src.crawler.platforms.payload_search import iter_mappings
+from src.crawler.structured_data import candidate_scope, payload_has_content, url_content_ids
 
 
 logger = logging.getLogger(__name__)
+
+# Bounded drain for in-flight response bodies: long-lived streaming
+# connections (e.g. douyin) must never block the navigation pipeline.
+_FINISH_DRAIN_SECONDS = 4.0
+
+# Payloads carrying the page URL's own content id (e.g. the requested
+# douyin aweme detail) must survive the junk flood: recommendation/feed
+# JSON fills the regular cap within the first second on video pages.
+_MAX_PRIORITY_PAYLOADS = 8
 
 
 class NetworkPayloadCollector:
@@ -27,15 +37,19 @@ class NetworkPayloadCollector:
         self._max_payload_bytes = max_payload_bytes
         self._max_payloads = max_payloads
         self._payloads: list[Any] = []
+        self._priority: list[Any] = []
+        self._priority_ids: frozenset[str] = frozenset()
         self._pending: set[asyncio.Task[None]] = set()
         self._listener: Any = None
 
-    def attach(self, page: Any) -> None:
+    def attach(self, page: Any, url: str | None = None) -> None:
         if not self._enabled or not hasattr(page, "on"):
             return
+        if url:
+            self._priority_ids = url_content_ids(url)
 
         def listener(response: Any) -> None:
-            if len(self._payloads) >= self._max_payloads:
+            if len(self._payloads) >= self._max_payloads and not self._priority_slots_left():
                 return
             task = asyncio.create_task(self._capture(response))
             self._pending.add(task)
@@ -44,18 +58,34 @@ class NetworkPayloadCollector:
         self._listener = listener
         page.on("response", listener)
 
+    def _priority_slots_left(self) -> bool:
+        return bool(self._priority_ids) and len(self._priority) < _MAX_PRIORITY_PAYLOADS
+
     async def finish(self, page: Any | None = None) -> tuple[Any, ...]:
-        if self._pending:
-            await asyncio.gather(*tuple(self._pending), return_exceptions=True)
+        # Detach first so no new capture tasks spawn while draining.
         if page is not None and self._listener is not None and hasattr(page, "remove_listener"):
             try:
                 page.remove_listener("response", self._listener)
             except Exception:
                 pass
-        return tuple(self._payloads)
+        if self._pending:
+            pending = tuple(self._pending)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True),
+                    timeout=_FINISH_DRAIN_SECONDS,
+                )
+            except TimeoutError:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+        # Priority payloads first: extractors must see the requested
+        # content's node before any recommendation junk.
+        return (*tuple(self._priority), *tuple(self._payloads))
 
     async def _capture(self, response: Any) -> None:
-        if len(self._payloads) >= self._max_payloads:
+        over_cap = len(self._payloads) >= self._max_payloads
+        if over_cap and not self._priority_slots_left():
             return
         try:
             status = int(getattr(response, "status", 0) or 0)
@@ -76,7 +106,23 @@ class NetworkPayloadCollector:
             if not body or len(body) > self._max_payload_bytes:
                 return
             payload = json.loads(body.decode("utf-8", errors="replace"))
-            if payload_has_content(payload):
-                self._payloads.append(payload)
+            if not payload_has_content(payload):
+                return
+            if over_cap:
+                if _payload_matches_ids(payload, self._priority_ids):
+                    self._priority.append(payload)
+                return
+            self._payloads.append(payload)
         except Exception as error:
             logger.debug("Ignoring unreadable JSON response: %s", error)
+
+
+def _payload_matches_ids(payload: Any, ids: frozenset[str]) -> bool:
+    """Whether any node carries a strong content id from the page URL."""
+
+    if not ids:
+        return False
+    for node in iter_mappings(payload, max_nodes=2_000):
+        if candidate_scope(node, ids) == "main":
+            return True
+    return False

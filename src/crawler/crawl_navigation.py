@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.config.settings import TaskConfig
-from src.crawler.navigation import navigate_page, stabilize_rendered_page
+from src.crawler.navigation import (
+    navigate_page,
+    stabilize_rendered_page,
+    wait_out_challenge_interstitial,
+)
 from src.crawler.network_payloads import NetworkPayloadCollector
 from src.crawler.platform_fallbacks import (
     navigation_candidates,
@@ -15,6 +19,7 @@ from src.crawler.platform_fallbacks import (
 )
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.platform_types import PlatformDefinition
+from src.crawler.share_links import resolve_share_link
 from src.domain.models import RecordStatus, TaskError
 from src.tools.page_access import (
     inspect_http_response,
@@ -52,7 +57,6 @@ async def navigate_with_fallback(
         max_payload_bytes=config.max_structured_payload_bytes,
         max_payloads=config.max_structured_payloads,
     )
-    collector.attach(page)
     original_definition = router.definition_for(original_url)
     candidates = (
         navigation_candidates(original_url, original_definition)
@@ -60,6 +64,19 @@ async def navigate_with_fallback(
         else (original_url,)
     )
     warnings: list[TaskError] = []
+
+    # Share short-links (v.douyin.com …) are resolved to their canonical
+    # content URL up front: cheaper than a blind render and it exposes the
+    # platform's content id for the API-assist fallbacks.
+    pre_hops: list[str] = []
+    if candidates:
+        resolved = await resolve_share_link(page, candidates[0])
+        if resolved and resolved != candidates[0]:
+            pre_hops = [candidates[0], resolved]
+            candidates = (resolved, *candidates[1:])
+    # Attach only after short-link resolution: the canonical URL carries
+    # the content id used for priority payload retention.
+    collector.attach(page, candidates[0] if candidates else original_url)
 
     for candidate_index, candidate_url in enumerate(candidates):
         response, partial_error = await navigate_page(
@@ -73,10 +90,14 @@ async def navigate_with_fallback(
         final_url = str(page.url)
         status_code = int(response.status) if response is not None else None
         redirect_chain = _redirect_chain(response, original_url, final_url)
+        for hop in reversed(pre_hops[:-1]):
+            if hop not in redirect_chain:
+                redirect_chain.insert(0, hop)
         try:
             _check_response(status_code)
             _raise_if_cancelled(cancel_event)
             definition = router.definition_for(final_url) or original_definition
+            await wait_out_challenge_interstitial(page)
             await stabilize_rendered_page(
                 page,
                 config.page_stabilize_milliseconds,

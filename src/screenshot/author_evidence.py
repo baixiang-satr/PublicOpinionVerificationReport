@@ -51,6 +51,7 @@ class AuthorEvidenceDecision:
     expected_id: str | None = None
     detected_name: str | None = None
     detected_id: str | None = None
+    detected_id_source: str = ""  # "href" | "text" | "douyin"
     page_type: str = ProfilePageType.UNKNOWN.value
     access_state: str = "unknown"
     overlay_state: str = "unknown"
@@ -103,6 +104,23 @@ def normalize_identity(value: str | None) -> str:
     )
 
 
+def _same_id_namespace(left: str, right: str) -> bool:
+    """Heuristic: same-namespace account ids share a shape.
+
+    A profile page displays one canonical account id; ids from another
+    namespace (douyin's internal 19-digit uid vs the public 抖音号) differ
+    wildly in length or alphabet.  Only same-shaped ids may disprove
+    identity.
+    """
+
+    if not left or not right:
+        return False
+    if left.isdigit() != right.isdigit():
+        return False
+    shorter, longer = sorted((len(left), len(right)))
+    return longer - shorter <= 3
+
+
 # ── Page signal extraction (runs inside the candidate page) ──────────────
 
 PAGE_SIGNAL_SCRIPT = """() => {
@@ -132,14 +150,22 @@ PAGE_SIGNAL_SCRIPT = """() => {
       '[class*="user-id"]'
     ];
     let headerId = '';
+    let headerIdSource = '';
     for (const selector of idSelectors) {
       const element = document.querySelector(selector);
       const href = element?.getAttribute?.('href') || '';
       const match = href.match(/(?:\\/u\\/|\\/user\\/|\\/profile\\/|space\\.bilibili\\.com\\/)([A-Za-z0-9_-]{4,})/);
-      if (match) { headerId = match[1]; break; }
+      if (match) { headerId = match[1]; headerIdSource = 'href'; break; }
       const text = (element?.innerText || element?.textContent || '').trim();
       const textMatch = text.match(/(?:UID|id|ID|号)[:：\\s]*([A-Za-z0-9_-]{4,})/);
-      if (textMatch) { headerId = textMatch[1]; break; }
+      if (textMatch) { headerId = textMatch[1]; headerIdSource = 'text'; break; }
+    }
+    if (!headerId) {
+      // Douyin shows 「抖音号：xxx」 as plain header text, outside any of the
+      // anchor/uid selectors above.
+      const headText = (document.body?.innerText || '').slice(0, 2000);
+      const dyMatch = headText.match(/抖音号[:：\\s]*([A-Za-z0-9_.-]{3,})/);
+      if (dyMatch) { headerId = dyMatch[1]; headerIdSource = 'douyin'; }
     }
     const hasProfileSurface = Boolean(document.querySelector(
       'h1, main h2, [class*="profile"], [class*="user-info"], '
@@ -150,6 +176,7 @@ PAGE_SIGNAL_SCRIPT = """() => {
     return {
       headerName,
       headerId,
+      headerIdSource,
       title: (document.title || '').trim(),
       body: (document.body?.innerText || '').slice(0, 5000),
       hasProfileSurface
@@ -403,13 +430,25 @@ def identity_verdict(
     body_key = normalize_identity(body_text)
     url_key = normalize_identity(page_url)
 
+    if detected_id_key and detected_id_key in url_key:
+        # A header "id" that merely echoes the profile URL's own identifier
+        # (douyin's sec_uid inside /user/{sec_uid}) carries no evidence
+        # about the expected platform account id — never let it disprove.
+        detected_id_key = ""
+
     if expected_id_key and expected_id_key in url_key:
         return "verified", None
 
     if expected_id_key and detected_id_key:
         if expected_id_key == detected_id_key:
             return "verified", None
-        return "mismatch", "AUTHOR_IDENTITY_MISMATCH"
+        if _same_id_namespace(expected_id_key, detected_id_key):
+            return "mismatch", "AUTHOR_IDENTITY_MISMATCH"
+        # Cross-namespace ids (douyin uid vs 抖音号/unique_id shown on the
+        # profile) must not disprove a matching header name — fall through
+        # and let the name comparison carry the verdict.  Two different
+        # people sharing a nickname remain a documented acceptance risk
+        # mitigated by the attached profile screenshot.
 
     if detected_name_key:
         if expected_name_key and (

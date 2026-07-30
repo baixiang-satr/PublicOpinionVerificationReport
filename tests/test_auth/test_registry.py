@@ -37,3 +37,12 @@ def test_overlapping_douyin_domain_uses_content_route_not_first_host_match() -> 
     assert commerce is not None and commerce.platform_key == "douyin_ecommerce"
     assert social is not None and social.platform_key == "douyin"
     assert auth_policy_for_url("https://www.douyin.com/") is None
+
+
+def test_douyin_share_short_link_routes_to_douyin_policy() -> None:
+    """v.douyin.com 短链必须命中抖音登录态档案（截图窗口才能带态打开）。"""
+
+    policy = auth_policy_for_url("https://v.douyin.com/erOICsACek8/")
+
+    assert policy is not None
+    assert policy.platform_key == "douyin"

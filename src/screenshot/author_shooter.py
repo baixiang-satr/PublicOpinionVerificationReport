@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import logging
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,7 @@ class AuthorShooter:
         expected_author_name: str | None = None,
         expected_author_id: str | None = None,
         candidate_source: str = "unknown",
+        decision_sink: Callable[[AuthorEvidenceDecision], None] | None = None,
     ) -> Path:
         _raise_if_cancelled(cancel_event)
         decision = AuthorEvidenceDecision(
@@ -88,6 +90,11 @@ class AuthorShooter:
                     evidence_id,
                     error,
                 )
+            if decision_sink is not None:
+                try:
+                    decision_sink(decision)
+                except Exception:  # noqa: BLE001 — 回填失败不影响截图主流程
+                    pass
 
     async def _capture_with_decision(
         self,
@@ -183,6 +190,7 @@ class AuthorShooter:
                 return path
             decision.detected_name = str(signals.get("headerName") or "") or None
             decision.detected_id = str(signals.get("headerId") or "") or None
+            decision.detected_id_source = str(signals.get("headerIdSource") or "")
             title = str(signals.get("title") or "")
             body = str(signals.get("body") or "")
             decision.page_type = classify_profile_page(

@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from src.crawler.author_profile_urls import derive_author_profile_url
-from src.domain.models import RecordResult, TaskError
+from src.domain.models import ExtractionSource, RecordResult, TaskError
 from src.screenshot.author_evidence import (
     AuthorEvidenceDecision,
     ProfilePageType,
@@ -31,6 +31,14 @@ async def capture_author_home_asset(
     author_url = result.page.author_url
     if not author_url:
         return None, None
+    if _is_self_profile(author_url):
+        # 查看者自己的主页（抖音登录后导航栏 /user/self）绝不是作者证据。
+        return None, TaskError(
+            "author_screenshot",
+            "AUTHOR_URL_INVALID",
+            "候选主页是查看者自己的主页（/user/self），不能作为作者证据。",
+            retryable=False,
+        )
     primary = result.assets.page_screenshot
     if (
         primary is not None
@@ -76,6 +84,20 @@ async def capture_author_home_asset(
                 retryable=False,
             )
     try:
+        verified: dict[str, str] = {}
+
+        def _decision_sink(decision: AuthorEvidenceDecision) -> None:
+            if (
+                decision.accepted
+                and decision.identity_state == "verified"
+                and decision.detected_id
+                and decision.detected_id_source in {"text", "douyin"}
+            ):
+                # 只接受页面上直接显示的账号（抖音号/UID 文本）；href 里的
+                # sec_uid 只是链接标识，不是用户可见账号。
+                verified["author_id"] = decision.detected_id
+                verified["source"] = decision.detected_id_source
+
         path = await shooter.capture(
             source_page,
             author_url,
@@ -89,6 +111,12 @@ async def capture_author_home_asset(
                 else result.page.author_id
             ),
             candidate_source=_candidate_source(author_url, result.page.final_url),
+            decision_sink=_decision_sink,
+        )
+        _backfill_author_id(
+            result,
+            verified.get("author_id"),
+            upgrade=verified.get("source") == "douyin",
         )
         return path, None
     except AuthorScreenshotError as error:
@@ -107,6 +135,40 @@ async def capture_author_home_asset(
             str(error),
             retryable=False,
         )
+
+
+def _backfill_author_id(
+    result: RecordResult,
+    detected_id: str | None,
+    *,
+    upgrade: bool = False,
+) -> None:
+    """Prefer the account id shown on the identity-verified author home page.
+
+    Douyin's aweme JSON often omits ``unique_id``; the profile header shows
+    「抖音号」 directly.  Only a *verified* decision may overwrite the
+    nickname fallback, never an unverified probe.  With ``upgrade=True``
+    (the id was read from an explicit 抖音号 label) even a JSON-sourced
+    internal uid is replaced: the profile-displayed account is what the
+    template's 账号 column means.
+    """
+
+    if not detected_id:
+        return
+    page = result.page
+    if page.author_id and not page.author_id_is_fallback and not upgrade:
+        return
+    page.author_id = detected_id
+    page.author_id_is_fallback = False
+    page.field_sources["author_id"] = ExtractionSource.PLATFORM_DOM
+    page.field_confidences["author_id"] = 0.95 if upgrade else 0.9
+
+
+_SELF_PROFILE_RE = re.compile(r"/user/self(?:[/?#]|$)", re.I)
+
+
+def _is_self_profile(url: str) -> bool:
+    return bool(_SELF_PROFILE_RE.search(urlsplit(url).path))
 
 
 def _same_document(left: str, right: str | None) -> bool:

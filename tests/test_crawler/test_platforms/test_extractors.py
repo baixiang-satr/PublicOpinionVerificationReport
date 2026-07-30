@@ -79,6 +79,58 @@ def test_douyin_returns_none_without_aweme() -> None:
     assert _run(DouyinExtractor().extract(page, document, _definition("douyin"))) is None
 
 
+def test_douyin_prefers_node_matching_requested_aweme_id() -> None:
+    """页面同时加载推荐视频详情时，只能提取与请求 aweme_id 匹配的节点。"""
+
+    target = {
+        "aweme_id": "7667987870472788815",
+        "desc": "目标视频文案",
+        "createTime": 1_751_000_000_000,
+        "author": {"nickname": "目标作者", "unique_id": "target001", "sec_uid": "SECT"},
+    }
+    recommendation = {
+        "aweme_id": "7667886625339225445",
+        "desc": "推荐视频文案",
+        "createTime": 1_751_000_000_000,
+        "author": {"nickname": "推荐作者", "unique_id": "reco001", "sec_uid": "SECR"},
+    }
+    # 推荐节点在前：模拟推荐详情先于目标详情到达
+    page = FakePage({})
+    document = RenderedDocument(
+        url="https://www.douyin.com/video/7667987870472788815",
+        network_payloads=({"item_list": [recommendation]}, {"aweme_detail": target}),
+    )
+
+    data = _run(DouyinExtractor().extract(page, document, _definition("douyin")))
+
+    assert data is not None
+    assert data.content_text == "目标视频文案"
+    assert data.author_name == "目标作者"
+    assert data.author_id == "target001"
+    assert data.author_url == "https://www.douyin.com/user/SECT"
+
+
+def test_douyin_returns_none_when_only_recommendations_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """页面只有推荐节点（目标视频被平台替换）时不得错配数据。"""
+
+    monkeypatch.setenv("POR_DISABLE_API_ASSIST", "1")
+    recommendation = {
+        "aweme_id": "7667886625339225445",
+        "desc": "推荐视频文案",
+        "createTime": 1_751_000_000_000,
+        "author": {"nickname": "推荐作者", "unique_id": "reco001"},
+    }
+    page = FakePage({})
+    document = RenderedDocument(
+        url="https://www.douyin.com/video/7667987870472788815",
+        network_payloads=({"item_list": [recommendation]},),
+    )
+
+    assert _run(DouyinExtractor().extract(page, document, _definition("douyin"))) is None
+
+
 # ── kuaishou ──
 def test_kuaishou_parses_json_body_photo() -> None:
     body = {
