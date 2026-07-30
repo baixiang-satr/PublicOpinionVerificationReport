@@ -30,7 +30,7 @@
 | 固定模板写入 | Office Open XML 直接操作（`OoxmlTemplateWriter`），回退至 Windows Excel COM 自动化（`pywin32`） | 基准文件优先通过直接修改 OOXML 压缩包内的 XML 写入，保留全部结构；若源模板为受保护的旧式 OLE 格式则自动回退至 Excel COM。 |
 | 用户输入 Excel | `openpyxl` | 只读取用户提供的标准 `.xlsx`，不用于写出固定模板。 |
 | 打包 | Python `zipfile`，显式写入归档名 | 可精确控制 ZIP 必须具有 `template/` 顶层目录，避免平台相关的压缩路径差异。 |
-| GUI 后台执行 | `QThread` 内运行独立 asyncio 事件循环，通过 Qt signal 回传 | 避免阻塞 PyQt5 主线程，且不引入额外的事件循环桥接依赖。 |
+| GUI 后台执行 | pywebview 桌面壳 + 专属线程运行独立 asyncio 事件循环，事件经 `EventSink` 推送 JS | 前端为 Vue 3 + Element Plus，Python 能力经 js_api 桥暴露，UI 线程永不阻塞。 |
 
 `requirements.txt` 中保留 Windows 条件依赖：`pywin32>=308; platform_system == 'Windows'`，作为旧式 OLE 模板的降级回退。默认导出路径使用 `OoxmlTemplateWriter` 直接操作 Office Open XML。现有 `openpyxl` 保留给输入文件读取，导出模板时禁止调用它。
 
@@ -61,7 +61,7 @@ flowchart LR
     I --> J["ExcelTemplateWriter\nExcel COM 写入与验证"]
     J --> K["PackageValidator\n引用完整性、ZIP 清单"]
     K --> L["template.zip"]
-    C --> M["PyQt5 GUI\n进度、日志、错误、重试"]
+    C --> M["pywebview + Vue GUI\n进度、日志、错误、重试"]
 ```
 
 运行态数据与交付物分离：标题、作者主页 URL、HTTP 状态码、重定向链和错误信息完整保存在内存结果、任务日志及 GUI 结果表中；只有模板允许的字段和实际存在的附件进入 `template.zip`。
@@ -255,9 +255,11 @@ src/
 │   ├── ooxml_writer.py           # Office Open XML 直接写入（默认路径）
 │   ├── package_validator.py      # Excel 附件引用与目录清单校验
 │   └── packager.py               # 固定 template.zip 打包
-├── ui/
-│   ├── main_window.py            # 配置、启动、取消、结果查看
-│   └── workers/task_worker.py    # QThread 和 Qt 信号
+├── webui/
+│   ├── app.py                  # pywebview 窗口入口（内置 HTTP 服务加载 dist）
+│   ├── bridge.py               # js_api：文件对话框、任务、补录、登录态
+│   ├── runner.py               # 后台线程 + asyncio 循环、EventSink 事件推送
+│   └── serialize.py            # ReviewSession/事件 -> JSON 载荷
 └── utils/
     ├── file_utils.py             # 安全文件名、哈希、原子替换
     └── time_utils.py             # 时区和发布时间规范化
@@ -451,18 +453,19 @@ SHEET_LAYOUTS = {
 
 ### 8.1 线程模型
 
-GUI 主线程只处理界面。`TaskWorker(QThread)` 创建 asyncio 事件循环并运行 `TaskRunner.run()`；它通过下列 Qt 信号向 `MainWindow` 发送不可变事件对象：
+界面为 Vue 3 + Element Plus 单页应用，运行在 pywebview（WebView2）窗口中，表格预览与人工补录使用 Univer 电子表格弹窗（WPS 交互，链接可点击跳转）。Python 侧 `WebUIBridge` 作为 js_api 暴露全部能力；`JobRunner`/`AuthRunner` 在专属守护线程中创建 asyncio 事件循环并运行 `TaskRunner.run()`/`AuthManagerService`，通过 `EventSink`（`window.evaluate_js`）向 Vue 推送不可变事件对象：
 
-- `job_started(JobSummary)`
-- `record_updated(RecordResult)`
-- `progress_changed(ProgressSnapshot)`
-- `log_message(LogEvent)`
-- `job_finished(JobResult)`
-- `job_failed(FatalTaskError)`
+- `started(JobSummary)`
+- `progress(ProgressSnapshot)`
+- `log(LogEvent)`
+- `finished(JobResult)`
+- `failed(message)`
+- `session`（补录会话变化）
+- `auth`（平台登录态状态变化）
 
-取消按钮只设置线程安全的取消标志。worker 在当前浏览器操作完成或超时后停止领取新 URL，关闭浏览器资源，并将已完成结果保留为可查看的运行态记录；取消任务不自动生成交付 ZIP。
+取消按钮只设置线程安全的取消标志（TaskRunner 用 `asyncio.Event`，AuthManagerService 用 `threading.Event`）。worker 在当前浏览器操作完成或超时后停止领取新 URL，关闭浏览器资源，并将已完成结果保留为可查看的运行态记录；取消任务不自动生成交付 ZIP。
 
-实际实现中，`TaskRunner` 是唯一端到端编排入口；UI 通过 `TaskWorker(QThread)` 创建独立 asyncio 循环。失败项重试会新建 staging，仅复制上一轮 `EXPORTED` 记录所引用的真实资产，再抓取失败/待补录项，最终重新执行完整模板写入和打包，避免新 ZIP 丢失上一轮成功记录。
+实际实现中，`TaskRunner` 是唯一端到端编排入口；UI 通过 `JobRunner` 创建独立 asyncio 循环。失败项重试会新建 staging，仅复制上一轮 `EXPORTED` 记录所引用的真实资产，再抓取失败/待补录项，最终重新执行完整模板写入和打包，避免新 ZIP 丢失上一轮成功记录。
 
 ### 8.2 界面状态
 
@@ -525,7 +528,7 @@ GUI 主线程只处理界面。`TaskWorker(QThread)` 创建 asyncio 事件循环
 2. 实现 `TemplateManager`、`ExcelTemplateWriter`、`PackageValidator` 和真实 Excel 模板契约测试，先保证空任务与手工构造记录能安全生成 `template.zip`。
 3. 实现 `PlatformRouter`、通用提取器和一至两个高优先级平台提取器，完成分表映射。
 4. 接入 Playwright BrowserPool、主截图、作者主页截图、图片附件下载、限速与重试。
-5. 实现 `TaskRunner`、PyQt5 worker、进度日志、取消和失败项重试。
+5. 实现 `TaskRunner`、webui 后台 worker（pywebview + Vue 前端）、进度日志、取消和失败项重试。
 6. 按真实样本逐步补充平台专用解析器，并在每次模板更新后重新生成 `TemplateSchema` 和执行契约测试。
 
 ## 12. 实施前阻塞项

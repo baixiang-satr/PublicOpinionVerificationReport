@@ -62,8 +62,10 @@ src/
 ├── export/                 # 模板副本、行映射、Excel COM、校验和打包
 ├── services/               # 端到端任务编排
 ├── tools/                  # 受限页诊断与可视人工接力
-├── ui/                     # PyQt5 界面与后台 worker
+├── webui/                  # pywebview 桌面壳、js_api 桥与后台 worker
 └── utils/                  # 文件、时间、日志和 URL 工具
+
+web/                        # Vue 3 + Element Plus 前端（Univer 表格），npm run build 产出 dist
 
 tests/
 ├── test_input/
@@ -71,7 +73,7 @@ tests/
 ├── test_screenshot/
 ├── test_export/
 ├── test_services/
-├── test_ui/
+├── test_webui/
 └── contract/               # 仅 Windows + Excel 环境运行的模板契约测试
 
 tools/

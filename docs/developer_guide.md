@@ -35,7 +35,8 @@ playwright install chromium
 | `export/` | 模板复制、行映射、OOXML/Excel COM 写入、资产校验、ZIP | 重新抓取网页。 |
 | `services/` | 协调完整任务、发布进度事件、处理取消、人工补录持久化与合并 | 具体页面 DOM 选择器。 |
 | `tools/` | 识别受限页、内容失效和错误响应，提供有界人工处理等待 | 隐匿自动化、破解验证码或绕过权限。 |
-| `ui/` | 收集参数、显示进度、采集与补录工作台、全屏截图工具 | 在主线程执行阻塞任务。 |
+| `webui/` | pywebview 桌面壳：js_api 桥、后台任务/登录态线程、事件推送 | 页面 DOM 选择器、模板写入。 |
+| `web/` | Vue 3 + Element Plus 前端（Univer 表格弹窗），构建产物 `web/dist` | 任何抓取/导出逻辑（一律走 js_api）。 |
 
 ## 模板开发流程
 
@@ -65,9 +66,11 @@ playwright install chromium
 ```powershell
 python -m pytest -m "not excel and not external"
 python -m pytest tests/test_crawler/test_engine_playwright.py
-python -m pytest -m ui tests/test_ui
+python -m pytest tests/test_webui
 python -m pytest -m excel tests/contract
 python tools/release_check.py
+# 前端
+cd web; npm install; npm run build; npx vue-tsc --noEmit
 ```
 
 测试分层如下：
@@ -75,7 +78,8 @@ python tools/release_check.py
 - 单元测试：URL、枚举、路由、字段映射、资产命名和 ZIP 清单。
 - 资产测试：使用内存响应和本地文件，覆盖 MIME/文件头不一致、超限、重复 URL、登录墙以及失败文件不进入附件集合。
 - Playwright 集成测试：只访问本地 fixture，覆盖重定向、正文解析，以及每条最多一个页面截图和一个作者主页截图。
-- 服务与 UI 测试：使用依赖替身覆盖成功、取消、全失败、合并重试和 QThread 信号；Qt 使用 offscreen 平台验证布局。
+- 服务测试：使用依赖替身覆盖成功、取消、全失败和合并重试。
+- webui 桥接测试：假窗口 + tmp 目录离线覆盖 `WebUIBridge` 全部方法与序列化载荷；前端用 `npx vue-tsc --noEmit` 做类型门禁。
 - OOXML 契约测试：验证 `OoxmlTemplateWriter` 输出的工作表顺序、首行、数据列和附件引用正确；不依赖 Excel COM。
 - 模板契约测试：仅在 Windows + Microsoft Excel 环境运行（COM 回退路径），验证源模板哈希、工作表顺序、首行、数据验证、保护和附件引用不变。
 - 端到端契约测试：本地 HTTP fixture 经 Playwright、TaskRunner 和 `OoxmlTemplateWriter`（默认）或 Excel COM（回退）生成最终 ZIP。
