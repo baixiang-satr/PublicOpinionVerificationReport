@@ -14,11 +14,38 @@ from src.crawler.platform_types import PlatformDefinition
 from src.crawler.platforms.extract_helpers import (
     apply_json_fields,
     epoch_to_datetime,
+    evaluate_value,
     found_any,
 )
 from src.crawler.platforms.payload_search import epoch_at, iter_mappings, text_at
 from src.crawler.platforms.registry import register
-from src.domain.models import PageData
+from src.domain.models import ExtractionSource, PageData
+
+_AUTHOR_DOM_PROBE = """
+() => {
+  const pick = (selectors) => {
+    for (const selector of selectors) {
+      const element = document.querySelector(selector);
+      const value = element ? (element.textContent || '').trim() : '';
+      if (value) return value;
+    }
+    return '';
+  };
+  const anchor = document.querySelector(
+    ".author-container a[href*='/user/profile/'], a[href*='/user/profile/']"
+  );
+  return {
+    author: pick([
+      ".author-container .username",
+      "span.username",
+      ".user .name",
+      ".author .name",
+      "[class*='author'] [class*='name']"
+    ]),
+    authorUrl: anchor ? anchor.href : ''
+  };
+}
+"""
 
 
 class XiaohongshuExtractor:
@@ -31,30 +58,52 @@ class XiaohongshuExtractor:
         definition: PlatformDefinition,
     ) -> PageData | None:
         note = self._find_note(document)
-        if note is None:
-            return None
-        user = note.get("user")
-        user = user if isinstance(user, Mapping) else {}
-        user_id = text_at(user, ("userId", "user_id", "id"))
         data = PageData(final_url=document.url)
-        applied = apply_json_fields(
+        applied = 0
+        if note is not None:
+            user = note.get("user")
+            user = user if isinstance(user, Mapping) else {}
+            user_id = text_at(user, ("userId", "user_id", "id"))
+            applied = apply_json_fields(
+                data,
+                {
+                    "title": text_at(note, ("title",)),
+                    "content_text": text_at(note, ("desc", "content")),
+                    "author_name": text_at(user, ("nickname", "nickName", "name")),
+                    "author_id": user_id,
+                    "author_url": (
+                        f"https://www.xiaohongshu.com/user/profile/{user_id}"
+                        if user_id
+                        else None
+                    ),
+                    "published_at_dt": epoch_to_datetime(
+                        epoch_at(note, ("time", "publishTime", "createTime"))
+                    ),
+                },
+            )
+        if not data.author_name:
+            # Additive fallback: anonymous note JSON often strips the user
+            # node, but the rendered DOM still shows the author block.
+            applied += await self._author_from_dom(data, page)
+        return data if applied and found_any(data, "content_text", "title") else None
+
+    async def _author_from_dom(self, data: PageData, page: Any) -> int:
+        probe = await evaluate_value(page, _AUTHOR_DOM_PROBE)
+        if not isinstance(probe, Mapping):
+            return 0
+        author_url = probe.get("authorUrl")
+        author_id = None
+        if isinstance(author_url, str) and "/user/profile/" in author_url:
+            author_id = author_url.rsplit("/user/profile/", 1)[-1].split("?")[0].strip("/") or None
+        return apply_json_fields(
             data,
             {
-                "title": text_at(note, ("title",)),
-                "content_text": text_at(note, ("desc", "content")),
-                "author_name": text_at(user, ("nickname", "nickName", "name")),
-                "author_id": user_id,
-                "author_url": (
-                    f"https://www.xiaohongshu.com/user/profile/{user_id}"
-                    if user_id
-                    else None
-                ),
-                "published_at_dt": epoch_to_datetime(
-                    epoch_at(note, ("time", "publishTime", "createTime"))
-                ),
+                "author_name": probe.get("author") or None,
+                "author_url": author_url or None,
+                "author_id": author_id,
             },
+            source=ExtractionSource.PLATFORM_DOM,
         )
-        return data if applied and found_any(data, "content_text", "title") else None
 
     def _find_note(self, document: RenderedDocument) -> Mapping[str, Any] | None:
         for payload in (*document.embedded_payloads, *document.network_payloads):

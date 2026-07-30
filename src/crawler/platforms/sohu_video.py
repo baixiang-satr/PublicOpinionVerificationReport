@@ -33,7 +33,7 @@ _DOM_PROBE = r"""
     return '';
   };
   const authorAnchor = document.querySelector(
-    "[class*='up-info'] a, [class*='userInfo'] a, [class*='user-name'] a, a[href*='tv.sohu.com/user'], a[href*='/u/']"
+    "[class*='up-info'] a, [class*='userInfo'] a, [class*='user-name'] a, [class*='up-info'] a[class*='name'], a[href*='tv.sohu.com/user'], a[href*='/u/'], a[href*='i.sohu.com']"
   );
   const meta = (name) => {
     const element = document.querySelector(`meta[property="${name}"], meta[name="${name}"]`);
@@ -42,7 +42,16 @@ _DOM_PROBE = r"""
   return {
     title: pick(['h1', '.video-title', '[class*="video-title"]']) || meta('og:title'),
     desc: pick(['[class*="video-desc"]', '[class*="desc"]', '.video-info']) || meta('og:description'),
-    author: pick(['[class*="user-name"]', '[class*='up-name']', '[class*="userInfo"] [class*="name"]']),
+    author: pick([
+      '[class*="user-name"]',
+      '[class*="up-name"]',
+      '[class*="upName"]',
+      '[class*="up_name"]',
+      '[class*="userInfo"] [class*="name"]',
+      '[class*="up-info"] [class*="name"]',
+      '[class*="anchor"] [class*="name"]',
+      '.user-name'
+    ]) || meta('author') || meta('og:video:author'),
     authorUrl: authorAnchor ? authorAnchor.href : '',
     time: pick(['[class*="time"]', '[class*="date"]', 'time'])
   };

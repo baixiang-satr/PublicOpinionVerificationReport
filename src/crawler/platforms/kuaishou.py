@@ -47,13 +47,21 @@ class KuaishouExtractor:
         photo = await self._find_photo(page, document)
         if photo is None:
             return None
-        user_id = text_at(photo, ("userId", "user_id", "authorId"))
+        user = photo.get("user")
+        user = user if isinstance(user, Mapping) else {}
+        user_id = (
+            text_at(photo, ("userId", "user_id", "authorId"))
+            or text_at(user, ("user_id", "userId", "id", "authorId"))
+        )
         data = PageData(final_url=document.url)
         applied = apply_json_fields(
             data,
             {
-                "content_text": text_at(photo, ("caption", "title")),
-                "author_name": text_at(photo, ("userName", "user_name", "name")),
+                "content_text": text_at(photo, ("caption", "title", "desc", "description")),
+                "author_name": (
+                    text_at(photo, ("userName", "user_name", "name"))
+                    or text_at(user, ("user_name", "userName", "name", "nickname"))
+                ),
                 "author_id": user_id,
                 "author_url": (
                     f"https://www.kuaishou.com/profile/{user_id}" if user_id else None
@@ -87,10 +95,18 @@ def _photo_node(payload: Any) -> Mapping[str, Any] | None:
     for mapping in iter_mappings(payload):
         photo = mapping.get("photo")
         if isinstance(photo, Mapping) and (
-            "caption" in photo or "userName" in photo
+            "caption" in photo
+            or "desc" in photo
+            or "userName" in photo
+            or isinstance(photo.get("user"), Mapping)
         ):
             return photo
-        if "caption" in mapping and "timestamp" in mapping:
+        if ("caption" in mapping or "desc" in mapping) and (
+            "timestamp" in mapping
+            or "createTime" in mapping
+            or "user" in mapping
+            or "userName" in mapping
+        ):
             return mapping
     return None
 

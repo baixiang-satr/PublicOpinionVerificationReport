@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from src.crawler.api_assist import zhihu_answer, zhihu_ids, zhihu_question
 from src.crawler.extractors.base import RenderedDocument
 from src.crawler.platform_types import PlatformDefinition
 from src.crawler.platforms.extract_helpers import (
@@ -21,7 +22,7 @@ from src.crawler.platforms.extract_helpers import (
 )
 from src.crawler.platforms.payload_search import epoch_at, text_at
 from src.crawler.platforms.registry import register
-from src.domain.models import PageData
+from src.domain.models import ExtractionSource, PageData
 
 _INITIAL_DATA_SCRIPT = """
 () => {
@@ -41,14 +42,55 @@ class ZhihuExtractor:
         definition: PlatformDefinition,
     ) -> PageData | None:
         initial = await evaluate_json(page, _INITIAL_DATA_SCRIPT)
-        if initial is None:
-            return None
-        entities = _entities(initial)
-        if entities is None:
-            return None
         data = PageData(final_url=document.url)
-        applied = self._apply_entities(data, entities, document.url)
+        applied = 0
+        if initial is not None:
+            entities = _entities(initial)
+            if entities is not None:
+                applied = self._apply_entities(data, entities, document.url)
+        if not applied:
+            applied = await self._from_api(data, page, document)
         return data if applied and found_any(data, "content_text", "title") else None
+
+    async def _from_api(
+        self,
+        data: PageData,
+        page: Any,
+        document: RenderedDocument,
+    ) -> int:
+        """Additive fallback: public ``api/v4`` JSON for question/answer pages.
+
+        ``/question/`` pages block headless Chromium with HTTP 403, so the
+        SSR ``js-initialData`` node never exists; the api/v4 endpoints often
+        still answer when the request rides the browser session cookies.
+        """
+
+        question_id, answer_id = zhihu_ids(document.url)
+        if answer_id:
+            answer = await zhihu_answer(page, answer_id)
+            if isinstance(answer, Mapping):
+                question = answer.get("question")
+                question = question if isinstance(question, Mapping) else {}
+                return _apply_node(
+                    data,
+                    title=text_at(question, ("title",)),
+                    content=text_at(answer, ("content", "excerpt")),
+                    node=answer,
+                    time_keys=("created_time", "updated_time"),
+                    source=ExtractionSource.NETWORK_JSON,
+                )
+        if question_id:
+            question = await zhihu_question(page, question_id)
+            if isinstance(question, Mapping):
+                return _apply_node(
+                    data,
+                    title=text_at(question, ("title",)),
+                    content=text_at(question, ("detail", "excerpt")),
+                    node=question,
+                    time_keys=("created", "created_time"),
+                    source=ExtractionSource.NETWORK_JSON,
+                )
+        return 0
 
     def _apply_entities(
         self,
@@ -58,7 +100,7 @@ class ZhihuExtractor:
     ) -> int:
         article = _first_entity(entities.get("articles"))
         if article is not None:
-            return self._apply_node(
+            return _apply_node(
                 data,
                 title=text_at(article, ("title",)),
                 content=text_at(article, ("content", "excerpt")),
@@ -69,7 +111,7 @@ class ZhihuExtractor:
         question = _first_entity(entities.get("questions"))
         if answer is not None:
             title = text_at(question or {}, ("title",))
-            return self._apply_node(
+            return _apply_node(
                 data,
                 title=title,
                 content=text_at(answer, ("content", "excerpt")),
@@ -77,7 +119,7 @@ class ZhihuExtractor:
                 time_keys=("createdTime", "updatedTime"),
             )
         if question is not None:
-            return self._apply_node(
+            return _apply_node(
                 data,
                 title=text_at(question, ("title",)),
                 content=text_at(question, ("detail", "excerpt")),
@@ -86,31 +128,33 @@ class ZhihuExtractor:
             )
         return 0
 
-    def _apply_node(
-        self,
-        data: PageData,
-        *,
-        title: str | None,
-        content: str | None,
-        node: Mapping[str, Any],
-        time_keys: tuple[str, ...],
-    ) -> int:
-        author = node.get("author")
-        author = author if isinstance(author, Mapping) else {}
-        url_token = text_at(author, ("urlToken", "url_token"))
-        return apply_json_fields(
-            data,
-            {
-                "title": title,
-                "content_text": strip_html(content) if content else None,
-                "author_name": text_at(author, ("name",)),
-                "author_id": text_at(author, ("id", "urlToken")),
-                "author_url": (
-                    f"https://www.zhihu.com/people/{url_token}" if url_token else None
-                ),
-                "published_at_dt": epoch_to_datetime(epoch_at(node, time_keys)),
-            },
-        )
+
+def _apply_node(
+    data: PageData,
+    *,
+    title: str | None,
+    content: str | None,
+    node: Mapping[str, Any],
+    time_keys: tuple[str, ...],
+    source: ExtractionSource = ExtractionSource.EMBEDDED_JSON,
+) -> int:
+    author = node.get("author")
+    author = author if isinstance(author, Mapping) else {}
+    url_token = text_at(author, ("urlToken", "url_token"))
+    return apply_json_fields(
+        data,
+        {
+            "title": title,
+            "content_text": strip_html(content) if content else None,
+            "author_name": text_at(author, ("name",)),
+            "author_id": text_at(author, ("id", "urlToken", "url_token")),
+            "author_url": (
+                f"https://www.zhihu.com/people/{url_token}" if url_token else None
+            ),
+            "published_at_dt": epoch_to_datetime(epoch_at(node, time_keys)),
+        },
+        source=source,
+    )
 
 
 def _entities(initial: Any) -> Mapping[str, Any] | None:
