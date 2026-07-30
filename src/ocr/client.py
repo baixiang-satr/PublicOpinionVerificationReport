@@ -114,17 +114,24 @@ class OcrClient:
             if sys.platform == "win32"
             else 0
         )
-        self._responses = queue.Queue()
-        self._process = subprocess.Popen(
-            [
+        if getattr(sys, "frozen", False):
+            # PyInstaller 打包：OCR worker 复用本 exe 的 --ocr-worker 入口
+            args = [str(self._executable), "--ocr-worker"]
+            cwd = str(Path(sys.executable).resolve().parent)
+        else:
+            args = [
                 str(self._executable),
                 "-X",
                 "utf8",
                 "-u",
                 "-m",
                 "src.ocr.worker_main",
-            ],
-            cwd=str(Path(__file__).resolve().parents[2]),
+            ]
+            cwd = str(Path(__file__).resolve().parents[2])
+        self._responses = queue.Queue()
+        self._process = subprocess.Popen(
+            args,
+            cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -214,6 +221,9 @@ def _resolve_executable(configured: Path | None) -> Path | None:
     if configured is not None:
         path = Path(configured).expanduser().resolve()
         return path if path.is_file() else None
+    if getattr(sys, "frozen", False):
+        # PyInstaller 打包：worker 复用本 exe（--ocr-worker 入口）
+        return Path(sys.executable).resolve()
     project = Path(__file__).resolve().parents[2]
     candidates = (
         project / ".ocr-venv" / "Scripts" / "python.exe",

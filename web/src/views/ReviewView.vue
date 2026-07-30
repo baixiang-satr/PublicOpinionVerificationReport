@@ -16,7 +16,8 @@ const sheets = computed(() => (store.session?.sheets ?? []).filter((s) => s.tota
       表格和 template 一模一样：红色空格是必补项，下拉选项与模板完全相同，修改会自动保存。
     </p>
     <div class="notice-banner">
-      缺截图：选中记录行后点「截取内容页」或「截取个人页」，在打开的页面中框选区域即自动保存；
+      缺截图：选中记录行后点「截取内容页」或「截取个人页」，在打开的窗口中点「开始框选」，
+      框选屏幕上任意区域（含地址栏 URL）即自动保存；
       URL 单元格点击即可打开原页面。群聊 / 朋友圈没有 URL，可以在表格里直接添加手工行。
     </div>
 
@@ -55,7 +56,7 @@ const sheets = computed(() => (store.session?.sheets ?? []).filter((s) => s.tota
 
     <div class="card" v-else>
       <p class="muted">
-        请先完成抓取，或从欢迎页上传 template.zip / 打开历史任务。
+        请先完成抓取，或从欢迎页上传 template.zip 继续补录。
       </p>
       <el-button :icon="Grid" disabled>打开补录表格</el-button>
     </div>

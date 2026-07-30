@@ -26,13 +26,13 @@ from src.utils.file_utils import require_safe_file_name
 from src.webui.runner import AuthRunner, CaptureRunner, EventSink, JobRunner
 from src.webui.serialize import (
     auth_profile_payload,
-    history_job_payload,
     row_delta,
     session_overview,
     sheet_payload,
 )
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+_SCREENSHOT_SLOTS = {"primary": "content", "author": "author"}
 
 
 class WebUIBridge:
@@ -124,30 +124,9 @@ class WebUIBridge:
             return {"ok": False, "message": str(error)}
         return self._open_job(job_dir)
 
-    def pick_job_dir(self) -> dict:
-        path = self._pick_file((), directory=True)
-        if path is None:
-            return {"ok": False, "message": ""}
-        return self._open_job(path)
-
     def _open_job(self, job_dir: Path) -> dict:
         ok, message = self.jobs.open_session(job_dir)
         return {"ok": ok, "message": message}
-
-    def list_history_jobs(self) -> list[dict]:
-        output_dir = Path(self._base_config.template.output_dir)
-        jobs: list[dict] = []
-        for checkpoint in sorted(
-            output_dir.glob("*/job_checkpoint.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        ):
-            try:
-                snapshot = CheckpointStore.load(checkpoint)
-            except Exception:
-                continue
-            jobs.append(history_job_payload(checkpoint.parent, len(snapshot.records)))
-        return jobs[:30]
 
     # ── 抓取任务 ──
     def start_crawl(self, input_path: str) -> dict:
@@ -266,9 +245,7 @@ class WebUIBridge:
         eid = int(evidence_id)
         assets_dir = session.manual_assets_dir()
         assets_dir.mkdir(parents=True, exist_ok=True)
-        name = require_safe_file_name(
-            f"{eid:03d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{path.suffix.lower()}"
-        )
+        name = _screenshot_asset_name(assets_dir, eid, mode, path.suffix.lower())
         shutil.copy2(path, assets_dir / name)
         if mode == "primary":
             session.set_primary_screenshot(eid, name)
@@ -306,7 +283,7 @@ class WebUIBridge:
         return {"data_url": f"data:{mime};base64,{encoded}", "name": path.name}
 
     def start_region_capture(self, evidence_id: int, target: str) -> dict:
-        """打开交互式截图窗口（框选截图，参照 FS Capture）。"""
+        """打开交互式截图窗口（全屏冻结框选，含浏览器地址栏）。"""
 
         session = self._session()
         if session is None:
@@ -394,6 +371,34 @@ class WebUIBridge:
     def auth_logout(self, platform_key: str) -> dict:
         self.auth.store().delete_state(str(platform_key))
         return {"ok": True}
+
+
+def _screenshot_asset_name(
+    assets_dir: Path,
+    evidence_id: int,
+    mode: str,
+    suffix: str,
+) -> str:
+    """标准化人工截图命名：与框选截图同一套规则。
+
+    - 内容页 / 个人页槽位：``001_content.jpg`` / ``001_author.png``，
+      同一槽位重复上传直接覆盖（不同后缀的旧文件一并清理）；
+    - 附件槽位可多张：``001_attachment_20260730_153000.png``，同秒冲突加序号。
+    """
+
+    slot = _SCREENSHOT_SLOTS.get(mode)
+    if slot is not None:
+        for stale in assets_dir.glob(f"{evidence_id:03d}_{slot}.*"):
+            if stale.suffix.lower() != suffix:
+                stale.unlink(missing_ok=True)
+        return require_safe_file_name(f"{evidence_id:03d}_{slot}{suffix}")
+    stem = f"{evidence_id:03d}_attachment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    candidate = require_safe_file_name(f"{stem}{suffix}")
+    counter = 1
+    while (assets_dir / candidate).exists():
+        counter += 1
+        candidate = require_safe_file_name(f"{stem}_{counter}{suffix}")
+    return candidate
 
 
 def dumps_debug(payload) -> str:  # 测试辅助：确认全部载荷可 JSON 序列化

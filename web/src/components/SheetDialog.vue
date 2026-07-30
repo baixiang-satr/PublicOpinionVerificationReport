@@ -21,7 +21,14 @@ import '@univerjs/preset-sheets-data-validation/lib/index.css'
 import '@univerjs/preset-sheets-hyper-link/lib/index.css'
 
 import { bridge } from '@/api/bridge'
-import { buildCell, buildWorkbookData, MISSING_COL, STATUS_COL, type SheetModel } from '@/components/sheetModel'
+import {
+  buildCell,
+  buildWorkbookData,
+  cellDisplayValue,
+  MISSING_COL,
+  STATUS_COL,
+  type SheetModel,
+} from '@/components/sheetModel'
 import { useJobStore } from '@/stores/job'
 import type { SheetPayload, ScreenshotPair } from '@/types'
 
@@ -53,6 +60,67 @@ const payload = ref<SheetPayload[]>([])
 const models = ref<SheetModel[]>([])
 const manualSheet = ref('')
 const shotPreview = ref<ScreenshotPair | null>(null)
+
+// ── 单元格内容查看（选中显示 + 悬停提示；提示限长，不过长）──────────────
+const PEEK_INLINE_MAX = 160 // 查看栏内联显示上限
+const TIP_MAX = 500 // 提示框上限
+const peekText = ref('')
+const hoverTip = ref<{ text: string; x: number; y: number } | null>(null)
+let hoverTimer: number | undefined
+let hoverKey = ''
+let lastMouse = { x: 0, y: 0 }
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+function cellTextAt(sheetId: string, row: number, col: number): string {
+  const model = models.value.find((m) => m.sheetId === sheetId)
+  const column = model?.columns[col]
+  if (!model || !column) return ''
+  if (row === 0) return column.header
+  const payloadRow = model.rowAt(row)
+  return payloadRow ? cellDisplayValue(payloadRow, column) : ''
+}
+
+function hideHoverTip() {
+  window.clearTimeout(hoverTimer)
+  hoverKey = ''
+  hoverTip.value = null
+}
+
+function scheduleHoverTip(sheetId: string, row: number, col: number) {
+  const key = `${sheetId}:${row}:${col}`
+  if (key === hoverKey) return
+  hideHoverTip()
+  hoverKey = key
+  if (row < 1 || col < 0) return
+  hoverTimer = window.setTimeout(() => {
+    const text = cellTextAt(sheetId, row, col)
+    if (text && hoverKey === key) {
+      hoverTip.value = { text: truncate(text, TIP_MAX), x: lastMouse.x, y: lastMouse.y }
+    }
+  }, 450)
+}
+
+function onGridPointerMove(event: PointerEvent) {
+  lastMouse = { x: event.clientX, y: event.clientY }
+  if (hoverTip.value) hoverTip.value = { ...hoverTip.value, x: event.clientX, y: event.clientY }
+}
+
+/** 选中单元格（含键盘移动）后更新查看栏。 */
+function listenPeeks(univerAPI: UniverAPI) {
+  univerAPI.addEvent(univerAPI.Event.SelectionChanged, (params) => {
+    hideHoverTip()
+    const selection = params.selections?.[0]
+    peekText.value = selection
+      ? cellTextAt(params.worksheet.getSheetId(), selection.startRow, selection.startColumn)
+      : ''
+  })
+  univerAPI.addEvent(univerAPI.Event.CellHover, (params) => {
+    scheduleHoverTip(params.worksheet.getSheetId(), params.row, params.column)
+  })
+}
 
 const store = useJobStore()
 
@@ -132,6 +200,7 @@ async function buildGrid() {
 async function decorate(univerAPI: UniverAPI) {
   const workbook = univerAPI.getActiveWorkbook()
   if (!workbook) return
+  listenPeeks(univerAPI)
   for (const model of models.value) {
     const sheet = workbook.getSheetBySheetId(model.sheetId)
     if (!sheet) continue
@@ -343,7 +412,7 @@ async function viewScreenshots() {
   const pair = await bridge.listScreenshots(active.eid)
   if (!pair.content && !pair.author) {
     ElMessageBox.alert(
-      '本地没有截图。请点击工具条的「截取内容页」/「截取个人页」，在打开的页面中框选截图区域。',
+      '本地没有截图。请点击工具条的「截取内容页」/「截取个人页」，在打开的窗口中点「开始框选」截取屏幕区域。',
       '查看截图',
       { confirmButtonText: '知道了' },
     )
@@ -368,7 +437,7 @@ async function captureRegion(target: 'content' | 'author') {
   }
   const result = await bridge.startRegionCapture(active.eid, target)
   if (result.ok) {
-    ElMessage.success('已打开截图窗口：浏览到目标内容后点「开始框选」，拖拽框选并保存。')
+    ElMessage.success('已打开截图窗口：浏览到目标内容后点「开始框选」，可截取整个屏幕（含地址栏 URL）。')
     return
   }
   if (result.code === 'no_url') {
@@ -422,6 +491,8 @@ watch(visible, async (open) => {
       loading.value = false
     }
   } else {
+    hideHoverTip()
+    peekText.value = ''
     disposeGrid()
     models.value = []
   }
@@ -456,9 +527,29 @@ watch(visible, async (open) => {
         只读预览，与最终交付表一致；点击蓝色链接可在浏览器中打开原页面。
       </span>
     </div>
-    <div v-loading="loading" class="grid-wrap">
+    <div class="cell-peek">
+      <span class="peek-label">单元格内容</span>
+      <el-tooltip :disabled="!peekText" placement="top" :show-after="150">
+        <template #content>
+          <span class="peek-tooltip">{{ truncate(peekText, TIP_MAX) }}</span>
+        </template>
+        <span class="peek-value" :class="{ muted: !peekText }">
+          {{ truncate(peekText, PEEK_INLINE_MAX) || '（点击任意单元格查看完整内容）' }}
+        </span>
+      </el-tooltip>
+    </div>
+    <div v-loading="loading" class="grid-wrap" @pointermove="onGridPointerMove" @pointerleave="hideHoverTip">
       <div ref="containerRef" class="grid-container"></div>
     </div>
+    <teleport to="body">
+      <div
+        v-if="hoverTip"
+        class="cell-hover-tip"
+        :style="{ left: `${hoverTip.x + 14}px`, top: `${hoverTip.y + 16}px` }"
+      >
+        {{ hoverTip.text }}
+      </div>
+    </teleport>
 
     <el-dialog
       :model-value="shotPreview !== null"
@@ -500,6 +591,39 @@ watch(visible, async (open) => {
 
 .toolbar-stats {
   margin-left: auto;
+}
+
+.cell-peek {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 4px 10px;
+  background: var(--poir-canvas);
+  border: 1px solid var(--poir-border);
+  border-radius: 6px;
+  font-size: 12px;
+  min-height: 26px;
+}
+
+.peek-label {
+  flex: none;
+  color: var(--el-text-color-secondary);
+}
+
+.peek-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.peek-tooltip {
+  display: inline-block;
+  max-width: 420px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .grid-wrap {
@@ -555,6 +679,25 @@ watch(visible, async (open) => {
 /* 弹窗内容区域铺满，贴近 WPS 全屏表格体验 */
 .sheet-dialog .el-dialog__body {
   padding-top: 10px;
+}
+
+/* 单元格悬停提示：跟随鼠标、限宽限长 */
+.cell-hover-tip {
+  position: fixed;
+  z-index: 950;
+  max-width: 420px;
+  max-height: 180px;
+  overflow: hidden;
+  padding: 8px 12px;
+  background: rgba(32, 33, 36, 0.94);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
 @media (max-width: 640px) {

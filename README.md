@@ -94,6 +94,17 @@ python -m pytest -m "not excel and not external"
 
 真实模板契约测试使用 `python -m pytest -m excel tests/contract`。发布前运行 `python tools/release_check.py`；普通测试和发布检查均不会访问真实外部站点。
 
+## 打包分发（免安装）
+
+把工具交给其他 Windows 电脑使用时，执行一键打包：
+
+```powershell
+cd web && npm run build && cd ..
+python tools/build_release.py
+```
+
+产物 `dist/舆情验证报告工具/` 包含 exe、固定模板、前端、Playwright 浏览器与《使用说明.txt》，整包压缩拷贝即可，目标电脑无需安装 Python、Node.js 或浏览器（需 Win10/11 64 位与系统自带 WebView2）。
+
 ## 参考项目取舍
 
 `references/MediaCrawler-main` 的任务生命周期、资源清理、浏览器上下文和平台适配器设计被吸收；`MediaCrawler-new-main` 提供了保持骨架精简的思路；浏览器插件帮助确认模板字段、示例行和截图附件关联。

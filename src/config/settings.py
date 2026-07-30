@@ -5,9 +5,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import sys
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+def _project_root() -> Path:
+    """PyInstaller 打包后资源与输出放在 exe 同级目录。"""
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+PROJECT_ROOT = _project_root()
 
 
 @dataclass(frozen=True)

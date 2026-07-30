@@ -4,7 +4,6 @@ import type {
   AuthPlatform,
   Bootstrap,
   BridgeEvent,
-  HistoryJob,
   InputFileInfo,
   ScreenshotPair,
   SheetPayload,
@@ -15,8 +14,6 @@ interface PyWebviewApi {
   get_bootstrap(): Promise<Bootstrap>
   pick_input_file(): Promise<InputFileInfo | null>
   pick_zip_file(): Promise<{ ok: boolean; message: string }>
-  pick_job_dir(): Promise<{ ok: boolean; message: string }>
-  list_history_jobs(): Promise<HistoryJob[]>
   set_options(options: TaskOptions): Promise<{ ok: boolean }>
   start_crawl(input_path: string): Promise<{ ok: boolean; message: string }>
   cancel_job(): Promise<{ ok: boolean }>
@@ -150,8 +147,6 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
       })
     case 'pick_input_file':
       return respond({ path: 'D:/demo/urls.txt', url_count: 3, rejected_count: 0 })
-    case 'list_history_jobs':
-      return respond([])
     case 'get_sheet_payload':
       return respond(mockSheets)
     case 'apply_edit': {
@@ -228,8 +223,6 @@ export const bridge = {
   getBootstrap: () => call<Bootstrap>('get_bootstrap'),
   pickInputFile: () => call<InputFileInfo | null>('pick_input_file'),
   pickZipFile: () => call<{ ok: boolean; message: string }>('pick_zip_file'),
-  pickJobDir: () => call<{ ok: boolean; message: string }>('pick_job_dir'),
-  listHistoryJobs: () => call<HistoryJob[]>('list_history_jobs'),
   setOptions: (o: TaskOptions) => call<{ ok: boolean }>('set_options', o),
   startCrawl: (p: string) => call<{ ok: boolean; message: string }>('start_crawl', p),
   cancelJob: () => call<{ ok: boolean }>('cancel_job'),

@@ -1,6 +1,6 @@
 // SheetDialog 的纯数据层：把桥接 payload 转成 Univer 工作簿快照。
 // 与 Python 侧 serialize.py 的列定义一一对应。
-import { LocaleType } from '@univerjs/presets'
+import { LocaleType, WrapStrategy } from '@univerjs/presets'
 import type { ICellData, IStyleData, IWorkbookData, IWorksheetData } from '@univerjs/presets'
 
 import type { SheetColumn, SheetPayload, SheetRow } from '@/types'
@@ -26,6 +26,7 @@ const HEADER_STYLE: IStyleData = {
   bl: 1,
   ht: 1,
   vt: 1,
+  tb: WrapStrategy.CLIP,
 }
 
 const MISSING_STYLE: IStyleData = { bg: { rgb: '#FDE2E2' } }
@@ -82,17 +83,23 @@ function extraCellValue(key: string, row: SheetRow): string {
   return ''
 }
 
-function cellStyle(column: DisplayColumn, row: SheetRow, value: string): IStyleData | undefined {
-  if (column.required && !value.trim()) return MISSING_STYLE
-  if (column.key === STATUS_COL && row.attention) return ATTENTION_STYLE
-  if (column.key === STATUS_COL && row.manual) return MANUAL_STYLE
-  return undefined
+function cellStyle(column: DisplayColumn, row: SheetRow, value: string): IStyleData {
+  // 一律 CLIP：长文字裁在单元格内，不溢出遮盖相邻列；完整内容点击查看栏/悬停提示
+  let tint: IStyleData | undefined
+  if (column.required && !value.trim()) tint = MISSING_STYLE
+  else if (column.key === STATUS_COL && row.attention) tint = ATTENTION_STYLE
+  else if (column.key === STATUS_COL && row.manual) tint = MANUAL_STYLE
+  return { tb: WrapStrategy.CLIP, ...tint }
+}
+
+/** 单元格展示值：模板列取 cells，状态/待补辅助列实时计算（与 buildCell 一致）。 */
+export function cellDisplayValue(row: SheetRow, column: DisplayColumn): string {
+  return row.cells[column.key] ?? extraCellValue(column.key, row)
 }
 
 export function buildCell(row: SheetRow, column: DisplayColumn): ICellData {
-  const value = row.cells[column.key] ?? extraCellValue(column.key, row)
-  const style = cellStyle(column, row, value)
-  return style ? { v: value, s: style } : { v: value }
+  const value = cellDisplayValue(row, column)
+  return { v: value, s: cellStyle(column, row, value) }
 }
 
 export function buildWorkbookData(payload: SheetPayload[]): {

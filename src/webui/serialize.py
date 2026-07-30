@@ -4,9 +4,6 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
-
 from src.auth.models import AuthProfile, AuthStatus
 from src.domain.models import RecordResult, RecordStatus
 from src.domain.overrides import OVERRIDEABLE_FIELDS
@@ -211,12 +208,3 @@ def auth_profile_payload(display_name: str, profile: AuthProfile) -> dict:
         message,
         profile.masked_phone or "",
     )
-
-
-def history_job_payload(path: Path, record_count: int) -> dict:
-    return {
-        "path": str(path),
-        "name": path.name,
-        "modified": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
-        "records": record_count,
-    }

@@ -105,13 +105,6 @@ export interface AuthPlatform {
   account: string
 }
 
-export interface HistoryJob {
-  path: string
-  name: string
-  modified: string
-  records: number
-}
-
 export interface InputFileInfo {
   path: string
   url_count: number

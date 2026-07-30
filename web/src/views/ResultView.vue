@@ -63,7 +63,7 @@ const totalAttention = computed(() => {
     </div>
 
     <div class="card" v-else>
-      <p class="muted">还没有抓取结果。请先完成抓取，或从欢迎页上传 template.zip / 打开历史任务。</p>
+      <p class="muted">还没有抓取结果。请先完成抓取，或从欢迎页上传 template.zip 继续补录。</p>
     </div>
   </section>
 </template>

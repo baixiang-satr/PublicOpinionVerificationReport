@@ -72,19 +72,23 @@ const items = computed(() =>
 .sidebar {
   width: var(--poir-sidebar-w);
   flex: none;
+  display: flex;
+  flex-direction: column;
   background: var(--poir-card);
   border-right: 1px solid var(--poir-border);
-  padding: 14px 10px;
+  padding: 10px 10px;
+  /* 内容正常情况下放得下，不出滚动条；窗口过矮时才滚动 */
   overflow-y: auto;
 }
 
 .brand {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 6px 14px;
+  padding: 0 6px 10px;
   border-bottom: 1px solid var(--poir-border);
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .brand-mark {
@@ -106,6 +110,14 @@ const items = computed(() =>
 
 .steps :deep(.el-step) {
   cursor: default;
+}
+
+/* el-steps--vertical 默认 height:100%，与 brand 叠加会把内容顶出滚动条；
+   min-height: max-content 保证窗口过矮时步骤不挤压、改由侧栏滚动 */
+.steps {
+  flex: 1;
+  min-height: max-content;
+  height: auto;
 }
 
 .steps :deep(.el-step.clickable) {

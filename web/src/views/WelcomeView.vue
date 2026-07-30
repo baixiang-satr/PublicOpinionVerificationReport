@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 欢迎页：三种开始方式（新建 / 上传 zip 补录 / 打开历史任务）。
-import { FolderOpened, Upload, VideoPlay } from '@element-plus/icons-vue'
+// 欢迎页：两种开始方式（新建 / 上传 zip 补录）。
+import { Upload, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 import { bridge } from '@/api/bridge'
@@ -13,17 +13,6 @@ async function importZip() {
   if (result.ok) {
     await store.refreshSession()
     ElMessage.success('template.zip 已导入，可以直接补录。')
-    store.goTo(4)
-  } else if (result.message) {
-    ElMessage.warning(result.message)
-  }
-}
-
-async function openHistory() {
-  const result = await bridge.pickJobDir()
-  if (result.ok) {
-    await store.refreshSession()
-    ElMessage.success('已打开历史任务目录。')
     store.goTo(4)
   } else if (result.message) {
     ElMessage.warning(result.message)
@@ -58,13 +47,6 @@ async function openHistory() {
           把之前生成的 template.zip 直接传上来，在原有内容基础上继续人工补录、补截图，再重新导出。
         </span>
       </button>
-      <button class="mode-card" type="button" @click="openHistory">
-        <el-icon :size="34" color="var(--el-color-primary)"><FolderOpened /></el-icon>
-        <span class="mode-title">打开历史任务目录</span>
-        <span class="mode-desc muted">
-          打开 output 下任意一次任务的文件夹，接着上次的进度继续采集与补录。
-        </span>
-      </button>
     </div>
   </section>
 </template>
@@ -72,7 +54,7 @@ async function openHistory() {
 <style scoped>
 .mode-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 14px;
 }
 
