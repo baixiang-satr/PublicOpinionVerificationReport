@@ -12,7 +12,8 @@ from datetime import datetime
 
 
 #: Fields an operator may edit.  ``content`` maps to ``PageData.content_text``
-#: and ``published_at`` is stored as an ISO-8601 string.
+#: and ``published_at`` is stored as an ISO-8601 string.  ``platform`` updates
+#: the routed sheet's 发布平台 enum (validated before export).
 OVERRIDEABLE_FIELDS: tuple[str, ...] = (
     "title",
     "content",
@@ -22,6 +23,7 @@ OVERRIDEABLE_FIELDS: tuple[str, ...] = (
     "store_name",
     "published_at",
     "text_type",
+    "platform",
 )
 
 

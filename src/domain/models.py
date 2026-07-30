@@ -63,8 +63,11 @@ class UrlTask:
     def __post_init__(self) -> None:
         if self.evidence_id < 1:
             raise ValueError("evidence_id must start at 1.")
-        if not self.original_url or not self.normalized_url:
-            raise ValueError("A URL task requires original and normalized URLs.")
+        if (not self.original_url) != (not self.normalized_url):
+            raise ValueError(
+                "original_url and normalized_url must both be set, "
+                "or both be empty for fully manual rows (e.g. 群聊/朋友圈)."
+            )
 
 
 @dataclass
