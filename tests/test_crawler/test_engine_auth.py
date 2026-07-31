@@ -92,6 +92,10 @@ class ExpiredAuthStore:
     def profile_for(_platform_key: str):
         return type("Profile", (), {"status": AuthStatus.EXPIRED})()
 
+    @staticmethod
+    def has_valid_state(_platform_key: str) -> bool:
+        return False
+
 
 def _zhihu_task(evidence_id: int = 1) -> UrlTask:
     url = f"https://www.zhihu.com/question/{evidence_id}"
@@ -103,6 +107,7 @@ async def test_auth_failure_pauses_remaining_tasks_for_same_platform(tmp_path: P
     pool = FakeBrowserPool([401], "https://www.zhihu.com/question/1")
     engine = CrawlEngine(
         TaskConfig(
+            enable_auth_health_gate=False,
             max_retries=0,
             min_host_interval_seconds=0,
             page_stabilize_milliseconds=0,

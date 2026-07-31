@@ -43,6 +43,11 @@ class PlatformTaskScheduler:
         if blocking is None:
             return None
         policy, profile = blocking
+        if policy.requires_valid_state:
+            return (
+                f"{policy.display_name} 截图要求使用已验证登录态；"
+                "请先在“管理平台登录态”中完成登录和复验，再开始采集。"
+            )
         return (
             f"{policy.display_name}登录态当前为“{profile.status.value}”；"
             "为避免批量产生无效页面，已在访问前暂停该平台。"
@@ -58,15 +63,35 @@ class PlatformTaskScheduler:
         self,
         task: UrlTask,
     ) -> tuple[PlatformAuthPolicy, AuthProfile] | None:
-        if not self._config.enable_auth_health_gate or self._auth_store is None:
+        if not self._config.enable_auth_health_gate:
             return None
         policy = auth_policy_for_url(task.normalized_url)
         if policy is None:
             return None
+        if self._auth_store is None:
+            if policy.requires_valid_state:
+                return policy, AuthProfile(
+                    profile_id=f"{policy.platform_key}-primary",
+                    platform_key=policy.platform_key,
+                    auth_scope=policy.auth_scope,
+                )
+            return None
         try:
             profile = self._auth_store.profile_for(policy.platform_key)
         except (AuthStateStoreError, KeyError):
+            if policy.requires_valid_state:
+                return policy, AuthProfile(
+                    profile_id=f"{policy.platform_key}-primary",
+                    platform_key=policy.platform_key,
+                    auth_scope=policy.auth_scope,
+                )
             return None
+        if policy.requires_valid_state:
+            try:
+                if not self._auth_store.has_valid_state(policy.platform_key):
+                    return policy, profile
+            except (AuthStateStoreError, KeyError):
+                return policy, profile
         if profile.status not in {
             AuthStatus.AUTH_REQUIRED,
             AuthStatus.EXPIRED,

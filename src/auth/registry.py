@@ -16,9 +16,9 @@ _PROBE_URLS: dict[str, str] = {
     "1688": "https://detail.1688.com/offer/692785071822.html",
     "jd": "https://item.m.jd.com/product/10217506550225.html",
     "pinduoduo": "https://mobile.yangkeduo.com/goods.html?goods_id=953347192563",
-    "wechat_official": "https://mp.weixin.qq.com/s/YPIRokgDzZR2YZpNe_rDUQ",
+    "wechat_official": "https://mp.weixin.qq.com/s/Oxxb7Lc4zEUsbbYXoOtXNg",
     "baijiahao": "https://baijiahao.baidu.com/s?id=1834009156189018132",
-    "wechat_video": "https://channels.weixin.qq.com/finder-preview/pages/sph?id=AARbAMw0f2",
+    "wechat_video": "https://weixin.qq.com/sph/AiQbKWmgTm",
     "sohu_video": "https://tv.sohu.com/v/MjAyNjA3MjMvbjYyMDIyOTkzMi5zaHRtbA%3D%3D.html",
     "xiaohongshu": "https://www.xiaohongshu.com/explore/667d3e07000000001b00a2c7",
     "douyin": "https://www.douyin.com/video/7589550032567782662",
@@ -90,6 +90,10 @@ AUTH_POLICIES: tuple[PlatformAuthPolicy, ...] = tuple(
             "qq_browser",
         },
         fallback_probe_urls=_FALLBACK_PROBE_URLS.get(definition.key, ()),
+        # Crawling is profile-only for every supported website.  A profile
+        # is accepted only after AuthManagerService has re-opened its state in
+        # a fresh context and AuthProfileStore has committed it atomically.
+        requires_valid_state=True,
     )
     for definition in PLATFORM_DEFINITIONS
 )

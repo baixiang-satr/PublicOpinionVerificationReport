@@ -14,6 +14,7 @@ def test_auth_registry_covers_all_34_template_platforms_once() -> None:
     assert len(policy_keys) == 34
     assert policy_keys == catalog_keys
     assert all(policy.probe_url.startswith("https://") for policy in AUTH_POLICIES)
+    assert all(policy.requires_valid_state for policy in AUTH_POLICIES)
     assert all(
         auth_policy_for_url(policy.probe_url) == policy
         for policy in AUTH_POLICIES
@@ -46,3 +47,13 @@ def test_douyin_share_short_link_routes_to_douyin_policy() -> None:
 
     assert policy is not None
     assert policy.platform_key == "douyin"
+
+
+def test_given_wechat_urls_route_to_login_profiles() -> None:
+    official = auth_policy_for_url(
+        "https://mp.weixin.qq.com/s/Oxxb7Lc4zEUsbbYXoOtXNg"
+    )
+    video = auth_policy_for_url("https://weixin.qq.com/sph/AiQbKWmgTm")
+
+    assert official is not None and official.platform_key == "wechat_official"
+    assert video is not None and video.platform_key == "wechat_video"

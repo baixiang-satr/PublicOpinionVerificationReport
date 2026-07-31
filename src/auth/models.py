@@ -32,6 +32,7 @@ class PlatformAuthPolicy:
     auth_scope: str
     phone_assist: bool = True
     fallback_probe_urls: tuple[str, ...] = ()
+    requires_valid_state: bool = False
 
     @property
     def probe_candidates(self) -> tuple[str, ...]:
