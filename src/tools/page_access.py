@@ -14,6 +14,16 @@ from src.domain.models import RecordStatus
 
 # A jammed renderer (anti-bot loops) must never block barrier inspection.
 _EVALUATE_TIMEOUT_SECONDS = 5.0
+_STRUCTURED_STATE_SCRIPT = """
+() => (
+  window.__PRELOADED_STATE__
+  || window.__INITIAL_STATE__
+  || window.__SSR_DATA__
+  || window._SSR_HYDRATED_DATA
+  || window.__NEXT_DATA__
+  || null
+)
+"""
 
 
 class AccessKind(StrEnum):
@@ -97,6 +107,7 @@ _CAPTCHA_TEXT_MARKERS = (
 
 # ── 登录文本特征 ───────────────────────────────────────────────────────
 _LOGIN_TEXT_MARKERS = (
+    "前方有点拥堵，请登录后使用",
     "请先登录",
     "登录后查看",
     "扫码登录",
@@ -275,7 +286,12 @@ async def inspect_page_access(
     # pages keep their title even before hydration finishes); "empty" may
     # only be declared when the title is missing too — otherwise slow/
     # jammed hydration gets misclassified as an empty shell.
-    if hasattr(page, "locator") and len(normalized) < 12 and not title.strip():
+    if (
+        hasattr(page, "locator")
+        and len(normalized) < 12
+        and not title.strip()
+        and not await _has_extractable_structured_state(page)
+    ):
         return AccessBarrier(
             AccessKind.EMPTY_RENDERED_PAGE,
             "EMPTY_RENDERED_PAGE",
@@ -380,6 +396,26 @@ async def _read_page_snapshot(page: Any) -> tuple[str, str]:
         except Exception:
             pass
     return title, body
+
+
+async def _has_extractable_structured_state(page: Any) -> bool:
+    """Allow an empty SSR shell through when its hydration state has content."""
+
+    if not hasattr(page, "evaluate"):
+        return False
+    try:
+        payload = await asyncio.wait_for(
+            page.evaluate(_STRUCTURED_STATE_SCRIPT),
+            timeout=_EVALUATE_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return False
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+    return payload_has_content(payload)
 
 
 def _looks_like_json(body: str) -> bool:

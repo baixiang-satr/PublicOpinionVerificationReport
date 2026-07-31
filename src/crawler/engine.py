@@ -279,6 +279,13 @@ class CrawlEngine:
         await wait_with_cancellation(random.uniform(0.3, 1.0), cancel_event)
         await self._rate_limiter.wait(result.task.normalized_url, cancel_event)
         manual_definition = self._router.definition_for(result.task.normalized_url)
+        if manual_definition is not None:
+            # Preserve a truthful worksheet route even when navigation,
+            # captcha handling or parsing fails before the normal route step.
+            result.route = self._router.route(
+                result.task.normalized_url,
+                result.page,
+            )
         if manual_definition is not None and manual_definition.manual_only:
             raise CrawlFailure(
                 TaskError(

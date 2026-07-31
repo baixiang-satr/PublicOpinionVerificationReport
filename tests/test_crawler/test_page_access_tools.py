@@ -26,6 +26,23 @@ class SnapshotPage:
         self._index = min(self._index + 1, len(self._snapshots) - 1)
 
 
+class EmptySsrPage:
+    url = "https://baijiahao.baidu.com/s?id=target"
+
+    async def evaluate(self, script: str) -> dict[str, object]:
+        if "__PRELOADED_STATE__" in script:
+            return {
+                "articleInfo": {
+                    "title": "SSR 标题",
+                    "content": "SSR 正文",
+                }
+            }
+        return {"title": "", "body": ""}
+
+    def locator(self, _selector: str) -> object:
+        return object()
+
+
 @pytest.mark.asyncio
 async def test_read_page_snapshot_is_bounded_when_renderer_hangs(
     monkeypatch: pytest.MonkeyPatch,
@@ -54,6 +71,12 @@ async def test_read_page_snapshot_is_bounded_when_renderer_hangs(
         (
             "https://passport.weibo.com/visitor/visitor",
             {"title": "微博", "body": ""},
+            AccessKind.LOGIN,
+            "LOGIN_REQUIRED",
+        ),
+        (
+            "https://weibo.com/123/status",
+            {"title": "微博", "body": "前方有点拥堵，请登录后使用"},
             AccessKind.LOGIN,
             "LOGIN_REQUIRED",
         ),
@@ -168,6 +191,13 @@ async def test_content_shaped_json_is_allowed_for_structured_extraction() -> Non
     )
 
     assert await inspect_page_access(page, url, url) is None
+
+
+@pytest.mark.asyncio
+async def test_empty_ssr_shell_with_article_state_is_allowed() -> None:
+    url = EmptySsrPage.url
+
+    assert await inspect_page_access(EmptySsrPage(), url, url) is None
 
 
 @pytest.mark.asyncio
