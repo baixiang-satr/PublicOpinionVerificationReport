@@ -1,11 +1,8 @@
-"""Persistent interactive capture browser: one session per app run.
+"""Interactive capture browser state shared by the capture runner.
 
-The session owns a single headed browser (Edge→Chrome→Chromium fallback)
-with one context per platform.  Contexts keep their live cookies in memory
-for the whole app session — a login completed inside the capture window
-survives every later capture — and VALID platform profiles are refreshed
-back to the encrypted store on save/close so cookie rotation persists
-across app restarts.
+Each capture may reuse a platform context while it is active. When capture
+finishes, the current state is persisted and the visible browser is closed;
+the next capture restores the encrypted platform state into a fresh window.
 
 Threading rule: a session lives on ONE event loop (the capture thread).
 Playwright objects must never cross loop boundaries, so every method is a
@@ -14,10 +11,11 @@ coroutine scheduled by the owning runner.
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from datetime import datetime
-import logging
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.store import AuthProfileStore
@@ -28,6 +26,7 @@ from src.screenshot.browser_options import (
     browser_launch_options,
     launch_headed_with_fallback,
 )
+from src.screenshot.browser_runtime import close_quietly
 from src.screenshot.region_capture_scripts import BINDING_NAME, OVERLAY_JS
 
 logger = logging.getLogger(__name__)
@@ -164,17 +163,14 @@ class CaptureSession:
                 )
 
     async def close(self) -> None:
-        """Persist states and tear everything down (app shutdown)."""
+        """Persist states and tear everything down after a capture."""
 
         try:
             await self.save_states()
         finally:
             await self._teardown_contexts()
             if self._browser is not None:
-                try:
-                    await self._browser.close()
-                except Exception:  # noqa: BLE001 — 关闭阶段尽力而为
-                    pass
+                await close_quietly(self._browser, timeout=3.0)
                 self._browser = None
             await self._stop_playwright()
 
@@ -187,16 +183,16 @@ class CaptureSession:
         contexts = list(self._contexts.values())
         self._contexts.clear()
         self._browse_pages.clear()
-        for context in contexts:
-            try:
-                await context.close()
-            except Exception:  # noqa: BLE001 — 已关闭则忽略
-                pass
+        if contexts:
+            await asyncio.gather(
+                *(close_quietly(context, timeout=2.0) for context in contexts),
+                return_exceptions=True,
+            )
 
     async def _stop_playwright(self) -> None:
         if self._playwright is not None:
             try:
-                await self._playwright.stop()
+                await asyncio.wait_for(self._playwright.stop(), timeout=3.0)
             except Exception:  # noqa: BLE001 — 尽力而为
                 pass
             self._playwright = None

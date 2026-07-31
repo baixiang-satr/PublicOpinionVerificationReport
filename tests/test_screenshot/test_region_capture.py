@@ -13,8 +13,8 @@ from src.screenshot import region_capture
 from src.screenshot.region_capture import (
     RegionCaptureResult,
     RegionCaptureService,
-    _CaptureState,
     _capture_name,
+    _CaptureState,
     _clip_from_payload,
     _save_region,
     _selection_html,
@@ -42,6 +42,24 @@ class FakePage:
 
     def scripts(self) -> list[str]:
         return [script for script, _args in self.evaluated]
+
+
+class HorizontallyOffsetPage(FakePage):
+    async def evaluate(self, script: str, *args: object) -> object:
+        self.evaluated.append((script, args))
+        if "documentWidth" in script and "needsHorizontalAlignment" in script:
+            return {
+                "viewportWidth": 1_440,
+                "documentWidth": 4_000,
+                "height": 1_200,
+                "focusX": 1_100,
+                "scrollX": 0,
+                "needsHorizontalAlignment": True,
+            }
+        return None
+
+    async def wait_for_timeout(self, _milliseconds: int) -> None:
+        return None
 
 
 class FakeContext:
@@ -176,6 +194,7 @@ class FakeSession:
         self._page = page
         self.handler = None
         self.saved = 0
+        self.closed = 0
 
     async def context_for(self, _key: str, _storage_state: object) -> FakeSessionContext:
         return self._context
@@ -188,6 +207,10 @@ class FakeSession:
 
     async def save_states(self) -> None:
         self.saved += 1
+
+    async def close(self) -> None:
+        self.closed += 1
+        await self.save_states()
 
 
 @pytest.mark.asyncio
@@ -218,7 +241,8 @@ async def test_session_capture_registers_and_clears_binding_handler(
 
     assert result.status == "cancelled"
     assert session.handler is None  # 结束后清空，不影响下一次截图
-    assert session.saved == 1  # 会话登录态回写
+    assert session.saved == 1  # 关闭前登录态回写
+    assert session.closed == 1  # 完成后自动退出浏览器
     assert page.navigated == ["https://www.douyin.com/video/123"]
     assert context.listeners.get("page") == []  # 监听不累积
     assert page.listeners.get("close") == []
@@ -271,6 +295,27 @@ async def test_arm_grabs_screen_and_opens_selection_tab(
     assert "data:image/jpeg;base64," in state.select_page.content
     # 截屏前先隐藏浏览页工具条
     assert any("__poirRegionCaptureHide" in script for script in state.browse_page.scripts())
+
+
+@pytest.mark.asyncio
+async def test_arm_aligns_cross_site_horizontal_overflow_before_screen_grab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(region_capture, "_ARM_DELAY_SECONDS", 0)
+    context = FakeContext()
+    page = HorizontallyOffsetPage()
+    state = _CaptureState(context=context, browse_page=page)
+
+    await _service(_striped_image)._arm(state)
+
+    scroll_calls = [
+        args
+        for script, args in page.evaluated
+        if "window.scrollTo(left, top)" in script
+    ]
+    assert scroll_calls == [(1_100,)]
+    assert state.image is not None
+    assert state.select_page is context.pages[0]
 
 
 @pytest.mark.asyncio

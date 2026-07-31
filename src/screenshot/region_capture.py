@@ -12,11 +12,12 @@ from the page, capturing never scrolls or shifts the page.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from collections.abc import Callable
 import json
 import logging
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from src.config.settings import TaskConfig
 from src.crawler.navigation import navigate_page, stabilize_rendered_page
@@ -27,9 +28,10 @@ from src.screenshot.browser_options import (
 )
 from src.screenshot.capture_session import GUEST_KEY, CaptureSession
 from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
+from src.screenshot.page_layout import align_page_for_capture
 from src.screenshot.region_capture_helpers import (
-    _CaptureState,
     _capture_name,
+    _CaptureState,
     _clip_from_payload,
     _grab_full_screen,
     _hide_overlay,
@@ -69,12 +71,12 @@ class RegionCaptureResult:
 
 
 class RegionCaptureService:
-    """Owns one interactive capture flow; with a session the window persists."""
+    """Own one interactive capture flow and close its window on completion."""
 
     def __init__(
         self,
         config: TaskConfig,
-        screen_grabber: Callable[[], "Image.Image"] | None = None,
+        screen_grabber: Callable[[], Image.Image] | None = None,
         session: CaptureSession | None = None,
     ) -> None:
         self._config = config
@@ -122,7 +124,7 @@ class RegionCaptureService:
         assets_dir: Path,
         cancel_event: asyncio.Event | None,
     ) -> RegionCaptureResult:
-        """Run the capture inside the persistent session window."""
+        """Run the capture and persist its login state before closing."""
 
         session = self._session
         assert session is not None
@@ -193,7 +195,11 @@ class RegionCaptureService:
             except Exception:  # noqa: BLE001 — 页面/上下文可能已关闭
                 pass
             session.set_binding_handler(None)
-            await session.save_states()
+            # Saving a selection is the terminal action. Close every page,
+            # context and the owned browser so the UI cannot remain stuck
+            # behind a visible capture window. ``close`` persists VALID
+            # platform state first, so later captures/crawls still reuse it.
+            await session.close()
 
     async def _capture_standalone(
         self,
@@ -357,6 +363,11 @@ class RegionCaptureService:
 
         if state.select_page is not None or state.browse_page is None:
             return
+        # Some sites expand the document with off-screen placeholders and
+        # render the real article/profile mostly beyond the right edge. Align
+        # the live page immediately before the frozen OS screenshot so this
+        # cross-site layout defect cannot leak into manual evidence captures.
+        await align_page_for_capture(state.browse_page)
         await _hide_overlay(state.browse_page)
         await asyncio.sleep(_ARM_DELAY_SECONDS)
         loop = asyncio.get_running_loop()
