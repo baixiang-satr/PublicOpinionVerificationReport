@@ -5,9 +5,13 @@ split from platform_catalog.py to keep each module under the 500-line limit.
 """
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from src.crawler.platform_types import ExtractorFamily, PlatformDefinition, _selectors
+from src.crawler.platform_wechat_data import (
+    WECHAT_VIDEO_INCLUDE_PATTERNS,
+    WECHAT_VIDEO_SELECTORS,
+)
 
 # These public sites appeared in field tests, but the immutable workbook has no
 # truthful platform enum for them. Keep the distinction explicit so callers can
@@ -207,15 +211,32 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         "公众号",
         "百度_百家号_公众号",
         ExtractorFamily.ARTICLE,
-        ("baijiahao.baidu.com",),
+        ("baijiahao.baidu.com", "mbd.baidu.com"),
         _selectors(
-            title=(".article-title", "h1"),
-            content_text=(".article-content", "article"),
+            title=(
+                ".article-title",
+                "h1",
+                "[class*='articleTitle']",
+                "[class*='detail-title']",
+                "[class*='hot-title']",
+            ),
+            content_text=(
+                ".article-content",
+                "article",
+                "[class*='articleContent']",
+                "[class*='hot-detail']",
+                "main",
+            ),
             author_name=(".author-name", "[class*='authorName']"),
             author_url=(".author-name a", "[class*='author'] a"),
-            published_at=(".date", "time"),
+            published_at=(".date", "time", "[class*='publishTime']"),
         ),
-        include_patterns=(r"/s(?:/|$|\?)", r"id="),
+        include_patterns=(
+            r"/s(?:/|$|\?)",
+            r"id=",
+            r"/builder/na/hot/detail",
+            r"/newspage/data/(?:videolanding|landingshare)",
+        ),
     ),
     PlatformDefinition(
         "wechat_video",
@@ -223,9 +244,8 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         "腾讯_微信_图文视频",
         ExtractorFamily.SOCIAL,
         ("channels.weixin.qq.com", "weixin.qq.com"),
-        _selectors(content_text=("[class*='finder'] [class*='desc']", "main"), author_name=("[class*='nickname']",), author_url=("[class*='nickname'] a", "[class*='avatar'] a")),
-        include_patterns=(r"/video", r"/finder"),
-        manual_only=True,
+        WECHAT_VIDEO_SELECTORS,
+        include_patterns=WECHAT_VIDEO_INCLUDE_PATTERNS,
     ),
     PlatformDefinition(
         "sohu_video",
