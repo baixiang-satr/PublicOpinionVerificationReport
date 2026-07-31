@@ -69,6 +69,10 @@ class ContentParser:
             self._finalize_xiaohongshu_note(merged, dedicated_snapshot)
         if definition.key == "kuaishou" and dedicated_snapshot is not None:
             self._finalize_kuaishou_video(merged, dedicated_snapshot)
+        if definition.key == "netease_news" and dedicated_snapshot is not None:
+            self._finalize_netease_article(merged, dedicated_snapshot)
+        if definition.key == "sohu_video" and dedicated_snapshot is not None:
+            self._finalize_sohu_video(merged, dedicated_snapshot)
         return merged
 
     @staticmethod
@@ -265,3 +269,71 @@ class ContentParser:
                             0.94,
                         )
                     )
+
+    def _finalize_netease_article(
+        self,
+        merged: PageData,
+        dedicated: PageData,
+    ) -> None:
+        """Keep the article body/source above comments and platform metadata."""
+
+        self._restore_dedicated_fields(merged, dedicated)
+        # Only images beneath the selected article body may enter OCR.  The
+        # generic page collector also sees recommendation cards and avatars.
+        merged.image_urls = list(dedicated.image_urls)
+        self._generic.finalize(merged)
+        self._restore_dedicated_time(merged, dedicated)
+
+    def _finalize_sohu_video(
+        self,
+        merged: PageData,
+        dedicated: PageData,
+    ) -> None:
+        """Keep ID-matched player globals above navigation/player chrome."""
+
+        self._restore_dedicated_fields(merged, dedicated)
+        # Player covers and related cards are not body images or transcripts.
+        merged.image_urls = []
+        self._generic.finalize(merged)
+        self._restore_dedicated_time(merged, dedicated)
+
+    @staticmethod
+    def _restore_dedicated_fields(
+        merged: PageData,
+        dedicated: PageData,
+    ) -> None:
+        for field in (
+            "title",
+            "content_text",
+            "author_name",
+            "author_id",
+            "author_url",
+        ):
+            value = getattr(dedicated, field)
+            if value is None:
+                continue
+            setattr(merged, field, value)
+            source = dedicated.field_sources.get(field)
+            if source is not None:
+                merged.field_sources[field] = source
+                merged.field_confidences[field] = (
+                    dedicated.field_confidences.get(field, 0.9)
+                )
+
+    @staticmethod
+    def _restore_dedicated_time(
+        merged: PageData,
+        dedicated: PageData,
+    ) -> None:
+        if dedicated.published_at is None:
+            return
+        merged.published_at = dedicated.published_at
+        merged.published_at_raw = dedicated.published_at_raw
+        for field in ("published_at", "published_at_raw"):
+            source = dedicated.field_sources.get(field)
+            if source is None:
+                continue
+            merged.field_sources[field] = source
+            merged.field_confidences[field] = (
+                dedicated.field_confidences.get(field, 0.9)
+            )
