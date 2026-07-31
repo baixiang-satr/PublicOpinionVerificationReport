@@ -9,6 +9,7 @@ are searched with the same rules as a fallback.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any
 from urllib.parse import unquote
 
@@ -24,6 +25,7 @@ from src.crawler.platforms.extract_helpers import (
 from src.crawler.platforms.payload_search import epoch_at, find_mapping_with, iter_mappings, text_at
 from src.crawler.platforms.registry import register
 from src.domain.models import ExtractionSource, PageData
+from src.utils.time_utils import parse_web_published_at
 
 _RENDER_DATA_SCRIPT = """
 () => {
@@ -42,7 +44,7 @@ class DouyinExtractor:
         document: RenderedDocument,
         definition: PlatformDefinition,
     ) -> PageData | None:
-        detail, from_api = await self._find_aweme_detail(page, document)
+        detail, detail_source = await self._find_aweme_detail(page, document)
         if detail is None:
             return None
         author = detail.get("author")
@@ -52,6 +54,12 @@ class DouyinExtractor:
         applied = apply_json_fields(
             data,
             {
+                # Douyin videos do not expose a separate semantic title.  Use
+                # the requested aweme's caption as the title too, so a noisy
+                # hydration/config node cannot later supply an unrelated
+                # "title" while TemplateRowMapper still avoids duplicating it
+                # inside 信息内容.
+                "title": text_at(detail, ("desc", "caption")),
                 "content_text": text_at(detail, ("desc", "caption")),
                 "author_name": text_at(author, ("nickname", "unique_id")),
                 "author_id": text_at(author, ("unique_id", "short_id", "uid")),
@@ -63,23 +71,38 @@ class DouyinExtractor:
                     epoch_at(detail, ("createTime", "create_time"))
                 ),
             },
-            source=(
-                ExtractionSource.NETWORK_JSON if from_api else ExtractionSource.EMBEDDED_JSON
-            ),
+            source=detail_source or ExtractionSource.EMBEDDED_JSON,
         )
+        # The fixed template wants the time displayed on the content page.
+        # Douyin's detail JSON keeps seconds, while the visible page normally
+        # shows minute precision (e.g. 2026-07-29 17:56).  Preserve that
+        # visible value and normalize the omitted seconds to :00.
+        visible_time = _visible_published_at(document)
+        visible_published = (
+            parse_web_published_at(visible_time) if visible_time else None
+        )
+        if visible_published is not None:
+            data.published_at_raw = visible_time
+            data.published_at = visible_published
+            data.field_sources["published_at_raw"] = ExtractionSource.PLATFORM_DOM
+            data.field_sources["published_at"] = ExtractionSource.PLATFORM_DOM
+            data.field_confidences["published_at_raw"] = 0.86
+            data.field_confidences["published_at"] = 0.86
         return data if applied and found_any(data, "content_text", "author_name") else None
 
     async def _find_aweme_detail(
         self,
         page: Any,
         document: RenderedDocument,
-    ) -> tuple[Mapping[str, Any] | None, bool]:
+    ) -> tuple[Mapping[str, Any] | None, ExtractionSource | None]:
         render_data = await evaluate_json(page, _RENDER_DATA_SCRIPT)
-        payloads: list[Any] = []
         if render_data is not None:
-            payloads.append(render_data)
-        payloads.extend(document.network_payloads)
-        payloads.extend(document.embedded_payloads)
+            detail = _aweme_detail(
+                render_data,
+                wanted_id=douyin_aweme_id(document.url),
+            )
+            if detail is not None:
+                return detail, ExtractionSource.EMBEDDED_JSON
         wanted_id = douyin_aweme_id(document.url)
         # Video pages also load detail payloads for *recommendations*; only
         # the node matching the requested aweme id is truthful evidence.
@@ -87,38 +110,90 @@ class DouyinExtractor:
         # let the generic DOM extraction describe the *visible* page instead
         # of pinning a recommendation's fields onto this URL.
         if wanted_id:
-            for payload in payloads:
+            for payload in document.network_payloads:
                 detail = _aweme_detail(payload, wanted_id=wanted_id)
                 if detail is not None:
-                    return detail, False
+                    return detail, ExtractionSource.NETWORK_JSON
+            for payload in document.embedded_payloads:
+                detail = _aweme_detail(payload, wanted_id=wanted_id)
+                if detail is not None:
+                    return detail, ExtractionSource.EMBEDDED_JSON
             detail = await douyin_aweme_detail(page, wanted_id)
             if detail is not None:
-                return detail, True
-            return None, False
-        for payload in payloads:
+                return detail, ExtractionSource.NETWORK_JSON
+            return None, None
+        for payload, source in (
+            *((item, ExtractionSource.NETWORK_JSON) for item in document.network_payloads),
+            *((item, ExtractionSource.EMBEDDED_JSON) for item in document.embedded_payloads),
+        ):
             detail = _aweme_detail(payload)
             if detail is not None:
-                return detail, False
-        return None, False
+                return detail, source
+        return None, None
 
 
 def _aweme_detail(
     payload: Any,
     wanted_id: str | None = None,
 ) -> Mapping[str, Any] | None:
+    # Current web detail responses use:
+    #   {"aweme_detail": {"aweme_id": ..., "desc": ..., "create_time": ...}}
+    # This direct shape must be checked before the older RENDER_DATA
+    # ``aweme.detail`` shape.  Missing it caused the generic extractor to
+    # select an unrelated "厂牌排名规则" configuration node.
+    if isinstance(payload, Mapping):
+        direct = payload.get("aweme_detail")
+        if isinstance(direct, Mapping) and _looks_like_aweme(direct):
+            if _id_matches(direct, wanted_id):
+                return direct
     holder = find_mapping_with(payload, ("aweme",))
     if holder is not None:
         aweme = holder.get("aweme")
         if isinstance(aweme, Mapping):
             detail = aweme.get("detail")
-            if isinstance(detail, Mapping) and ("desc" in detail or "author" in detail):
+            if isinstance(detail, Mapping) and _looks_like_aweme(detail):
                 if _id_matches(detail, wanted_id):
                     return detail
     for mapping in iter_mappings(payload):
-        if "desc" in mapping and "createTime" in mapping and "author" in mapping:
+        if _looks_like_aweme(mapping):
             if _id_matches(mapping, wanted_id):
                 return mapping
     return None
+
+
+def _looks_like_aweme(node: Mapping[str, Any]) -> bool:
+    """Require content+author and either an id or a plausible create time."""
+
+    return (
+        ("desc" in node or "caption" in node)
+        and "author" in node
+        and (
+            "aweme_id" in node
+            or "awemeId" in node
+            or "create_time" in node
+            or "createTime" in node
+        )
+    )
+
+
+def _visible_published_at(document: RenderedDocument) -> str | None:
+    selected = (
+        document.platform_values.get("published_at")
+        or document.platform_values.get("published_at_raw")
+    )
+    if selected:
+        return selected
+    # Current Douyin video DOM no longer consistently exposes the old
+    # data-e2e attribute, but its rendered evidence text includes a labelled
+    # value such as 「发布时间：2026-07-29 17:56」.  Require that label so dates
+    # from recommended cards cannot be mistaken for the target video.
+    match = re.search(
+        r"(?:发布时间|发布于)\s*[:：]?\s*"
+        r"((?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}"
+        r"\s+\d{1,2}:\d{2}(?::\d{2})?)",
+        document.visible_text,
+    )
+    return match.group(1) if match else None
 
 
 def _id_matches(node: Mapping[str, Any], wanted_id: str | None) -> bool:

@@ -23,6 +23,7 @@ from src.crawler.platforms.tieba import TiebaExtractor
 from src.crawler.platforms.weibo import WeiboExtractor, _parse_weibo_time
 from src.crawler.platforms.xiaohongshu import XiaohongshuExtractor
 from src.crawler.platforms.zhihu import ZhihuExtractor
+from src.domain.models import ExtractionSource
 
 
 class FakePage:
@@ -108,6 +109,40 @@ def test_douyin_prefers_node_matching_requested_aweme_id() -> None:
     assert data.author_name == "目标作者"
     assert data.author_id == "target001"
     assert data.author_url == "https://www.douyin.com/user/SECT"
+
+
+def test_douyin_reads_current_aweme_detail_shape_and_visible_minute_time() -> None:
+    """Current web API uses top-level aweme_detail + snake_case fields."""
+
+    target = {
+        "aweme_id": "7667886625339225445",
+        "desc": "道路千万条，安全第一条。",
+        "create_time": 1_785_318_978,
+        "author": {
+            "nickname": "建柱种苗-李文亮",
+            "uid": "1234567890123456789",
+            "sec_uid": "SECCURRENT",
+        },
+    }
+    page = FakePage({})
+    document = RenderedDocument(
+        url="https://www.douyin.com/video/7667886625339225445",
+        network_payloads=({"aweme_detail": target},),
+        visible_text="道路千万条，安全第一条。\n发布时间：2026-07-29 17:56",
+    )
+
+    data = _run(DouyinExtractor().extract(page, document, _definition("douyin")))
+
+    assert data is not None
+    assert data.title == "道路千万条，安全第一条。"
+    assert data.content_text == "道路千万条，安全第一条。"
+    assert data.author_name == "建柱种苗-李文亮"
+    assert data.author_url == "https://www.douyin.com/user/SECCURRENT"
+    assert data.published_at_raw == "2026-07-29 17:56"
+    assert data.published_at is not None
+    assert data.published_at.strftime("%Y-%m-%d %H:%M:%S") == "2026-07-29 17:56:00"
+    assert data.field_sources["content_text"] == ExtractionSource.NETWORK_JSON
+    assert data.field_sources["published_at"] == ExtractionSource.PLATFORM_DOM
 
 
 def test_douyin_returns_none_when_only_recommendations_present(
@@ -359,7 +394,40 @@ def test_toutiao_reads_article_info() -> None:
     assert data.title == "头条标题"
     assert data.content_text == "头条正文"
     assert data.author_name == "头条媒体"
+    assert data.author_id == "m1"
     assert data.published_at is not None
+
+
+def test_toutiao_reads_account_from_media_info_variants() -> None:
+    payload = {
+        "articleInfo": {
+            "title": "头条标题",
+            "content": "<p>头条正文</p>",
+            "publishTime": 1_751_000_000,
+            "media_info": {
+                "nickname": "头条作者",
+                "mediaId": "media-7788",
+                "userUrl": "https://www.toutiao.com/c/user/token/public-token/",
+            },
+        }
+    }
+    document = RenderedDocument(
+        url="https://www.toutiao.com/article/7788/",
+        embedded_payloads=(payload,),
+    )
+
+    data = _run(
+        ToutiaoExtractor().extract(
+            FakePage({}),
+            document,
+            _definition("toutiao"),
+        )
+    )
+
+    assert data is not None
+    assert data.author_name == "头条作者"
+    assert data.author_id == "media-7788"
+    assert data.author_url == "https://www.toutiao.com/c/user/token/public-token/"
 
 
 def test_xigua_reads_video_node() -> None:

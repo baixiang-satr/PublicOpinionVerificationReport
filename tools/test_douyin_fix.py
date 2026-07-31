@@ -10,11 +10,14 @@
     .venv\\Scripts\\python.exe tools\\test_douyin_fix.py --headed       # 有头（可人工过验证）
     .venv\\Scripts\\python.exe tools\\test_douyin_fix.py --precheck-only
 
-退出码：两条 URL 全部拿到 正文+昵称+内容页截图 为 0，否则 1。
+退出码：两条 URL 全部拿到正确正文、昵称、内容页截图和个人页截图，
+且第二条发布时间为 2026-07-29 17:56:00 时为 0，否则 1。
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
+from datetime import datetime
 from pathlib import Path
 import sys
 import time
@@ -29,6 +32,16 @@ URLS = (
     "https://v.douyin.com/erOICsACek8/",
     "https://v.douyin.com/6OYduQ_wgKk/",
 )
+EXPECTED = {
+    1: {
+        "content": "准备 开战了",
+        "published_at": None,
+    },
+    2: {
+        "content": "道路千万条，安全第一条",
+        "published_at": "2026-07-29 17:56:00",
+    },
+}
 
 
 def _config(headed: bool, edge: bool = False) -> TaskConfig:
@@ -50,7 +63,10 @@ def _config(headed: bool, edge: bool = False) -> TaskConfig:
     )
 
 
-async def precheck(config: TaskConfig) -> None:
+async def precheck(
+    config: TaskConfig,
+    evidence_ids: tuple[int, ...] = (1, 2),
+) -> None:
     """短链解析 + API 兜底快速验证（复用浏览器会话与登录态）。"""
 
     from playwright.async_api import async_playwright
@@ -76,7 +92,8 @@ async def precheck(config: TaskConfig) -> None:
     try:
         context = await browser.new_context(**browser_context_options(config, state))
         page = await context.new_page()
-        for url in URLS:
+        for evidence_id in evidence_ids:
+            url = URLS[evidence_id - 1]
             print(f"\n  {url}")
             resolved = await resolve_share_link(page, url)
             print(f"    短链解析: {resolved or '失败'}")
@@ -100,11 +117,18 @@ async def precheck(config: TaskConfig) -> None:
         await playwright.stop()
 
 
-async def crawl(config: TaskConfig, output_dir: Path) -> bool:
+async def crawl(
+    config: TaskConfig,
+    output_dir: Path,
+    evidence_ids: tuple[int, ...] = (1, 2),
+) -> bool:
     """完整管线实测两条 URL，打印字段级结果。"""
 
     engine = CrawlEngine(config)
-    tasks = [UrlTask(index + 1, url, url) for index, url in enumerate(URLS)]
+    tasks = [
+        UrlTask(evidence_id, URLS[evidence_id - 1], URLS[evidence_id - 1])
+        for evidence_id in evidence_ids
+    ]
     started = time.time()
     results = await engine.run(tasks, output_dir)
     elapsed = time.time() - started
@@ -114,11 +138,33 @@ async def crawl(config: TaskConfig, output_dir: Path) -> bool:
     for result in results:
         page = result.page
         assets = result.assets
+        expected = EXPECTED[result.task.evidence_id]
+        content = page.content_text or ""
+        content_ok = expected["content"] in content and "厂牌榜单值" not in content
+        published = (
+            page.published_at.strftime("%Y-%m-%d %H:%M:%S")
+            if page.published_at
+            else ""
+        )
+        time_ok = (
+            expected["published_at"] is None
+            or published == expected["published_at"]
+        )
+        page_shot_ok = bool(
+            assets.page_screenshot
+            and Path(assets.page_screenshot).is_file()
+        )
+        author_shot_ok = bool(
+            assets.author_screenshot
+            and Path(assets.author_screenshot).is_file()
+        )
         ok = (
             result.status == RecordStatus.ASSETS_READY
-            and bool(page.content_text)
+            and content_ok
+            and time_ok
             and bool(page.author_name)
-            and assets.page_screenshot is not None
+            and page_shot_ok
+            and author_shot_ok
         )
         all_ok = all_ok and ok
         icon = "✅" if ok else "❌"
@@ -126,30 +172,63 @@ async def crawl(config: TaskConfig, output_dir: Path) -> bool:
         print(f"    状态: {result.status.value} | final_url: {page.final_url}")
         if page.redirect_chain:
             print(f"    跳转链: {' -> '.join(page.redirect_chain)}")
-        print(f"    标题/正文: {str(page.title)[:30]!r} / {len(page.content_text or '')} 字")
+        print(f"    标题/正文: {str(page.title)[:30]!r} / {content!r}")
         print(
             f"    作者: {page.author_name!r} | 账号: {page.author_id!r}"
             f"{'（昵称兜底）' if page.author_id_is_fallback else ''}"
         )
-        print(f"    发布时间: {page.published_at}")
+        print(f"    发布时间: {published or '无'}")
         print(
-            f"    截图: 内容页={'有' if assets.page_screenshot else '无'}"
-            f" 个人页={'有' if assets.author_screenshot else '无'}"
+            f"    截图: 内容页={'有' if page_shot_ok else '无'}"
+            f" 个人页={'有' if author_shot_ok else '无'}"
         )
         for error in result.errors[:3]:
             print(f"    错误 [{error.code}]: {error.message[:100]}")
     return all_ok
 
 
+def _arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="两条真实抖音视频的专项验收工具")
+    parser.add_argument("--headed", action="store_true", help="使用有头浏览器")
+    parser.add_argument("--edge", action="store_true", help="使用本机 Edge")
+    parser.add_argument(
+        "--precheck-only",
+        action="store_true",
+        help="只检查短链解析与公共 API 兜底",
+    )
+    parser.add_argument(
+        "--skip-precheck",
+        action="store_true",
+        help="直接执行完整爬取，减少对抖音的重复访问",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="指定截图输出目录；默认每次创建独立时间戳目录",
+    )
+    parser.add_argument(
+        "--only",
+        type=int,
+        choices=(1, 2),
+        help="只验收第 1 或第 2 条真实短链",
+    )
+    return parser.parse_args()
+
+
 async def main() -> int:
-    headed = "--headed" in sys.argv
-    edge = "--edge" in sys.argv
-    precheck_only = "--precheck-only" in sys.argv
+    args = _arguments()
+    headed = bool(args.headed)
+    edge = bool(args.edge)
+    precheck_only = bool(args.precheck_only)
+    evidence_ids = (int(args.only),) if args.only else (1, 2)
     config = _config(headed, edge)
-    output_dir = (
+    output_dir = args.output_dir or (
         Path(__file__).resolve().parents[1]
         / "output"
-        / ("test-douyin-headed" if headed else "test-douyin-headless")
+        / (
+            f"test-douyin-{'headed' if headed else 'headless'}-"
+            f"{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        )
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -159,12 +238,13 @@ async def main() -> int:
         f"({'有头' if headed else '无头'}{' + Edge' if edge else ''} 模式)"
     )
     print("=" * 70)
-    print("\n[1/2] 分层预检（短链解析 + API 兜底）")
-    await precheck(config)
+    if not args.skip_precheck:
+        print("\n[1/2] 分层预检（短链解析 + API 兜底）")
+        await precheck(config, evidence_ids)
     if precheck_only:
         return 0
     print("\n[2/2] 完整爬取管线")
-    ok = await crawl(config, output_dir)
+    ok = await crawl(config, output_dir, evidence_ids)
     print("\n" + ("全部通过 ✅" if ok else "仍有记录未达标 ❌"))
     return 0 if ok else 1
 
