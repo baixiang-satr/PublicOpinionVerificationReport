@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import re
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import datetime
-import os
 from pathlib import Path, PurePosixPath
-import re
 from typing import Any
 from xml.etree import ElementTree as ET
-from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from src.domain.models import TemplateRow
 from src.domain.template_schema import (
@@ -25,7 +25,6 @@ from src.export.writer_models import (
 )
 from src.utils.file_utils import split_attachment_names
 
-
 _MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _DOC_REL = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -36,6 +35,7 @@ _CELL_REF = re.compile(r"^([A-Z]+)(\d+)$")
 _INVALID_XML = re.compile(
     "[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]"
 )
+_DATETIME_FORMAT_CODE = "yyyy-mm-dd hh:mm:ss"
 
 ET.register_namespace("", _MAIN)
 ET.register_namespace("r", _DOC_REL)
@@ -62,7 +62,11 @@ class OoxmlTemplateWriter:
             raise TemplateIntegrityError(
                 f"Worksheet order changed: {tuple(sheet_targets)}"
             )
-        replacements: dict[str, bytes] = {}
+        replacements: dict[str, bytes] = {
+            "xl/styles.xml": _rewrite_datetime_number_format(
+                package["xl/styles.xml"]
+            )
+        }
         for sheet_name, target in sheet_targets.items():
             layout = SHEET_LAYOUTS[sheet_name]
             replacements[target] = _rewrite_sheet(
@@ -191,6 +195,32 @@ def _write_package(
         raise
 
 
+def _rewrite_datetime_number_format(xml: bytes) -> bytes:
+    """Match the workbook's date display to its yyyy-mm-dd header contract."""
+
+    root = ET.fromstring(xml)
+    number_formats = root.find(f"{{{_MAIN}}}numFmts")
+    if number_formats is None:
+        return xml
+    changed = False
+    for item in number_formats.findall(f"{{{_MAIN}}}numFmt"):
+        code = str(item.get("formatCode") or "").casefold()
+        if (
+            "yyyy" in code
+            and "mm" in code
+            and "dd" in code
+            and "hh" in code
+            and "ss" in code
+        ):
+            item.set("formatCode", _DATETIME_FORMAT_CODE)
+            changed = True
+    return (
+        ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        if changed
+        else xml
+    )
+
+
 def _sheet_targets(package: dict[str, bytes]) -> dict[str, str]:
     workbook = ET.fromstring(package["xl/workbook.xml"])
     relations = ET.fromstring(package["xl/_rels/workbook.xml.rels"])
@@ -260,10 +290,17 @@ def _rewrite_sheet(
     for row in existing_rows:
         if int(row.get("r") or 0) >= layout.data_start_row:
             sheet_data.remove(row)
+    column_styles = _column_styles(root)
     for offset, template_row in enumerate(rows):
         row_number = layout.data_start_row + offset
         sheet_data.append(
-            _build_row(prototype, row_number, layout, template_row)
+            _build_row(
+                prototype,
+                row_number,
+                layout,
+                template_row,
+                column_styles,
+            )
         )
     dimension = root.find(f"{{{_MAIN}}}dimension")
     if dimension is not None:
@@ -280,6 +317,7 @@ def _build_row(
     row_number: int,
     layout: SheetLayout,
     template_row: TemplateRow,
+    column_styles: dict[str, str],
 ) -> ET.Element:
     attributes = dict(prototype.attrib)
     attributes["r"] = str(row_number)
@@ -302,6 +340,12 @@ def _build_row(
             if source is not None
             else {}
         )
+        # Some template cells intentionally omit an explicit ``s`` attribute
+        # and inherit their format from ``<col style="…">``. Creating a
+        # concrete value cell without restoring that inherited style resets
+        # it to General, exposing datetimes as Excel serial numbers.
+        if "s" not in cell_attributes and column in column_styles:
+            cell_attributes["s"] = column_styles[column]
         cell_attributes["r"] = f"{column}{row_number}"
         cell = ET.SubElement(
             row,
@@ -312,6 +356,29 @@ def _build_row(
         if value is not None and str(value).strip() != "":
             _set_cell_value(cell, value)
     return row
+
+
+def _column_styles(root: ET.Element) -> dict[str, str]:
+    """Expand worksheet column styles to an A1 column-name lookup."""
+
+    styles: dict[str, str] = {}
+    columns = root.find(f"{{{_MAIN}}}cols")
+    if columns is None:
+        return styles
+    for item in columns.findall(f"{{{_MAIN}}}col"):
+        style = item.get("style")
+        if style is None:
+            continue
+        try:
+            first = int(item.get("min") or 0)
+            last = int(item.get("max") or 0)
+        except ValueError:
+            continue
+        if first < 1 or last < first:
+            continue
+        for index in range(first, min(last, 16_384) + 1):
+            styles[_column_name(index)] = style
+    return styles
 
 
 def _set_cell_value(cell: ET.Element, value: Any) -> None:

@@ -157,3 +157,38 @@ def test_row_mapper_marks_only_the_excel_safety_truncation() -> None:
     assert [error.code for error in result.errors] == [
         "CONTENT_TRUNCATED_FOR_EXCEL"
     ]
+
+
+def test_douyin_row_writes_profile_to_other_files_and_second_precision_time() -> None:
+    result = RecordResult(
+        task=UrlTask(
+            7,
+            "https://v.douyin.com/6OYduQ_wgKk/",
+            "https://v.douyin.com/6OYduQ_wgKk/",
+        ),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=RouteDecision(
+            "图文视频",
+            "字节跳动_抖音_图文视频",
+            "正文",
+        ),
+        page=PageData(
+            final_url="https://www.douyin.com/video/7667886625339225445",
+            title="道路千万条，安全第一条。",
+            content_text="道路千万条，安全第一条。",
+            author_id="85741182891",
+            author_name="建柱种苗-李文亮",
+            published_at=datetime(2026, 7, 29, 17, 56, 0),
+        ),
+        assets=AssetSet(
+            page_screenshot=Path("007.jpg"),
+            author_screenshot=Path("007主页.jpg"),
+        ),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["F"] == datetime(2026, 7, 29, 17, 56, 0)
+    assert row.values_by_column["G"] == "道路千万条，安全第一条。"
+    assert row.values_by_column["H"] == "007.jpg"
+    assert row.values_by_column["I"] == "007主页.jpg"

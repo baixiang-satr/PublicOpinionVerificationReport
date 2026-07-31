@@ -2,28 +2,33 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from collections.abc import Iterable
 import multiprocessing as mp
 import os
-from pathlib import Path
 import sys
 import time
+from collections import defaultdict
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from src.domain.models import TemplateRow
-from src.domain.template_schema import SHEET_LAYOUTS, SHEET_ORDER, SheetLayout, expected_validation_formula
-from src.utils.file_utils import split_attachment_names
+from src.domain.template_schema import (
+    SHEET_LAYOUTS,
+    SHEET_ORDER,
+    SheetLayout,
+    expected_validation_formula,
+)
 from src.export.writer_models import (
     TemplateIntegrityError,
     WorkbookInspection,
     WorkbookWriteResult,
 )
-
+from src.utils.file_utils import split_attachment_names
 
 XL_VALIDATE_LIST = 3
 EXCEL_OPERATION_TIMEOUT_SECONDS = 120
 EXCEL_BUSY_RETRY_COUNT = 3
+EXCEL_DATETIME_NUMBER_FORMAT = "yyyy-mm-dd hh:mm:ss"
 
 
 class ExcelAutomationUnavailable(RuntimeError):
@@ -243,6 +248,8 @@ class ExcelTemplateWriter:
                 (row.values_by_column.get(column),)
                 for row in rows
             )
+            if layout.field_columns.get("published_at") == column:
+                target.NumberFormat = EXCEL_DATETIME_NUMBER_FORMAT
 
     @staticmethod
     def _write_sheet_rows_cellwise(
@@ -257,6 +264,8 @@ class ExcelTemplateWriter:
                 if bool(sheet.ProtectContents) and bool(cell.Locked):
                     raise TemplateIntegrityError(f"Template input cell is locked: {layout.name}!{column}{target_row}")
                 cell.Value = value
+                if layout.field_columns.get("published_at") == column:
+                    cell.NumberFormat = EXCEL_DATETIME_NUMBER_FORMAT
 
     @staticmethod
     def _write_column_cellwise(
@@ -275,6 +284,8 @@ class ExcelTemplateWriter:
                     f"Template input cell is locked: {layout.name}!{column}{target_row}"
                 )
             cell.Value = row.values_by_column[column]
+            if layout.field_columns.get("published_at") == column:
+                cell.NumberFormat = EXCEL_DATETIME_NUMBER_FORMAT
 
     @staticmethod
     def _read_sheet_assets(sheet: Any, layout: SheetLayout) -> set[str]:
