@@ -73,6 +73,7 @@ def test_bootstrap_and_options(tmp_path: Path) -> None:
     boot = bridge.get_bootstrap()
     assert boot["options"]["max_concurrency"] == 5
     assert boot["options"]["screenshot_format"] == "png"
+    assert boot["options"]["headless"] is False
 
     bad = bridge.set_options({"max_concurrency": "abc"})
     assert bad["ok"] is False
@@ -318,6 +319,23 @@ def test_auth_start_guard(tmp_path: Path) -> None:
     runner = bridge.auth
     runner.is_running = _Running().is_running  # type: ignore[method-assign]
     assert runner.start("probe_all")[0] is False
+
+
+def test_auth_login_all_starts_batch_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_start(action: str, platform_key: str | None = None):
+        calls.append((action, platform_key))
+        return True, ""
+
+    monkeypatch.setattr(bridge.auth, "start", fake_start)
+
+    assert bridge.auth_login_all() == {"ok": True, "message": ""}
+    assert calls == [("login_all", None)]
 
 
 def test_event_sink_without_window_is_silent() -> None:

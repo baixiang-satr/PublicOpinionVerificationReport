@@ -1,14 +1,19 @@
-"""Guest-first probing and user-authorized interactive login orchestration."""
+"""Mandatory saved-state validation and user-authorized login orchestration."""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime
 import json
 from pathlib import Path
 from threading import Event
 from typing import Any
 
+from src.auth.batch import (
+    login_all_missing as run_login_all_missing,
+    probe_all_saved as run_probe_all_saved,
+)
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.probe_helpers import (
     ProgressCallback,
@@ -115,6 +120,41 @@ class AuthManagerService:
             if playwright is not None:
                 await playwright.stop()
         return results
+
+    async def probe_all_saved(
+        self,
+        *,
+        cancel_event: Event | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> list[AuthProbeResult]:
+        """Validate every platform's saved state without opening login UI."""
+
+        return await run_probe_all_saved(
+            self,
+            AUTH_POLICIES,
+            cancel_event=cancel_event,
+            on_progress=on_progress,
+        )
+
+    async def login_all_missing(
+        self,
+        *,
+        cancel_event: Event | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> list[AuthProbeResult]:
+        """Interactively establish every missing platform login once.
+
+        Existing VALID profiles are preserved and skipped.  Missing, expired,
+        or unreadable profiles are handled one platform at a time so cookies
+        and local storage remain isolated by authentication scope.
+        """
+
+        return await run_login_all_missing(
+            self,
+            AUTH_POLICIES,
+            cancel_event=cancel_event,
+            on_progress=on_progress,
+        )
 
     async def _probe_guest_in_browser(
         self,
@@ -239,6 +279,28 @@ class AuthManagerService:
                 if cancel_event is not None and cancel_event.is_set():
                     raise asyncio.CancelledError
                 if not used_saved_state and not interactive:
+                    if policy.requires_valid_state:
+                        result = AuthProbeResult(
+                            platform_key=platform_key,
+                            status=AuthStatus.AUTH_REQUIRED,
+                            checked_at=datetime.now().astimezone(),
+                            original_url=policy.probe_url,
+                            final_url=str(page.url),
+                            barrier_code="LOGIN_STATE_MISSING",
+                            message=(
+                                "该平台尚未保存已验证登录态；"
+                                "请先执行“登录 / 更新”或“首次登录全部未登录平台”。"
+                            ),
+                            used_saved_state=False,
+                        )
+                        self._store.record_result(result)
+                        _publish(
+                            on_progress,
+                            platform_key,
+                            result.status,
+                            result.message,
+                        )
+                        return result
                     result = _result(
                         platform_key,
                         AuthStatus.GUEST_OK,

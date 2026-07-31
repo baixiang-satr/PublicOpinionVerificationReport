@@ -66,7 +66,7 @@ class WebUIBridge:
                 "page_timeout_seconds": self._task_config.page_timeout_seconds,
                 "max_retries": self._task_config.max_retries,
                 "screenshot_format": self._task_config.screenshot_format,
-                "headless": self._task_config.headless,
+                "headless": False,
             },
             "has_checkpoint": self.jobs.last_checkpoint is not None,
             "session": session_overview(self._session()),
@@ -80,7 +80,8 @@ class WebUIBridge:
                 page_timeout_seconds=int(options["page_timeout_seconds"]),
                 max_retries=int(options["max_retries"]),
                 screenshot_format=str(options["screenshot_format"]),
-                headless=bool(options["headless"]),
+                # Visible mode is mandatory for every website crawler.
+                headless=False,
             )
         except (KeyError, TypeError, ValueError) as error:
             return {"ok": False, "message": f"参数无效：{error}"}
@@ -379,6 +380,10 @@ class WebUIBridge:
     def auth_probe_all(self) -> dict:
         ok, _message = self.auth.start("probe_all")
         return {"ok": ok}
+
+    def auth_login_all(self) -> dict:
+        ok, message = self.auth.start("login_all")
+        return {"ok": ok, "message": message}
 
     def auth_probe(self, platform_key: str) -> dict:
         ok, _message = self.auth.start("probe", str(platform_key))

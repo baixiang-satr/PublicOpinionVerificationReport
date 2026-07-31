@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 import src.auth.service as service_module
-from src.auth.models import AuthProbeResult, AuthStatus
+from src.auth.models import (
+    AuthProbeResult,
+    AuthStatus,
+    PlatformAuthPolicy,
+)
 from src.auth.registry import AUTH_POLICIES
 from src.auth.service import _barrier_result, filter_state_for_policy
 from src.auth.store import AuthProfileStore
@@ -117,6 +121,82 @@ async def test_probe_all_reuses_browser_but_isolates_guest_contexts(
         AuthStatus.GUEST_OK,
         AuthStatus.GUEST_OK,
     ]
+
+
+@pytest.mark.asyncio
+async def test_noninteractive_probe_requires_saved_state_even_when_page_is_public(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    contexts: list[FakeContext] = []
+    runtime = FakeRuntime(FakeBrowser(contexts))
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: FakeStarter(runtime),
+    )
+
+    async def clean_probe(
+        page: FakePage,
+        policy: PlatformAuthPolicy,
+        _config: TaskConfig,
+    ):
+        page.url = policy.probe_url
+        return None, page.url
+
+    monkeypatch.setattr(
+        service_module,
+        "_navigate_probe_candidates",
+        clean_probe,
+    )
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    manager = service_module.AuthManagerService(TaskConfig(), store)
+
+    result = await manager.probe("zhihu", use_saved_state=True, interactive=False)
+
+    assert result.status == AuthStatus.AUTH_REQUIRED
+    assert result.barrier_code == "LOGIN_STATE_MISSING"
+    assert not store.has_valid_state("zhihu")
+
+
+@pytest.mark.asyncio
+async def test_login_all_missing_skips_valid_profiles_and_logs_in_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    policies = AUTH_POLICIES[:2]
+    monkeypatch.setattr(service_module, "AUTH_POLICIES", policies)
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    store.commit_validated_state(
+        policies[0].platform_key,
+        {"cookies": [], "origins": []},
+        AuthProbeResult(
+            platform_key=policies[0].platform_key,
+            status=AuthStatus.VALID,
+            checked_at=datetime.now().astimezone(),
+            original_url=policies[0].probe_url,
+        ),
+    )
+    manager = service_module.AuthManagerService(TaskConfig(), store)
+    called: list[str] = []
+
+    async def fake_probe(
+        platform_key: str,
+        **_kwargs: object,
+    ) -> AuthProbeResult:
+        called.append(platform_key)
+        return AuthProbeResult(
+            platform_key=platform_key,
+            status=AuthStatus.VALID,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://example.test/",
+        )
+
+    monkeypatch.setattr(manager, "probe", fake_probe)
+    results = await manager.login_all_missing()
+
+    assert len(results) == 2
+    assert called == [policies[1].platform_key]
+    assert all(result.status == AuthStatus.VALID for result in results)
 
 
 class FakeResponse:

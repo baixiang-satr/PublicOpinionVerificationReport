@@ -170,7 +170,7 @@ class JobRunner(_AsyncThreadJob):
 
 
 class AuthRunner(_AsyncThreadJob):
-    """Guest probing and interactive login against AuthManagerService."""
+    """Saved-state validation and interactive login orchestration."""
 
     def __init__(self, task_config_getter, sink: EventSink) -> None:
         super().__init__(sink)
@@ -200,7 +200,15 @@ class AuthRunner(_AsyncThreadJob):
             self._thread_cancel = cancel_event
         service = self._service()
         if action == "probe_all":
-            results = await service.probe_all_guest(
+            results = await service.probe_all_saved(
+                cancel_event=cancel_event,
+                on_progress=self._emit,
+            )
+            for result in results:
+                self._emit(result.platform_key, result.status, result.message)
+            return
+        if action == "login_all":
+            results = await service.login_all_missing(
                 cancel_event=cancel_event,
                 on_progress=self._emit,
             )
