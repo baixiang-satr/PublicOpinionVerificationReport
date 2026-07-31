@@ -26,7 +26,7 @@ playwright install chromium
 
 | 模块 | 职责 | 不应承担的职责 |
 | --- | --- | --- |
-| `auth/` | 平台策略、游客探测、人工登录接力、新 context 复验和加密状态 | 保存验证码/密码、跨平台共享状态、未经复验直接提交。 |
+| `auth/` | 全平台登录门禁、人工登录接力、新 context 复验和加密状态 | 保存验证码/密码、跨平台共享状态、未经复验直接提交。 |
 | `input/` | 读取用户文件、抽取和稳定去重 URL | 路由平台、写 Excel。 |
 | `crawler/` | 页面访问、限速、重试、字段提取和平台路由 | 直接生成模板行或控制 GUI。 |
 | `crawler/platforms/` | 按平台注册的专用提取器（内嵌 JSON/网络负载/DOM 探测） | 登录、绕过验证码、修改页面。 |
@@ -57,7 +57,7 @@ playwright install chromium
 3. 写入 fixture 和路由、提取、模板映射测试。
 4. 在可访问的真实页面上做人工验证；访问受限时扩展 `tools/page_access.py` 的强特征并记录为待人工补录，而不是以猜测数据通过导出。
 
-通用目录选择器无法覆盖的平台（内嵌 JSON 水合、JSON API 直出等），在 `crawler/platforms/` 增加专用提取器：实现 `DedicatedExtractor` 协议（`platform_keys` + `extract(page, document, definition)`），在模块末尾 `register(...)` 并加入 `registry._DEFAULT_MODULES`。提取器必须只读页面、不抛异常、返回 `None` 时自动回落通用管线；配套离线 fixture 测试放在 `tests/test_crawler/test_platforms/`。网页端整体不可抓的平台（如微信视频号、抖音电商）在定义上设置 `manual_only=True`，引擎会直接转人工补录。
+通用目录选择器无法覆盖的平台（内嵌 JSON 水合、JSON API 直出等），在 `crawler/platforms/` 增加专用提取器：实现 `DedicatedExtractor` 协议（`platform_keys` + `extract(page, document, definition)`），在模块末尾 `register(...)` 并加入 `registry._DEFAULT_MODULES`。提取器必须只读页面、不抛异常、返回 `None` 时自动回落通用管线；配套离线 fixture 测试放在 `tests/test_crawler/test_platforms/`。网页端整体不可抓的平台（如抖音电商商家后台）在定义上设置 `manual_only=True`，引擎会直接转人工补录。
 
 不能通过新增“其他”平台值或篡改模板下拉选项绕过路由问题。
 
