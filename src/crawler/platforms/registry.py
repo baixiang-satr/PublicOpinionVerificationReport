@@ -23,6 +23,7 @@ _DEFAULT_MODULES: tuple[str, ...] = (
     "src.crawler.platforms.zhihu",
     "src.crawler.platforms.tieba",
     "src.crawler.platforms.baijiahao",
+    "src.crawler.platforms.wechat",
     "src.crawler.platforms.bytedance_ssr",
     "src.crawler.platforms.sohu_video",
 )

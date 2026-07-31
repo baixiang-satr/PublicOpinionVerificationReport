@@ -174,6 +174,7 @@ class HangingAssetCollector:
 async def test_engine_retries_5xx_records_status_and_closes_browser(tmp_path: Path) -> None:
     pool = FakeBrowserPool([503, 200], "https://www.zhihu.com/question/1")
     config = TaskConfig(
+        enable_auth_health_gate=False,
         max_retries=1,
         retry_base_delay_seconds=0,
         min_host_interval_seconds=0,
@@ -200,7 +201,12 @@ async def test_engine_retries_5xx_records_status_and_closes_browser(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_engine_honors_pre_set_cancellation_and_still_closes_pool(tmp_path: Path) -> None:
     pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
-    engine = CrawlEngine(TaskConfig(), browser_pool=pool, parser=StubParser(), shooter=StubShooter())
+    engine = CrawlEngine(
+        TaskConfig(enable_auth_health_gate=False),
+        browser_pool=pool,
+        parser=StubParser(),
+        shooter=StubShooter(),
+    )
     cancel_event = asyncio.Event()
     cancel_event.set()
 
@@ -222,6 +228,7 @@ async def test_engine_skips_page_that_exceeds_processing_hard_timeout(
     pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
     engine = CrawlEngine(
         TaskConfig(
+            enable_auth_health_gate=False,
             max_retries=2,
             min_host_interval_seconds=0,
             page_stabilize_milliseconds=0,
@@ -266,6 +273,7 @@ async def test_engine_applies_http_retry_policy(
     pool = FakeBrowserPool(statuses, "https://www.zhihu.com/question/1")
     engine = CrawlEngine(
         TaskConfig(
+            enable_auth_health_gate=False,
             max_retries=max_retries,
             retry_base_delay_seconds=0,
             min_host_interval_seconds=0,
@@ -288,12 +296,13 @@ async def test_engine_applies_http_retry_policy(
 
 
 @pytest.mark.asyncio
-async def test_engine_short_circuits_manual_only_platform_without_browser(
+async def test_engine_crawls_wechat_video_instead_of_manual_short_circuit(
     tmp_path: Path,
 ) -> None:
     pool = FakeBrowserPool([200], "https://channels.weixin.qq.com/finder-preview/pages/sph?id=abc")
     engine = CrawlEngine(
         TaskConfig(
+            enable_auth_health_gate=False,
             max_retries=2,
             retry_base_delay_seconds=0,
             min_host_interval_seconds=0,
@@ -315,10 +324,12 @@ async def test_engine_short_circuits_manual_only_platform_without_browser(
         tmp_path,
     )
 
-    assert result.status == RecordStatus.NEEDS_REVIEW
-    assert result.attempt_count == 1  # never retried: manual entry is required
-    assert [error.code for error in result.errors] == ["MANUAL_ONLY_PLATFORM"]
-    assert pool.page_count == 0
+    assert result.status == RecordStatus.ASSETS_READY
+    assert result.attempt_count == 1
+    assert not any(
+        error.code == "MANUAL_ONLY_PLATFORM" for error in result.errors
+    )
+    assert pool.page_count == 1
     assert pool.closed
 
 
@@ -327,6 +338,7 @@ async def test_only_author_screenshot_is_collected_when_body_text_exists(tmp_pat
     pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
     engine = CrawlEngine(
         TaskConfig(
+            enable_auth_health_gate=False,
             min_host_interval_seconds=0,
             page_stabilize_milliseconds=0,
             ocr_enabled=False,
@@ -356,6 +368,7 @@ async def test_optional_ocr_timeout_keeps_main_content_and_screenshot(
     pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
     engine = CrawlEngine(
         TaskConfig(
+            enable_auth_health_gate=False,
             max_retries=0,
             min_host_interval_seconds=0,
             page_stabilize_milliseconds=0,
@@ -389,7 +402,11 @@ class PartialParser:
 async def test_partial_content_is_assets_ready_with_missing_field_warning(tmp_path: Path) -> None:
     pool = FakeBrowserPool([200], "https://www.zhihu.com/question/1")
     engine = CrawlEngine(
-        TaskConfig(min_host_interval_seconds=0, page_stabilize_milliseconds=0),
+        TaskConfig(
+            enable_auth_health_gate=False,
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+        ),
         browser_pool=pool,
         parser=PartialParser(),
         shooter=StubShooter(),
@@ -413,6 +430,7 @@ async def test_known_http_failure_uses_same_platform_official_fallback(
     pool = FallbackBrowserPool([405, 200], original)
     engine = CrawlEngine(
         TaskConfig(
+            enable_auth_health_gate=False,
             max_retries=0,
             min_host_interval_seconds=0,
             page_stabilize_milliseconds=0,

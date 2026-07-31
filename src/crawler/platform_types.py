@@ -24,7 +24,7 @@ class PlatformDefinition:
     include_patterns: tuple[str, ...] = ()
     exclude_patterns: tuple[str, ...] = ()
     # Platforms whose web pages cannot be crawled reliably at all (e.g.
-    # WeChat Channels, Douyin merchant backend).  The engine short-circuits
+    # a merchant backend without a public evidence page). The engine short-circuits
     # them to manual entry instead of burning navigation timeouts.
     manual_only: bool = False
 
