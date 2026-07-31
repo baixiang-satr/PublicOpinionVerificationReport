@@ -40,8 +40,8 @@ function openAuth() {
       文件里只要出现 http(s) 链接即可，重复链接会自动去重。
     </p>
     <div class="notice-banner">
-      不确定参数就保持默认。首次使用建议先点「管理平台登录态」，验证哪些平台游客可访问，
-      受限平台人工登录一次即可长期使用。
+      首次使用请先进入「管理平台登录态」，一次完成全部平台登录。
+      后续任务会持续复用各平台独立加密登录态，并统一使用可见浏览器抓取。
     </div>
 
     <div class="card">
@@ -84,14 +84,13 @@ function openAuth() {
           </el-radio-group>
         </el-form-item>
         <el-form-item label="浏览器模式">
-          <el-checkbox v-model="store.options.headless">
-            后台运行浏览器（无界面模式）
-          </el-checkbox>
+          <span>可见浏览器（固定）</span>
+          <span class="muted form-hint">所有网站抓取强制使用登录态和有界面模式。</span>
         </el-form-item>
       </el-form>
       <div class="auth-row">
         <el-button :icon="Lock" @click="openAuth">管理平台登录态…</el-button>
-        <span class="muted">先验证游客访问，只对确实受限的平台人工登录。</span>
+        <span class="muted">未保存有效登录态的平台不会开始抓取。</span>
       </div>
     </div>
   </section>

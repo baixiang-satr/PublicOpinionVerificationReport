@@ -11,6 +11,7 @@ import type { AuthPlatform } from '@/types'
 const visible = defineModel<boolean>({ required: true })
 const store = useJobStore()
 const probingAll = ref(false)
+const loggingAll = ref(false)
 const busyKeys = ref<Set<string>>(new Set())
 
 const platforms = computed(() => store.authPlatforms)
@@ -37,6 +38,26 @@ async function probeAll() {
   } finally {
     // 状态通过 auth 事件逐个推送；这里兜底延时解锁
     window.setTimeout(() => (probingAll.value = false), 1500)
+  }
+}
+
+async function loginAll() {
+  const confirmed = await ElMessageBox.confirm(
+    '将按平台依次打开官方页面。请在每个浏览器窗口中完成登录、扫码或验证码；已有效的平台会自动跳过。',
+    '首次登录全部平台',
+    { type: 'info', confirmButtonText: '开始', cancelButtonText: '取消' },
+  ).catch(() => false)
+  if (!confirmed) return
+  loggingAll.value = true
+  try {
+    const result = await bridge.authLoginAll()
+    if (!result.ok) {
+      ElMessage.warning(result.message || '已有登录态操作正在进行。')
+      return
+    }
+    ElMessage.info('首次登录流程已启动，请按浏览器窗口提示依次完成各平台登录。')
+  } finally {
+    window.setTimeout(() => (loggingAll.value = false), 1500)
   }
 }
 
@@ -80,8 +101,8 @@ async function logout(platform: AuthPlatform) {
     class="auth-dialog"
   >
     <div class="notice-banner">
-      先点「验证」检查游客能否访问；显示「需要登录」的平台，点「登录 / 更新」
-      在打开的官方页面里人工完成登录（含扫码、验证码），工具复验通过后会加密保存登录态。
+      所有网站抓取都要求已验证登录态。首次使用可点「首次登录全部未登录平台」，
+      在官方页面里人工完成登录（含扫码、验证码）；工具会逐平台复验、加密保存，后续持续复用并刷新。
     </div>
 
     <div class="platform-list">
@@ -117,8 +138,13 @@ async function logout(platform: AuthPlatform) {
 
     <template #footer>
       <div class="footer-row">
-        <el-button :loading="probingAll" @click="probeAll">全部重新验证</el-button>
-        <el-button type="primary" @click="visible = false">完成</el-button>
+        <div class="footer-actions">
+          <el-button :loading="probingAll" @click="probeAll">全部重新验证</el-button>
+          <el-button type="primary" :loading="loggingAll" @click="loginAll">
+            首次登录全部未登录平台
+          </el-button>
+        </div>
+        <el-button @click="visible = false">完成</el-button>
       </div>
     </template>
   </el-dialog>
@@ -179,6 +205,13 @@ async function logout(platform: AuthPlatform) {
 .footer-row {
   display: flex;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.footer-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .empty {

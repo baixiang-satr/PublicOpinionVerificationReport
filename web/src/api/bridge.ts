@@ -31,6 +31,7 @@ interface PyWebviewApi {
   export_zip(): Promise<{ ok: boolean; message: string }>
   auth_list(): Promise<AuthPlatform[]>
   auth_probe_all(): Promise<{ ok: boolean }>
+  auth_login_all(): Promise<{ ok: boolean; message: string }>
   auth_probe(key: string): Promise<{ ok: boolean }>
   auth_login(key: string): Promise<{ ok: boolean }>
   auth_logout(key: string): Promise<{ ok: boolean }>
@@ -132,7 +133,7 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
           page_timeout_seconds: 45,
           max_retries: 1,
           screenshot_format: 'jpeg',
-          headless: true,
+          headless: false,
         },
         has_checkpoint: false,
         session: {
@@ -169,7 +170,7 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
     case 'auth_list':
       return respond([
         { key: 'weibo', name: '新浪微博', status: 'unknown', status_text: '未检查', tone: 'muted', message: '尚未验证过该平台。', account: '' },
-        { key: 'bilibili', name: '哔哩哔哩', status: 'guest_ok', status_text: '游客可访问', tone: 'ok', message: '无需登录即可访问。', account: '' },
+        { key: 'bilibili', name: '哔哩哔哩', status: 'auth_required', status_text: '需要登录', tone: 'warn', message: '尚未保存已验证登录态。', account: '' },
       ])
     case 'list_screenshots':
       return respond({ content: null, author: null })
@@ -244,6 +245,7 @@ export const bridge = {
   exportZip: () => call<{ ok: boolean; message: string }>('export_zip'),
   authList: () => call<AuthPlatform[]>('auth_list'),
   authProbeAll: () => call<{ ok: boolean }>('auth_probe_all'),
+  authLoginAll: () => call<{ ok: boolean; message: string }>('auth_login_all'),
   authProbe: (key: string) => call<{ ok: boolean }>('auth_probe', key),
   authLogin: (key: string) => call<{ ok: boolean }>('auth_login', key),
   authLogout: (key: string) => call<{ ok: boolean }>('auth_logout', key),
