@@ -5,7 +5,7 @@ from PIL import Image
 
 from src.config.settings import TaskConfig
 from src.crawler.platform_catalog import find_platform
-from src.screenshot.page_shooter import PageShooter, PageScreenshotError
+from src.screenshot.page_shooter import PageScreenshotError, PageShooter
 
 
 class FakeScreenshotPage:
@@ -23,6 +23,7 @@ class FakeScreenshotPage:
         self.focus_x = focus_x
         self.options: dict[str, object] | None = None
         self.wait_scripts: list[str] = []
+        self.horizontal_scrolls: list[int] = []
 
     async def wait_for_function(self, script: str, **_options: object) -> None:
         self.wait_scripts.append(script)
@@ -30,14 +31,18 @@ class FakeScreenshotPage:
     async def wait_for_timeout(self, _milliseconds: int) -> None:
         return None
 
-    async def evaluate(self, script: str) -> object:
+    async def evaluate(self, script: str, *args: object) -> object:
         if "documentWidth" in script and "viewportWidth" in script:
             return {
                 "viewportWidth": self.width,
                 "documentWidth": self.document_width,
                 "height": self.height,
                 "focusX": self.focus_x,
+                "scrollX": 0,
+                "needsHorizontalAlignment": self.focus_x > 0,
             }
+        if "window.scrollTo(left, top)" in script and args:
+            self.horizontal_scrolls.append(int(args[0]))
         return None
 
     async def screenshot(self, **options: object) -> None:
@@ -123,6 +128,32 @@ async def test_normal_page_keeps_full_page_mode_and_waits_for_platform_content(
 
 
 @pytest.mark.asyncio
+async def test_douyin_video_uses_stable_viewport_capture(tmp_path: Path) -> None:
+    page = FakeScreenshotPage(
+        document_width=4_000,
+        height=1_100,
+        focus_x=1_180,
+    )
+    page.url = "https://www.douyin.com/video/7667987870472788815"
+    definition = find_platform(page.url)
+    assert definition is not None
+
+    await PageShooter(
+        TaskConfig(screenshot_format="jpeg", full_page_screenshot=True)
+    ).capture(page, 2, tmp_path, definition=definition)
+
+    assert page.options is not None
+    assert page.options["full_page"] is False
+    assert page.options["clip"] == {
+        "x": 0,
+        "y": 0,
+        "width": 1_440,
+        "height": 1_100,
+    }
+    assert page.horizontal_scrolls == [1_180]
+
+
+@pytest.mark.asyncio
 async def test_horizontal_overflow_is_cropped_around_substantive_content(
     tmp_path: Path,
 ) -> None:
@@ -142,11 +173,12 @@ async def test_horizontal_overflow_is_cropped_around_substantive_content(
     assert page.options is not None
     assert page.options["full_page"] is False
     assert page.options["clip"] == {
-        "x": 1_180,
+        "x": 0,
         "y": 0,
         "width": 1_440,
         "height": 1_100,
     }
+    assert page.horizontal_scrolls == [1_180]
 
 
 @pytest.mark.asyncio

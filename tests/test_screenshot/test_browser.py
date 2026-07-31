@@ -1,6 +1,6 @@
-from pathlib import Path
-from datetime import datetime
 import json
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -8,8 +8,7 @@ from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.store import AuthProfileStore
 from src.config.settings import TaskConfig
 from src.screenshot.browser import BrowserPool, BrowserUnavailableError
-from src.screenshot.page_shooter import PageShooter
-
+from src.screenshot.page_shooter import PageShooter, align_page_for_capture
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.playwright]
 
@@ -45,6 +44,105 @@ async def test_owned_browser_context_and_page_are_closed_after_screenshot(tmp_pa
         await pool.close()
 
     assert not pool.is_started
+
+
+async def test_cross_site_horizontal_overflow_is_framed_in_real_browser(
+    tmp_path: Path,
+) -> None:
+    config = TaskConfig(
+        max_concurrency=1,
+        page_timeout_seconds=10,
+        min_host_interval_seconds=0,
+        page_stabilize_milliseconds=0,
+        screenshot_format="png",
+        full_page_screenshot=True,
+    )
+    pool = BrowserPool(config)
+    try:
+        await pool.start()
+    except BrowserUnavailableError as error:
+        pytest.skip(str(error))
+    try:
+        async with pool.page() as page:
+            await page.set_content(
+                """
+                <style>
+                  html, body { margin: 0; }
+                  .overflow-placeholder { width: 4000px; height: 1px; }
+                  article {
+                    position: absolute; left: 1200px; top: 80px;
+                    width: 640px; height: 500px;
+                    background: rgb(220, 40, 40); color: white;
+                  }
+                </style>
+                <div class="overflow-placeholder"></div>
+                <article><h1>跨站正文</h1><p>真实内容不能偏出截图。</p></article>
+                """
+            )
+
+            screenshot = await PageShooter(config).capture(page, 8, tmp_path)
+
+            from PIL import Image
+
+            with Image.open(screenshot) as image:
+                assert image.width == config.viewport_width
+                red_columns = [
+                    x
+                    for x in range(image.width)
+                    if image.getpixel((x, 120))[:3] == (220, 40, 40)
+                ]
+            assert red_columns
+            assert min(red_columns) <= 180
+    finally:
+        await pool.close()
+
+
+async def test_interactive_capture_alignment_moves_profile_into_view() -> None:
+    config = TaskConfig(
+        max_concurrency=1,
+        page_timeout_seconds=10,
+        min_host_interval_seconds=0,
+        page_stabilize_milliseconds=0,
+    )
+    pool = BrowserPool(config)
+    try:
+        await pool.start()
+    except BrowserUnavailableError as error:
+        pytest.skip(str(error))
+    try:
+        async with pool.page() as page:
+            await page.set_content(
+                """
+                <style>
+                  html, body { margin: 0; }
+                  .overflow-placeholder { width: 4000px; height: 1px; }
+                  .profile-header {
+                    position: absolute; left: 1500px; top: 80px;
+                    width: 600px; height: 300px;
+                    background: #2458a6; color: white;
+                  }
+                </style>
+                <div class="overflow-placeholder"></div>
+                <section class="profile-header">
+                  <h1>作者主页</h1><p>账号资料与作品列表</p>
+                </section>
+                """
+            )
+
+            aligned = await align_page_for_capture(page)
+            geometry = await page.evaluate(
+                """() => {
+                    const rect = document.querySelector('.profile-header')
+                      .getBoundingClientRect();
+                    return { left: rect.left, scrollX: window.scrollX };
+                }"""
+            )
+
+            assert aligned is True
+            assert geometry["scrollX"] > 1_000
+            assert 100 <= geometry["left"] <= 180
+    finally:
+        await pool.close()
 
 
 async def test_pages_share_login_state_and_it_is_reused_by_next_run(tmp_path: Path) -> None:

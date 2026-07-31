@@ -10,6 +10,10 @@ from typing import Any
 from src.config.settings import TaskConfig
 from src.crawler.platform_catalog import find_platform
 from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
+from src.screenshot.page_layout import (
+    align_page_for_capture,
+    page_dimensions as _page_dimensions,
+)
 from src.utils.file_utils import UnsafeFileNameError, require_safe_file_name
 
 
@@ -65,9 +69,53 @@ class PageShooter:
         if definition is None:
             definition = find_platform(str(getattr(page, "url", "") or ""))
         await _wait_for_content_ready(page, definition, cancel_event)
-        await _hide_obstructive_login_overlays(page)
+        await hide_obstructive_login_overlays(page)
+        await _pause_playing_media(page)
+        is_douyin_video = bool(
+            definition is not None
+            and getattr(definition, "key", "") == "douyin"
+            and "/video/" in str(getattr(page, "url", "") or "")
+        )
+        if is_douyin_video:
+            # Douyin video pages are viewport applications whose document
+            # geometry keeps changing with the player/recommendation rail.
+            # Full-page capture can wait indefinitely for that moving surface.
+            # One stable viewport contains the video caption, author and
+            # visible publish time and is the correct evidence moment.
+            options["full_page"] = False
+            dimensions = await _page_dimensions(
+                page,
+                definition,
+                (*focus_selectors, "video", "[class*='player']"),
+            )
+            if (
+                dimensions is not None
+                and dimensions["document_width"]
+                > dimensions["viewport_width"] + 32
+            ):
+                await align_page_for_capture(
+                    page,
+                    definition=definition,
+                    focus_selectors=(
+                        *focus_selectors,
+                        "video",
+                        "[class*='player']",
+                    ),
+                )
+                options["clip"] = {
+                    # Playwright clip coordinates are viewport-relative. The
+                    # substantive document X is applied by scrolling above;
+                    # using it here again would double-offset/crop the image.
+                    "x": 0,
+                    "y": 0,
+                    "width": dimensions["viewport_width"],
+                    "height": min(
+                        dimensions["height"],
+                        self._config.max_full_page_screenshot_height,
+                    ),
+                }
         is_long_page = False
-        if self._config.full_page_screenshot:
+        if self._config.full_page_screenshot and not is_douyin_video:
             dimensions = await _page_dimensions(
                 page,
                 definition,
@@ -85,9 +133,15 @@ class PageShooter:
             else:
                 has_horizontal_overflow = False
             if dimensions is not None and (is_long_page or has_horizontal_overflow):
+                if has_horizontal_overflow:
+                    await align_page_for_capture(
+                        page,
+                        definition=definition,
+                        focus_selectors=focus_selectors,
+                    )
                 options["full_page"] = False
                 options["clip"] = {
-                    "x": dimensions["focus_x"] if has_horizontal_overflow else 0,
+                    "x": 0,
                     "y": 0,
                     "width": dimensions["viewport_width"],
                     "height": min(
@@ -228,7 +282,7 @@ async def _wait_for_dom_quiet(page: Any) -> None:
         pass
 
 
-async def _hide_obstructive_login_overlays(page: Any) -> None:
+async def hide_obstructive_login_overlays(page: Any) -> None:
     """Hide only large login dialogs/masks when substantive content is behind them."""
 
     if not hasattr(page, "evaluate"):
@@ -299,94 +353,21 @@ async def _hide_obstructive_login_overlays(page: Any) -> None:
         pass
 
 
-async def _page_dimensions(
-    page: Any,
-    definition: Any = None,
-    focus_selectors: tuple[str, ...] = (),
-) -> dict[str, int] | None:
+async def _pause_playing_media(page: Any) -> None:
+    """Freeze visible audio/video frames so screenshot capture is stable."""
+
     if not hasattr(page, "evaluate"):
-        return None
-    selectors = [*focus_selectors]
-    selectors.extend(
-        [
-        selector
-        for field in ("content_text", "title")
-        for selector in (definition.selectors.get(field, ()) if definition else ())
-        ]
-    )
-    selectors.extend(("article", "main", "[role='main']"))
-    selector_json = json.dumps(list(dict.fromkeys(selectors)), ensure_ascii=False)
+        return
     try:
-        raw = await page.evaluate(
-            f"""() => {{
-                const selectors = {selector_json};
-                const root = document.documentElement;
-                const body = document.body;
-                const viewportWidth = Math.max(
-                    1,
-                    window.innerWidth || 0,
-                    root?.clientWidth || 0,
-                    body?.clientWidth || 0
-                );
-                const documentWidth = Math.max(
-                    viewportWidth,
-                    root?.scrollWidth || 0,
-                    root?.offsetWidth || 0,
-                    body?.scrollWidth || 0,
-                    body?.offsetWidth || 0
-                );
-                const height = Math.max(
-                    1,
-                    root?.scrollHeight || 0,
-                    root?.offsetHeight || 0,
-                    body?.scrollHeight || 0,
-                    body?.offsetHeight || 0
-                );
-                let focusX = 0;
-                for (const selector of selectors) {{
-                  let elements = [];
-                  try {{ elements = Array.from(document.querySelectorAll(selector)); }}
-                  catch (_) {{ continue; }}
-                  const candidate = elements.find(element => {{
-                    const rect = element.getBoundingClientRect();
-                    const style = getComputedStyle(element);
-                    const text = (element.innerText || element.textContent || '').trim();
-                    return style.display !== 'none'
-                      && style.visibility !== 'hidden'
-                      && rect.width >= 120
-                      && rect.height >= 20
-                      && text.length >= 2;
-                  }});
-                  if (candidate) {{
-                    const rect = candidate.getBoundingClientRect();
-                    focusX = Math.max(
-                      0,
-                      Math.min(documentWidth - viewportWidth, rect.left + scrollX - 48)
-                    );
-                    break;
-                  }}
-                }}
-                return {{
-                  viewportWidth,
-                  documentWidth,
-                  height,
-                  focusX
-                }};
-            }}"""
+        await page.evaluate(
+            """() => {
+                for (const media of document.querySelectorAll('video, audio')) {
+                  try { media.pause(); } catch (_) {}
+                }
+            }"""
         )
-        viewport_width = min(32_767, max(1, int(raw["viewportWidth"])))
-        document_width = min(32_767, max(viewport_width, int(raw["documentWidth"])))
-        height = max(1, int(raw["height"]))
-        max_focus_x = max(0, document_width - viewport_width)
-        focus_x = min(max_focus_x, max(0, int(raw.get("focusX") or 0)))
-        return {
-            "viewport_width": viewport_width,
-            "document_width": document_width,
-            "height": height,
-            "focus_x": focus_x,
-        }
     except Exception:
-        return None
+        pass
 
 
 def _is_visually_blank(path: Path) -> bool:
