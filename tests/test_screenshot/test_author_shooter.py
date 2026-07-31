@@ -142,7 +142,7 @@ async def test_author_shooter_http_failure_is_reportable_and_closes_page(tmp_pat
 async def test_author_shooter_rejects_login_wall_without_creating_evidence(tmp_path: Path) -> None:
     author_page = RestrictedAuthorPage(200)
     shooter = AuthorShooter(
-        TaskConfig(page_stabilize_milliseconds=0),
+        TaskConfig(headless=True, page_stabilize_milliseconds=0),
         shooter=StubPageShooter(),
     )
 

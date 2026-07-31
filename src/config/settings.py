@@ -80,7 +80,10 @@ class TaskConfig:
     timezone: str = "Asia/Shanghai"
 
     # ── Browser mode ──────────────────────────────────────────────────
-    headless: bool = True
+    # Evidence crawling always uses a visible browser.  Keeping the flag in
+    # the stable config contract avoids breaking older checkpoints/UI
+    # payloads, but production construction and BrowserPool both force False.
+    headless: bool = False
     # Legacy combined Playwright state. New verified states live in
     # auth_store_dir and are isolated by platform.
     storage_state_path: Path | None = None
@@ -142,9 +145,8 @@ class TaskConfig:
     # 真实指纹不易触发风控），本项用于全局切换爬取浏览器。
     browser_channel: str | None = None
 
-    # ── Headed fallback ───────────────────────────────────────────────
-    # 无头爬取因导航/访问类错误失败时，自动用可见浏览器重试一轮，给用户
-    # manual_intervention_timeout_seconds 的时间人工过滑块/扫码。
+    # ── Legacy headed fallback switch ────────────────────────────────
+    # 保留旧配置兼容；主抓取现已始终使用可见浏览器，通常不会进入二次兜底。
     enable_headed_fallback: bool = True
 
     def __post_init__(self) -> None:
@@ -251,7 +253,7 @@ class AppConfig:
             long_page_jpeg_quality=int(
                 os.getenv("POR_LONG_PAGE_JPEG_QUALITY", defaults.task.long_page_jpeg_quality)
             ),
-            headless=_bool_env("POR_HEADLESS", defaults.task.headless),
+            headless=False,
             storage_state_path=(
                 _path_from_environment("POR_STORAGE_STATE_PATH")
                 or _default_storage_state_path()

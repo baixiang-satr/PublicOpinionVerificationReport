@@ -7,7 +7,11 @@ import pytest
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.store import AuthProfileStore
 from src.config.settings import TaskConfig
-from src.screenshot.browser import BrowserPool, BrowserUnavailableError
+from src.screenshot.browser import (
+    AuthenticationRequiredError,
+    BrowserPool,
+    BrowserUnavailableError,
+)
 from src.screenshot.page_shooter import PageShooter, align_page_for_capture
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.playwright]
@@ -19,6 +23,12 @@ class ReverseProtector:
 
     def unprotect(self, ciphertext: bytes) -> bytes:
         return ciphertext[::-1]
+
+
+async def test_browser_pool_forces_visible_mode() -> None:
+    pool = BrowserPool(TaskConfig(headless=True))
+
+    assert pool._config.headless is False
 
 
 async def test_owned_browser_context_and_page_are_closed_after_screenshot(tmp_path: Path) -> None:
@@ -277,7 +287,7 @@ async def test_invalid_login_state_falls_back_to_fresh_session(tmp_path: Path) -
     assert '"cookies"' in state_path.read_text(encoding="utf-8")
 
 
-async def test_platform_state_is_not_shared_with_guest_context(tmp_path: Path) -> None:
+async def test_platform_states_are_isolated_between_contexts(tmp_path: Path) -> None:
     store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
     state = {
         "cookies": [
@@ -302,6 +312,30 @@ async def test_platform_state_is_not_shared_with_guest_context(tmp_path: Path) -
             status=AuthStatus.VALID,
             checked_at=datetime.now().astimezone(),
             original_url="https://www.zhihu.com/question/362425387",
+        ),
+    )
+    store.commit_validated_state(
+        "weibo",
+        {
+            "cookies": [
+                {
+                    "name": "session",
+                    "value": "weibo-only",
+                    "domain": ".weibo.com",
+                    "path": "/",
+                    "expires": -1,
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "Lax",
+                }
+            ],
+            "origins": [],
+        },
+        AuthProbeResult(
+            platform_key="weibo",
+            status=AuthStatus.VALID,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://weibo.com/2/detail/123",
         ),
     )
     pool = BrowserPool(
@@ -330,14 +364,15 @@ async def test_platform_state_is_not_shared_with_guest_context(tmp_path: Path) -
                 message="dead content URL",
             )
             assert store.profile_for("zhihu").status == AuthStatus.VALID
-        async with pool.page(url="https://weibo.com/2/detail/123") as guest:
-            assert guest.context is not signed_in_context
-            assert not await guest.context.cookies("https://www.zhihu.com")
+        async with pool.page(url="https://weibo.com/2/detail/123") as weibo:
+            assert weibo.context is not signed_in_context
+            assert await weibo.context.cookies("https://weibo.com")
+            assert not await weibo.context.cookies("https://www.zhihu.com")
     finally:
         await pool.close()
 
 
-async def test_legacy_combined_state_is_filtered_into_platform_contexts(
+async def test_legacy_combined_state_does_not_bypass_mandatory_profiles(
     tmp_path: Path,
 ) -> None:
     legacy_path = tmp_path / "login-state.json"
@@ -382,18 +417,7 @@ async def test_legacy_combined_state_is_filtered_into_platform_contexts(
         ),
         auth_store=store,
     )
-    try:
-        await pool.start()
-    except BrowserUnavailableError as error:
-        pytest.skip(str(error))
-    try:
-        async with pool.page(url="https://www.zhihu.com/question/123") as zhihu:
-            zhihu_context = zhihu.context
-            assert await zhihu_context.cookies("https://www.zhihu.com")
-            assert not await zhihu_context.cookies("https://weibo.com")
-        async with pool.page(url="https://weibo.com/2/detail/123") as weibo:
-            assert weibo.context is not zhihu_context
-            assert await weibo.context.cookies("https://weibo.com")
-            assert not await weibo.context.cookies("https://www.zhihu.com")
-    finally:
-        await pool.close()
+    with pytest.raises(AuthenticationRequiredError):
+        pool._context_spec("https://www.zhihu.com/question/123")
+    with pytest.raises(AuthenticationRequiredError):
+        pool._context_spec("https://weibo.com/2/detail/123")

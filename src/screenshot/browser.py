@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
 
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.registry import auth_policy_for_key, auth_policy_for_url
-from src.auth.state_filter import filter_state_for_policy
 from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
 from src.screenshot.browser_options import (
@@ -35,6 +32,7 @@ from src.screenshot.stealth import apply_extra_stealth
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AuthenticationRequiredError",
     "BrowserPool",
     "BrowserUnavailableError",
     "browser_context_options",
@@ -44,6 +42,10 @@ __all__ = [
 
 class BrowserUnavailableError(RuntimeError):
     """Raised when Playwright or its owned Chromium executable is unavailable."""
+
+
+class AuthenticationRequiredError(RuntimeError):
+    """Raised before navigation when a platform has no validated state."""
 
 
 @dataclass
@@ -62,7 +64,11 @@ class BrowserPool:
         *,
         auth_store: AuthProfileStore | None = None,
     ) -> None:
-        self._config = config
+        # All evidence crawlers are intentionally headed.  Enforce this at
+        # the browser boundary as well as in the UI/config defaults so direct
+        # library callers cannot accidentally launch an unauthenticated
+        # background crawler.
+        self._config = replace(config, headless=False)
         self._playwright: Any = None
         self._browser: Any = None
         self._contexts: dict[str, _ContextSlot] = {}
@@ -324,13 +330,18 @@ class BrowserPool:
         url: str | None,
     ) -> tuple[str, str | None, str, Any | None]:
         policy = auth_policy_for_url(url or "") if url else None
-        if policy is not None and self._auth_store is not None:
+        if policy is not None:
+            if self._auth_store is None:
+                raise AuthenticationRequiredError(
+                    f"{policy.display_name} 未配置登录态存储；"
+                    "请先在“管理平台登录态”中完成登录。"
+                )
             try:
                 state = self._auth_store.load_state(policy.platform_key)
             except AuthStateStoreError:
                 logger.warning(
                     "Encrypted authentication state is unreadable for %s; "
-                    "falling back without exposing or deleting it.",
+                    "refusing guest fallback without deleting it.",
                     policy.platform_key,
                 )
                 self._auth_store.record_result(
@@ -340,7 +351,7 @@ class BrowserPool:
                         checked_at=datetime.now().astimezone(),
                         original_url=url or policy.probe_url,
                         barrier_code="AUTH_STATE_UNREADABLE",
-                        message="本机加密登录态无法读取；本次已回退到游客或旧版兼容会话。",
+                        message="本机加密登录态无法读取；已拒绝回退到游客会话。",
                         used_saved_state=True,
                     )
                 )
@@ -352,44 +363,18 @@ class BrowserPool:
                     "profile",
                     state,
                 )
+            if policy.requires_valid_state:
+                raise AuthenticationRequiredError(
+                    f"{policy.display_name} 缺少已验证登录态；"
+                    "请先在“管理平台登录态”中完成登录。"
+                )
         legacy_path = self._storage_state_path()
         if legacy_path is not None and legacy_path.is_file():
             if self._auth_store is not None:
-                if policy is None:
-                    return "guest", None, "guest", None
-                try:
-                    legacy_value = json.loads(
-                        legacy_path.read_text(encoding="utf-8")
-                    )
-                    if isinstance(legacy_value, dict):
-                        filtered = filter_state_for_policy(
-                            legacy_value,
-                            policy.platform_key,
-                        )
-                        return (
-                            f"legacy:{policy.platform_key}",
-                            policy.platform_key,
-                            "legacy",
-                            filtered,
-                        )
-                except Exception:
-                    logger.warning(
-                        "Legacy combined authentication state is unreadable; "
-                        "using a guest context for %s.",
-                        policy.platform_key,
-                    )
+                # Per-platform profiles are mandatory. The legacy file is
+                # consumed only by AuthManagerService as a migration source.
                 return "guest", None, "guest", None
             return "legacy", None, "legacy", str(legacy_path)
-        if (
-            url
-            and policy is not None
-            and (
-                _prefer_guest_for_public_share(url, policy.platform_key)
-                or policy.platform_key == "kuaishou"
-            )
-        ):
-            # Public XHS shares and Kuaishou mobile SSR need isolation.
-            return (f"guest:{policy.platform_key}", policy.platform_key, "guest", None)
         return "guest", None, "guest", None
 
     async def _save_login_states(self, slots: tuple[_ContextSlot, ...]) -> None:
@@ -481,20 +466,3 @@ class BrowserPool:
                 self._semaphore.release()
             raise asyncio.CancelledError
         await acquire_task
-
-
-def _prefer_guest_for_public_share(url: str, platform_key: str) -> bool:
-    if platform_key != "xiaohongshu":
-        return False
-    parts = urlsplit(url)
-    if not (
-        parts.path.startswith("/explore/")
-        or parts.path.startswith("/discovery/item/")
-    ):
-        return False
-    query = parse_qs(parts.query, keep_blank_values=True)
-    return (
-        "app_share" in query.get("xsec_source", ())
-        or "share_channel" in query
-        or "xhsshare" in query
-    )
