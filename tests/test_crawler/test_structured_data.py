@@ -22,6 +22,19 @@ def test_url_content_ids_reads_bilibili_bv_id() -> None:
     assert "BV19DipBVE3c" in ids
 
 
+def test_kuaishou_compact_and_numeric_photo_ids_are_url_scoped() -> None:
+    ids = url_content_ids(
+        "https://m.gifshow.com/fw/photo/3xev27cpa7jba4i"
+        "?photoId=3xev27cpa7jba4i"
+        "&shareObjectId=5226990523508912741"
+    )
+
+    assert "3xev27cpa7jba4i" in ids
+    assert "5226990523508912741" in ids
+    assert candidate_scope({"photoId": "5226990523508912741"}, ids) == "main"
+    assert candidate_scope({"photoId": "9000111222333444555"}, ids) == "foreign"
+
+
 def test_candidate_scope_marks_comment_node_foreign() -> None:
     url_ids = url_content_ids("https://weibo.com/5644764907/5266894313755145")
     main_node = {"id_str": "5266894313755145", "text_raw": "正文"}

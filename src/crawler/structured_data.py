@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 from html import unescape
 import re
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from src.crawler.field_resolver import consider_field
 from src.domain.models import ExtractionSource, PageData
@@ -173,6 +174,8 @@ _CONTENT_ID_KEYS = (
     "articleId",
     "video_id",
     "videoId",
+    "photo_id",
+    "photoId",
     "offer_id",
     "offerId",
     "goods_id",
@@ -185,6 +188,10 @@ _CONTENT_ID_KEYS = (
 )
 _STRONG_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{6,}")
 _BILIBILI_ID_PATTERN = re.compile(r"BV[0-9A-Za-z]{8,}")
+_KUAISHOU_PATH_ID_PATTERN = re.compile(
+    r"/(?:short-video|fw/photo)/([^/?#]+)",
+    re.IGNORECASE,
+)
 
 
 def payload_has_content(payload: Any) -> bool:
@@ -208,6 +215,18 @@ def url_content_ids(url: str | None) -> frozenset[str]:
         return frozenset()
     ids = {match.group(0) for match in re.finditer(r"\d{6,}", url)}
     ids.update(match.group(0) for match in _BILIBILI_ID_PATTERN.finditer(url))
+    parsed = urlsplit(url)
+    path_match = _KUAISHOU_PATH_ID_PATTERN.search(parsed.path)
+    if path_match is not None:
+        candidate = unquote(path_match.group(1)).strip()
+        if _STRONG_ID_PATTERN.fullmatch(candidate):
+            ids.add(candidate)
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    for key in ("photoId", "photo_id", "shareObjectId"):
+        for raw_value in query.get(key, ()):
+            candidate = unquote(raw_value).strip()
+            if _STRONG_ID_PATTERN.fullmatch(candidate):
+                ids.add(candidate)
     return frozenset(ids)
 
 
