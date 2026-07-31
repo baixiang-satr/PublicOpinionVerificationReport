@@ -67,6 +67,7 @@ _LOGIN_URL_MARKERS = (
 # ── 风控/限制 URL 特征 ─────────────────────────────────────────────────
 _RESTRICTED_URL_MARKERS = (
     "risk.jd.com",
+    "/website-login/error",
     "/risk",
     "/challenge",
     "/anti-bot",
@@ -111,6 +112,8 @@ _LOGIN_TEXT_MARKERS = (
 
 # ── 风控文本特征 ───────────────────────────────────────────────────────
 _RESTRICTED_TEXT_MARKERS = (
+    "安全限制",
+    "ip存在风险",
     "访问异常",
     "请求异常",
     "访问过于频繁",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+
 import pytest
 
 from src.domain.models import RecordStatus
@@ -83,6 +84,12 @@ async def test_read_page_snapshot_is_bounded_when_renderer_hangs(
         (
             "https://risk.jd.com/challenge",
             {"title": "访问提示", "body": "当前操作存在安全风险"},
+            AccessKind.ACCESS_RESTRICTED,
+            "ACCESS_CHALLENGE",
+        ),
+        (
+            "https://www.xiaohongshu.com/website-login/error",
+            {"title": "小红书", "body": "安全限制 IP存在风险，请切换可靠网络环境后重试 300012"},
             AccessKind.ACCESS_RESTRICTED,
             "ACCESS_CHALLENGE",
         ),
