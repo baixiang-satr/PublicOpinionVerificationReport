@@ -49,6 +49,8 @@ python -m src.main
 
 运行态会保留标题、作者主页 URL、状态码、重定向链和错误信息；其中模板没有对应列的字段只在 GUI 和本机运行日志中显示，不会擅自加入 ZIP。
 
+所有网站统一优先提取公开的真实用户账号；页面只提供昵称时，账号字段回退为昵称并标记 `nickname_fallback`，后续若在已核验作者主页取得真实账号会自动升级。自动截图和人工框选共用横向版面校正：异常离屏元素把正文或主页推到视口外时，先将实质内容归位，再从视口原点截图，避免跨站横向偏移或二次裁切。
+
 ## 项目目录
 
 ```text
@@ -93,6 +95,36 @@ python -m pytest -m "not excel and not external"
 ```
 
 真实模板契约测试使用 `python -m pytest -m excel tests/contract`。发布前运行 `python tools/release_check.py`；普通测试和发布检查均不会访问真实外部站点。
+
+### 抖音视频专项验收工具
+
+`tools/test_douyin_fix.py` 封装了两条真实抖音短链的定向验收：校验目标视频正文、可见发布时间、内容页截图和个人页截图，结果写入独立的 `output/test-douyin-*` 目录。它会访问真实页面并复用本机已保存的抖音登录态。
+
+```powershell
+# 两条都验收；跳过重复预检可减少触发平台风控
+.venv\Scripts\python.exe -X utf8 tools\test_douyin_fix.py --headed --edge --skip-precheck
+
+# 只验收第 1 或第 2 条
+.venv\Scripts\python.exe -X utf8 tools\test_douyin_fix.py --headed --edge --skip-precheck --only 1
+```
+
+### 小红书笔记专项验收工具
+
+`tools/test_xiaohongshu_fix.py` 使用游客优先的独立浏览器上下文，按 URL 中的笔记 ID 提取标题、正文、作者、账号和完整发布时间，并生成内容页截图及可取得的作者主页截图。默认 URL 是当前小红书回归样例；完整验收只请求笔记一次，以降低触发平台频控的概率。默认使用可视 Edge，因为小红书当前会对部分无头 Chromium 会话返回安全限制。
+
+```powershell
+# 使用默认回归 URL 完整验收
+.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py
+
+# 只检查目标笔记内嵌数据，不截图
+.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py --precheck-only
+
+# CI/无桌面环境可尝试无头模式；若出现 300012 请改回默认模式
+.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py --headless
+
+# 仅在游客访问确实要求登录时，显式复用已保存的小红书登录态
+.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py --use-saved-login
+```
 
 ## 打包分发（免安装）
 
