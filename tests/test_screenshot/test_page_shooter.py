@@ -23,12 +23,16 @@ class FakeScreenshotPage:
         self.focus_x = focus_x
         self.options: dict[str, object] | None = None
         self.wait_scripts: list[str] = []
+        self.wait_options: list[dict[str, object]] = []
+        self.wait_timeouts: list[int] = []
         self.horizontal_scrolls: list[int] = []
 
-    async def wait_for_function(self, script: str, **_options: object) -> None:
+    async def wait_for_function(self, script: str, **options: object) -> None:
         self.wait_scripts.append(script)
+        self.wait_options.append(options)
 
-    async def wait_for_timeout(self, _milliseconds: int) -> None:
+    async def wait_for_timeout(self, milliseconds: int) -> None:
+        self.wait_timeouts.append(milliseconds)
         return None
 
     async def evaluate(self, script: str, *args: object) -> object:
@@ -125,6 +129,11 @@ async def test_normal_page_keeps_full_page_mode_and_waits_for_platform_content(
     assert page.options["quality"] == config.screenshot_jpeg_quality
     assert "clip" not in page.options
     assert any(".sku-name" in script for script in page.wait_scripts)
+    assert any(
+        int(options.get("timeout", 0)) >= 8_000
+        for options in page.wait_options
+    )
+    assert any(milliseconds >= 500 for milliseconds in page.wait_timeouts)
 
 
 @pytest.mark.asyncio
