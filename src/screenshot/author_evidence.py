@@ -10,10 +10,10 @@ instead of log messages.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from enum import StrEnum
 import json
 import re
+from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -151,21 +151,27 @@ PAGE_SIGNAL_SCRIPT = """() => {
     ];
     let headerId = '';
     let headerIdSource = '';
-    for (const selector of idSelectors) {
-      const element = document.querySelector(selector);
-      const href = element?.getAttribute?.('href') || '';
-      const match = href.match(/(?:\\/u\\/|\\/user\\/|\\/profile\\/|space\\.bilibili\\.com\\/)([A-Za-z0-9_-]{4,})/);
-      if (match) { headerId = match[1]; headerIdSource = 'href'; break; }
-      const text = (element?.innerText || element?.textContent || '').trim();
-      const textMatch = text.match(/(?:UID|id|ID|号)[:：\\s]*([A-Za-z0-9_-]{4,})/);
-      if (textMatch) { headerId = textMatch[1]; headerIdSource = 'text'; break; }
-    }
-    if (!headerId) {
-      // Douyin shows 「抖音号：xxx」 as plain header text, outside any of the
-      // anchor/uid selectors above.
-      const headText = (document.body?.innerText || '').slice(0, 2000);
+    // Public, user-visible account labels outrank route identifiers found in
+    // hrefs (XHS userId / Douyin sec_uid are not workbook account values).
+    const headText = (document.body?.innerText || '').slice(0, 2000);
+    const xhsMatch = headText.match(/小红书号[:：\\s]*([A-Za-z0-9_.-]{3,})/);
+    if (xhsMatch) {
+      headerId = xhsMatch[1];
+      headerIdSource = 'xiaohongshu';
+    } else {
       const dyMatch = headText.match(/抖音号[:：\\s]*([A-Za-z0-9_.-]{3,})/);
       if (dyMatch) { headerId = dyMatch[1]; headerIdSource = 'douyin'; }
+    }
+    if (!headerId) {
+      for (const selector of idSelectors) {
+        const element = document.querySelector(selector);
+        const href = element?.getAttribute?.('href') || '';
+        const match = href.match(/(?:\\/u\\/|\\/user\\/|\\/profile\\/|space\\.bilibili\\.com\\/)([A-Za-z0-9_-]{4,})/);
+        if (match) { headerId = match[1]; headerIdSource = 'href'; break; }
+        const text = (element?.innerText || element?.textContent || '').trim();
+        const textMatch = text.match(/(?:UID|id|ID|号)[:：\\s]*([A-Za-z0-9_-]{4,})/);
+        if (textMatch) { headerId = textMatch[1]; headerIdSource = 'text'; break; }
+      }
     }
     const hasProfileSurface = Boolean(document.querySelector(
       'h1, main h2, [class*="profile"], [class*="user-info"], '
@@ -217,7 +223,14 @@ _MEASURE_OVERLAY_SCRIPT = """() => {
     const vh = window.innerHeight || 1;
     let covered = 0;
     let loginOverlay = false;
-    const elements = document.querySelectorAll('body *');
+    // Restrict measurement to semantic overlay candidates.  Large fixed
+    // application shells (Douyin's profile canvas/sidebar) can have a high
+    // z-index too, but they are page content rather than obstructions.
+    const elements = document.querySelectorAll(
+      '[role="dialog"], [aria-modal="true"], [class*="modal"], '
+      + '[class*="dialog"], [class*="popup"], [class*="mask"], '
+      + '[class*="overlay"], [class*="backdrop"], [class*="login"]'
+    );
     for (const element of elements) {
       const style = window.getComputedStyle(element);
       if (style.position !== 'fixed' && style.position !== 'absolute') continue;

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-import json
-import logging
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.registry import auth_policy_for_key, auth_policy_for_url
@@ -18,6 +20,8 @@ from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
 from src.screenshot.browser_options import (
     STEALTH_SCRIPT_PATH as _STEALTH_SCRIPT_PATH,
+)
+from src.screenshot.browser_options import (
     browser_context_options,
     browser_launch_options,
     launch_headed_with_fallback,
@@ -27,7 +31,6 @@ from src.screenshot.browser_runtime import (
     connection_closed,
 )
 from src.screenshot.stealth import apply_extra_stealth
-
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +376,20 @@ class BrowserPool:
                     )
                 return "guest", None, "guest", None
             return "legacy", None, "legacy", str(legacy_path)
+        if (
+            url
+            and policy is not None
+            and _prefer_guest_for_public_share(url, policy.platform_key)
+        ):
+            # Public XHS shares remain usable as isolated guests only when no
+            # verified platform state exists. A verified login must win:
+            # author-page navigation and later screenshots need that session.
+            return (
+                f"guest:{policy.platform_key}",
+                policy.platform_key,
+                "guest",
+                None,
+            )
         return "guest", None, "guest", None
 
     async def _save_login_states(self, slots: tuple[_ContextSlot, ...]) -> None:
@@ -464,3 +481,20 @@ class BrowserPool:
                 self._semaphore.release()
             raise asyncio.CancelledError
         await acquire_task
+
+
+def _prefer_guest_for_public_share(url: str, platform_key: str) -> bool:
+    if platform_key != "xiaohongshu":
+        return False
+    parts = urlsplit(url)
+    if not (
+        parts.path.startswith("/explore/")
+        or parts.path.startswith("/discovery/item/")
+    ):
+        return False
+    query = parse_qs(parts.query, keep_blank_values=True)
+    return (
+        "app_share" in query.get("xsec_source", ())
+        or "share_channel" in query
+        or "xhsshare" in query
+    )

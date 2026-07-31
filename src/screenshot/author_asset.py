@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 import re
 import shutil
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -91,9 +91,10 @@ async def capture_author_home_asset(
                 decision.accepted
                 and decision.identity_state == "verified"
                 and decision.detected_id
-                and decision.detected_id_source in {"text", "douyin"}
+                and decision.detected_id_source
+                in {"text", "douyin", "xiaohongshu"}
             ):
-                # 只接受页面上直接显示的账号（抖音号/UID 文本）；href 里的
+                # 只接受页面上直接显示的账号（抖音号/小红书号/UID 文本）；href 里的
                 # sec_uid 只是链接标识，不是用户可见账号。
                 verified["author_id"] = decision.detected_id
                 verified["source"] = decision.detected_id_source
@@ -116,7 +117,7 @@ async def capture_author_home_asset(
         _backfill_author_id(
             result,
             verified.get("author_id"),
-            upgrade=verified.get("source") == "douyin",
+            upgrade=verified.get("source") in {"douyin", "xiaohongshu"},
         )
         return path, None
     except AuthorScreenshotError as error:
@@ -145,12 +146,12 @@ def _backfill_author_id(
 ) -> None:
     """Prefer the account id shown on the identity-verified author home page.
 
-    Douyin's aweme JSON often omits ``unique_id``; the profile header shows
-    「抖音号」 directly.  Only a *verified* decision may overwrite the
-    nickname fallback, never an unverified probe.  With ``upgrade=True``
-    (the id was read from an explicit 抖音号 label) even a JSON-sourced
-    internal uid is replaced: the profile-displayed account is what the
-    template's 账号 column means.
+    Platform payloads often expose an internal route id instead of the
+    public account. Only a *verified* decision may overwrite the nickname
+    fallback, never an unverified probe. With ``upgrade=True`` (the id was
+    read from an explicit 抖音号/小红书号 label) even a JSON-sourced internal
+    uid is replaced: the profile-displayed account is what the template's
+    账号 column means.
     """
 
     if not detected_id:

@@ -21,7 +21,11 @@ from src.screenshot.author_evidence import (
     identity_verdict,
     write_decision,
 )
-from src.screenshot.page_shooter import PageShooter, PageScreenshotError
+from src.screenshot.page_shooter import (
+    PageShooter,
+    PageScreenshotError,
+    hide_obstructive_login_overlays,
+)
 from src.tools.page_access import inspect_page_access, wait_for_manual_access
 
 
@@ -223,6 +227,11 @@ class AuthorShooter:
                     f"候选页面类型为 {decision.page_type}，不是可接受的主页",
                 )
 
+            # A rendered profile may still carry a download/login modal over
+            # the profile surface.  The normal page shooter already removes
+            # only these large semantic overlays; do it before the evidence
+            # gate too so a capturable profile is not rejected prematurely.
+            await hide_obstructive_login_overlays(author_page)
             decision.overlay_state = await dismiss_profile_overlays(author_page)
             _raise_if_cancelled(cancel_event)
             if decision.overlay_state == "blocked":

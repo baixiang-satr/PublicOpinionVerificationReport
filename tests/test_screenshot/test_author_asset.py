@@ -97,3 +97,12 @@ def test_backfill_author_id_upgrade_replaces_internal_uid_with_douyin_hao() -> N
 
     assert result.page.author_id == "83699722623"
     assert result.page.author_id_is_fallback is False
+
+
+def test_backfill_author_id_upgrade_replaces_internal_xhs_user_id() -> None:
+    result = _fallback_result("5bd87d86a5cfda00019d73b5", fallback=False)
+
+    _backfill_author_id(result, "535526151", upgrade=True)
+
+    assert result.page.author_id == "535526151"
+    assert result.page.author_id_is_fallback is False

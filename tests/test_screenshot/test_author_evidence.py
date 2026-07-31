@@ -7,6 +7,7 @@ import pytest
 from src.domain.models import TemplateRow
 from src.export.staging_assets import audit_staged_author_assets
 from src.screenshot.author_evidence import (
+    PAGE_SIGNAL_SCRIPT,
     AuthorEvidenceDecision,
     ProfilePageType,
     classify_profile_page,
@@ -16,8 +17,12 @@ from src.screenshot.author_evidence import (
     write_decision,
 )
 
-
 # ── Page type classification ─────────────────────────────────────────────
+
+
+def test_profile_signal_prefers_public_xiaohongshu_account_label() -> None:
+    assert "小红书号" in PAGE_SIGNAL_SCRIPT
+    assert "headerIdSource = 'xiaohongshu'" in PAGE_SIGNAL_SCRIPT
 
 
 def test_article_page_is_not_a_profile() -> None:
