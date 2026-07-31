@@ -196,7 +196,12 @@ class FakeSession:
         self.saved = 0
         self.closed = 0
 
-    async def context_for(self, _key: str, _storage_state: object) -> FakeSessionContext:
+    async def context_for(
+        self,
+        _key: str,
+        _storage_state: object,
+        **_kwargs: object,
+    ) -> FakeSessionContext:
         return self._context
 
     async def browse_page_for(self, _key: str, _context: object) -> FakeNavPage:

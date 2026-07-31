@@ -24,7 +24,8 @@ class FakePage:
 
 
 class FakeContext:
-    def __init__(self) -> None:
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        self.options = options or {}
         self.pages: list[FakePage] = []
         self.bindings: dict[str, Any] = {}
         self.closed = False
@@ -60,8 +61,8 @@ class FakeBrowser:
     def is_connected(self) -> bool:
         return not self.closed
 
-    async def new_context(self, **_kwargs: Any) -> FakeContext:
-        context = FakeContext()
+    async def new_context(self, **kwargs: Any) -> FakeContext:
+        context = FakeContext(kwargs)
         self.contexts.append(context)
         return context
 
@@ -108,6 +109,22 @@ async def test_context_reused_per_platform_and_binding_exposed_once(
     assert douyin_a is not guest
     assert len(browser.contexts) == 3
     assert list(douyin_a.bindings) == [BINDING_NAME]  # 只暴露一次
+
+
+@pytest.mark.asyncio
+async def test_kuaishou_author_context_can_force_desktop_user_agent(
+    tmp_path: Path,
+) -> None:
+    browser = FakeBrowser()
+    session = _session(tmp_path, browser)
+
+    context = await session.context_for(
+        "kuaishou",
+        None,
+        force_desktop=True,
+    )
+
+    assert "user_agent" not in context.options
 
 
 @pytest.mark.asyncio

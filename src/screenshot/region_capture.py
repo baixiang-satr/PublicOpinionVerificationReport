@@ -64,6 +64,15 @@ CAPTURE_TARGETS = ("content", "author")
 _ARM_DELAY_SECONDS = 0.35
 
 
+def _uses_desktop_profile_context(
+    platform_key: str | None,
+    target: str,
+) -> bool:
+    """Keep Kuaishou profile capture off its mobile share-page context."""
+
+    return platform_key == "kuaishou" and target == "author"
+
+
 @dataclass(frozen=True)
 class RegionCaptureResult:
     status: str  # "saved" | "cancelled" | "error"
@@ -131,7 +140,11 @@ class RegionCaptureService:
         session = self._session
         assert session is not None
         key = platform_key or GUEST_KEY
-        context = await session.context_for(key, storage_state)
+        context = await session.context_for(
+            key,
+            storage_state,
+            force_desktop=_uses_desktop_profile_context(platform_key, target),
+        )
         page = await session.browse_page_for(key, context)
 
         state = _CaptureState(context=context, browse_page=page)
@@ -222,7 +235,11 @@ class RegionCaptureService:
         context_options = browser_context_options(
             config,
             storage_state,
-            platform_key=platform_key,
+            platform_key=(
+                None
+                if _uses_desktop_profile_context(platform_key, target)
+                else platform_key
+            ),
         )
         # The page must fill the whole maximized window, not a fixed viewport.
         context_options.pop("viewport", None)

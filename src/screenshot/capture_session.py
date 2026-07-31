@@ -87,6 +87,8 @@ class CaptureSession:
         self,
         key: str,
         storage_state: dict[str, Any] | None,
+        *,
+        force_desktop: bool = False,
     ) -> Any:
         """Reuse the platform's context (live cookies stay in memory)."""
 
@@ -98,7 +100,7 @@ class CaptureSession:
         options = browser_context_options(
             config,
             storage_state,
-            platform_key=None if key == GUEST_KEY else key,
+            platform_key=None if key == GUEST_KEY or force_desktop else key,
         )
         # The page must fill the whole maximized window, not a fixed viewport.
         options.pop("viewport", None)
