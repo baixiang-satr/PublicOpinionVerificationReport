@@ -230,14 +230,12 @@ class AuthRunner(_AsyncThreadJob):
 
 
 class CaptureRunner:
-    """Runs interactive region captures on one persistent loop thread.
+    """Run interactive region captures on one persistent loop thread.
 
     Playwright objects are bound to the event loop that created them, so a
-    long-lived capture browser requires a long-lived loop: this runner owns
-    a dedicated daemon thread running ``loop.run_forever()`` and dispatches
-    capture coroutines to it.  The :class:`CaptureSession` (browser +
-    per-platform contexts) survives between captures, so a login completed
-    in the capture window persists until the app closes.
+    dedicated daemon thread runs ``loop.run_forever()`` and dispatches capture
+    coroutines to it. Each visible browser closes when capture finishes;
+    encrypted per-platform state carries the login into the next window.
     """
 
     def __init__(self, task_config_getter, sink: EventSink) -> None:

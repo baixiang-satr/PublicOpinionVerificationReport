@@ -47,8 +47,10 @@ def _make_job(tmp_path: Path, records: list[RecordResult]) -> Path:
 class _FakeWindow:
     def __init__(self, picked: Path | None) -> None:
         self._picked = picked
+        self.calls: list[tuple[tuple, dict]] = []
 
-    def create_file_dialog(self, *_args, **_kwargs):
+    def create_file_dialog(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
         return (str(self._picked),) if self._picked else None
 
 
@@ -161,6 +163,34 @@ def test_list_screenshots_empty_without_session_or_files(tmp_path: Path) -> None
     bridge.jobs.open_session(job_dir)
     assert bridge.list_screenshots(1) == {"content": None, "author": None}
     assert bridge.list_screenshots(999) == {"content": None, "author": None}
+
+
+def test_crawled_author_screenshot_is_visible_and_listed_in_other_files(
+    tmp_path: Path,
+) -> None:
+    record = _paged_record(
+        1,
+        "https://v.douyin.com/erOICsACek8/",
+        final_url="https://www.douyin.com/video/7667987870472788815",
+        author_url="https://www.douyin.com/user/SEC123",
+    )
+    record.assets.page_screenshot = tmp_path / "001.jpg"
+    record.assets.author_screenshot = tmp_path / "001主页.jpg"
+    record.assets.page_screenshot.write_bytes(b"\xff\xd8\xff" + b"0" * 32)
+    record.assets.author_screenshot.write_bytes(b"\xff\xd8\xff" + b"1" * 32)
+    job_dir = _make_job(tmp_path, [record])
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    ok, message = bridge.jobs.open_session(job_dir)
+    assert ok, message
+
+    previews = bridge.list_screenshots(1)
+    assert previews["content"] is not None
+    assert previews["author"] is not None
+    assert previews["author"]["name"] == "001主页.jpg"
+
+    payload = bridge.get_sheet_payload()
+    video = next(sheet for sheet in payload if sheet["name"] == "图文视频")
+    assert video["rows"][0]["cells"]["I"] == "001主页.jpg"
 
 
 def test_start_region_capture_guards(tmp_path: Path) -> None:
@@ -299,12 +329,19 @@ def test_event_sink_without_window_is_silent() -> None:
 def test_pick_input_file(tmp_path: Path, suffix: str) -> None:
     source = tmp_path / f"urls{suffix}"
     source.write_text("https://example.com/a\nhttps://example.com/b\nnot-a-url\n", encoding="utf-8")
+    window = _FakeWindow(source)
     bridge = WebUIBridge(
         _config(tmp_path),
         EventSink(),
-        window_provider=lambda: _FakeWindow(source),
+        window_provider=lambda: window,
     )
     info = bridge.pick_input_file()
     assert info is not None
     assert info["url_count"] == 2
     assert info["rejected_count"] == 1
+    assert window.calls
+    import webview
+
+    args, kwargs = window.calls[0]
+    assert args == (webview.FileDialog.OPEN,)
+    assert kwargs["file_types"][0].startswith("URL 文件")

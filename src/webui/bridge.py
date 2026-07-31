@@ -88,22 +88,25 @@ class WebUIBridge:
 
     # ── 文件对话框 ──
     def _pick_file(self, file_types: tuple[str, ...], *, directory: bool = False) -> Path | None:
-        if self._window_provider:
-            window = self._window_provider()
-            result = window.create_file_dialog(
-                "folder" if directory else "open",
-                file_types=file_types,
-            )
-        else:
-            import webview
+        import webview
 
-            window = webview.windows[0]
-            if directory:
-                result = window.create_file_dialog(webview.FOLDER_DIALOG)
-            else:
-                result = window.create_file_dialog(
-                    webview.OPEN_DIALOG, file_types=file_types
-                )
+        window = (
+            self._window_provider()
+            if self._window_provider
+            else webview.windows[0]
+        )
+        # pywebview expects FileDialog enum/int values (OPEN=10,
+        # FOLDER=20). Passing the strings "open"/"folder" falls through every
+        # WinForms branch, leaving its internal file_path variable unbound.
+        dialog_type = (
+            webview.FileDialog.FOLDER
+            if directory
+            else webview.FileDialog.OPEN
+        )
+        result = window.create_file_dialog(
+            dialog_type,
+            file_types=() if directory else file_types,
+        )
         if not result:
             return None
         return Path(result[0] if isinstance(result, (list, tuple)) else result)
