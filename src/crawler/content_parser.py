@@ -67,6 +67,8 @@ class ContentParser:
             self._finalize_douyin_video(merged, dedicated_snapshot)
         if definition.key == "xiaohongshu" and dedicated_snapshot is not None:
             self._finalize_xiaohongshu_note(merged, dedicated_snapshot)
+        if definition.key == "kuaishou" and dedicated_snapshot is not None:
+            self._finalize_kuaishou_video(merged, dedicated_snapshot)
         return merged
 
     @staticmethod
@@ -178,6 +180,70 @@ class ContentParser:
         # Only images belonging to the selected note may enter the temporary
         # OCR queue; carousel recommendations and avatars are unrelated.
         merged.image_urls = list(dedicated.image_urls)
+        self._generic.finalize(merged)
+
+        if dedicated.published_at is not None:
+            merged.published_at = dedicated.published_at
+            merged.published_at_raw = dedicated.published_at_raw
+            source = dedicated.field_sources.get("published_at")
+            if source is not None:
+                merged.field_sources["published_at"] = source
+                merged.field_confidences["published_at"] = (
+                    dedicated.field_confidences.get("published_at", 0.94)
+                )
+            if dedicated.published_at_raw is not None:
+                raw_source = dedicated.field_sources.get("published_at_raw")
+                if raw_source is not None:
+                    merged.field_sources["published_at_raw"] = raw_source
+                    merged.field_confidences["published_at_raw"] = (
+                        dedicated.field_confidences.get(
+                            "published_at_raw",
+                            0.94,
+                        )
+                    )
+
+    def _finalize_kuaishou_video(
+        self,
+        merged: PageData,
+        dedicated: PageData,
+    ) -> None:
+        """Keep the URL-matched Kuaishou photo above recommendation feeds."""
+
+        authoritative_sources = {
+            source
+            for field in ("title", "content_text")
+            if (source := dedicated.field_sources.get(field)) is not None
+        }
+        if not authoritative_sources.intersection(
+            {
+                ExtractionSource.EMBEDDED_JSON,
+                ExtractionSource.NETWORK_JSON,
+            }
+        ):
+            return
+
+        for field in (
+            "title",
+            "content_text",
+            "author_name",
+            "author_id",
+            "author_url",
+        ):
+            value = getattr(dedicated, field)
+            if value is None:
+                continue
+            setattr(merged, field, value)
+            source = dedicated.field_sources.get(field)
+            if source is not None:
+                merged.field_sources[field] = source
+                merged.field_confidences[field] = (
+                    dedicated.field_confidences.get(field, 0.94)
+                )
+
+        # Video covers, avatars and recommendation cards are page chrome, not
+        # body images.  Excluding them prevents OCR from appending unrelated
+        # recommendation text to the requested caption.
+        merged.image_urls = []
         self._generic.finalize(merged)
 
         if dedicated.published_at is not None:

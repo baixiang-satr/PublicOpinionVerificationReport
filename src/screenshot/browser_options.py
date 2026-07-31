@@ -14,6 +14,15 @@ logger = logging.getLogger(__name__)
 
 STEALTH_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "libs" / "stealth.min.js"
 
+# Kuaishou returns a tiny JSON error document to automated desktop clients,
+# while its official mobile share surface provides SSR HTML, the requested
+# photo in INIT_STATE, and a renderable evidence page.
+KUAISHOU_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Mobile Safari/537.36"
+)
+
 # ── Anti-detection Chromium launch arguments ─────────────────────────────
 # Reference: MediaCrawler (https://github.com/NanmiCoder/MediaCrawler)
 # These args help hide Playwright automation fingerprints from target sites.
@@ -105,6 +114,8 @@ async def launch_headed_with_fallback(
 def browser_context_options(
     config: TaskConfig,
     storage_state: Any | None = None,
+    *,
+    platform_key: str | None = None,
 ) -> dict[str, Any]:
     options: dict[str, Any] = {
         "viewport": {
@@ -122,6 +133,8 @@ def browser_context_options(
     }
     if config.user_agent:
         options["user_agent"] = config.user_agent
+    elif platform_key == "kuaishou":
+        options["user_agent"] = KUAISHOU_MOBILE_USER_AGENT
     if storage_state is not None:
         options["storage_state"] = storage_state
     return options

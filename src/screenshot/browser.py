@@ -219,7 +219,11 @@ class BrowserPool:
             if not self.is_started:
                 raise BrowserUnavailableError("BrowserPool.start() must be called before opening a page.")
 
-            context_options = browser_context_options(self._config, storage_state)
+            context_options = browser_context_options(
+                self._config,
+                storage_state,
+                platform_key=platform_key,
+            )
 
             try:
                 context = await self._browser.new_context(**context_options)
@@ -379,10 +383,13 @@ class BrowserPool:
         if (
             url
             and policy is not None
-            and _prefer_guest_for_public_share(url, policy.platform_key)
+            and (
+                _prefer_guest_for_public_share(url, policy.platform_key)
+                or policy.platform_key == "kuaishou"
+            )
         ):
-            # Public XHS shares remain usable as isolated guests only when no
-            # verified platform state exists. A verified login must win:
+            # Public XHS shares and Kuaishou's mobile SSR client require an
+            # isolated platform context. A verified login still wins above:
             # author-page navigation and later screenshots need that session.
             return (
                 f"guest:{policy.platform_key}",

@@ -68,7 +68,7 @@ class PageShooter:
         }
         if definition is None:
             definition = find_platform(str(getattr(page, "url", "") or ""))
-        await _wait_for_content_ready(page, definition, cancel_event)
+        await wait_for_capture_ready(page, definition, cancel_event)
         await hide_obstructive_login_overlays(page)
         await _pause_playing_media(page)
         is_douyin_video = bool(
@@ -172,16 +172,26 @@ class PageShooter:
         return output_path
 
 
-async def _wait_for_content_ready(
+async def wait_for_capture_ready(
     page: Any,
     definition: Any = None,
     cancel_event: asyncio.Event | None = None,
-) -> None:
-    """Best-effort wait for substantive content, fonts, images and a quiet DOM."""
+    *,
+    require_content: bool = True,
+) -> bool:
+    """Wait for substantive content and stable visible assets before capture.
+
+    The same readiness gate is used by automatic and interactive screenshots.
+    Automatic evidence rejects an unrendered page; an operator-driven capture
+    may continue after the bounded wait so a manually repaired page remains
+    under the operator's control.
+    """
 
     _raise_if_cancelled(cancel_event)
     if not hasattr(page, "wait_for_function"):
-        return
+        return False
+    if definition is None:
+        definition = find_platform(str(getattr(page, "url", "") or ""))
     selectors = [
         selector
         for field in ("title", "content_text")
@@ -210,7 +220,7 @@ async def _wait_for_content_ready(
     }}"""
     content_ready = False
     try:
-        await page.wait_for_function(content_ready_script, timeout=3_000)
+        await page.wait_for_function(content_ready_script, timeout=8_000)
         content_ready = True
     except Exception:
         pass
@@ -219,30 +229,52 @@ async def _wait_for_content_ready(
             content_ready = bool(await page.evaluate(content_ready_script))
         except Exception:
             pass
-    if not content_ready:
+    if not content_ready and require_content:
         raise PageScreenshotError(
             "Page title/content did not become visibly rendered before screenshot."
         )
+    if not content_ready:
+        return False
     try:
         await page.wait_for_function(
             """() =>
                 (!document.fonts || document.fonts.status === 'loaded') &&
                 Array.from(document.images).every(img => {
                   const rect = img.getBoundingClientRect();
-                  const visible = rect.bottom >= 0 && rect.top <= window.innerHeight;
-                  return !visible || img.complete;
+                  const visible = rect.bottom >= 0
+                    && rect.top <= window.innerHeight
+                    && rect.right >= 0
+                    && rect.left <= window.innerWidth;
+                  return !visible || (
+                    img.complete
+                    && (
+                      img.naturalWidth > 0
+                      || !(img.currentSrc || img.src)
+                    )
+                  );
+                }) &&
+                Array.from(document.querySelectorAll('video')).every(video => {
+                  const rect = video.getBoundingClientRect();
+                  const visible = rect.bottom >= 0
+                    && rect.top <= window.innerHeight
+                    && rect.right >= 0
+                    && rect.left <= window.innerWidth;
+                  return !visible || video.readyState >= 2 || Boolean(video.poster);
                 })
             """,
-            timeout=2_500,
+            timeout=6_000,
         )
     except Exception:
         pass
     await _wait_for_dom_quiet(page)
     try:
-        await page.wait_for_timeout(150)
+        # Leave one final paint window after the last DOM/image mutation.
+        # This prevents capturing a populated DOM before its pixels appear.
+        await page.wait_for_timeout(600)
     except Exception:
         pass
     _raise_if_cancelled(cancel_event)
+    return True
 
 
 async def _wait_for_dom_quiet(page: Any) -> None:
@@ -265,7 +297,7 @@ async def _wait_for_dom_quiet(page: Any) -> None:
                 };
                 const reset = () => {
                   clearTimeout(quietTimer);
-                  quietTimer = setTimeout(finish, 250);
+                  quietTimer = setTimeout(finish, 750);
                 };
                 const observer = new MutationObserver(reset);
                 observer.observe(document.body, {
@@ -274,7 +306,7 @@ async def _wait_for_dom_quiet(page: Any) -> None:
                   attributes: true,
                   characterData: true
                 });
-                hardTimer = setTimeout(finish, 1_000);
+                hardTimer = setTimeout(finish, 3_000);
                 reset();
             })"""
         )

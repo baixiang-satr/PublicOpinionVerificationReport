@@ -12,9 +12,9 @@ from the page, capturing never scrolls or shifts the page.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,6 +29,7 @@ from src.screenshot.browser_options import (
 from src.screenshot.capture_session import GUEST_KEY, CaptureSession
 from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
 from src.screenshot.page_layout import align_page_for_capture
+from src.screenshot.page_shooter import wait_for_capture_ready
 from src.screenshot.region_capture_helpers import (
     _capture_name,
     _CaptureState,
@@ -108,6 +109,7 @@ class RegionCaptureService:
             url,
             evidence_id=evidence_id,
             target=target,
+            platform_key=platform_key,
             storage_state=storage_state,
             assets_dir=assets_dir,
             cancel_event=cancel_event,
@@ -207,6 +209,7 @@ class RegionCaptureService:
         *,
         evidence_id: int,
         target: str,
+        platform_key: str | None,
         storage_state: dict[str, Any] | None,
         assets_dir: Path,
         cancel_event: asyncio.Event | None,
@@ -216,7 +219,11 @@ class RegionCaptureService:
         config = replace(self._config, headless=False)
         launch_options = browser_launch_options(config)
         launch_options["args"] = [*launch_options.get("args", ()), "--start-maximized"]
-        context_options = browser_context_options(config, storage_state)
+        context_options = browser_context_options(
+            config,
+            storage_state,
+            platform_key=platform_key,
+        )
         # The page must fill the whole maximized window, not a fixed viewport.
         context_options.pop("viewport", None)
         context_options.pop("device_scale_factor", None)
@@ -363,6 +370,14 @@ class RegionCaptureService:
 
         if state.select_page is not None or state.browse_page is None:
             return
+        # The user may click as soon as text appears while fonts, covers or
+        # the first video frame are still painting.  Reuse the automatic
+        # screenshot readiness gate, but never reject an operator-repaired
+        # page when the bounded wait expires.
+        await wait_for_capture_ready(
+            state.browse_page,
+            require_content=False,
+        )
         # Some sites expand the document with off-screen placeholders and
         # render the real article/profile mostly beyond the right edge. Align
         # the live page immediately before the frozen OS screenshot so this

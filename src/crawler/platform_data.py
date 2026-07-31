@@ -272,7 +272,25 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         "快手科技_快手_图文视频",
         ExtractorFamily.SOCIAL,
         ("kuaishou.com", "gifshow.com"),
-        _selectors(content_text=(".video-info-title", ".caption"), author_name=(".profile-user-name", ".author-name"), author_url=(".profile-user-name a", "[class*='author'] a", "a[href*='/profile/']"), published_at=(".publish-time",)),
+        _selectors(
+            content_text=(
+                ".video-info-title",
+                ".caption",
+                ".work-info .desc",
+                "[class*='work-info'] [class*='desc']",
+            ),
+            author_name=(
+                ".profile-user-name",
+                ".author-name",
+                ".work-info .author .txt",
+            ),
+            author_url=(
+                ".profile-user-name a",
+                "[class*='author'] a",
+                "a[href*='/profile/']",
+            ),
+            published_at=(".publish-time",),
+        ),
         include_patterns=(r"/short-video/", r"/fw/photo/"),
     ),
     PlatformDefinition(

@@ -95,7 +95,11 @@ class CaptureSession:
         if context is not None:
             return context
         config = replace(self._config, headless=False)
-        options = browser_context_options(config, storage_state)
+        options = browser_context_options(
+            config,
+            storage_state,
+            platform_key=None if key == GUEST_KEY else key,
+        )
         # The page must fill the whole maximized window, not a fixed viewport.
         options.pop("viewport", None)
         options.pop("device_scale_factor", None)
