@@ -64,7 +64,15 @@ class ToutiaoExtractor(_SsrPayloadMixin):
             node = _toutiao_article(payload)
             if node is None:
                 continue
-            media = node.get("mediaInfo") or node.get("media") or {}
+            media = (
+                node.get("mediaInfo")
+                or node.get("media_info")
+                or node.get("media")
+                or node.get("author")
+                or node.get("userInfo")
+                or node.get("user")
+                or {}
+            )
             media = media if isinstance(media, Mapping) else {}
             published_raw = text_at(node, ("publishTime", "publish_time"))
             data = PageData(final_url=document.url)
@@ -75,7 +83,32 @@ class ToutiaoExtractor(_SsrPayloadMixin):
                     "content_text": _html_or_text(text_at(node, ("content", "abstract"))),
                     "author_name": text_at(media, ("name", "nickname"))
                     or text_at(node, ("source", "media_name", "mediaName")),
-                    "author_id": text_at(media, ("id", "user_id", "userId")),
+                    # Toutiao payload variants use both user and media IDs for
+                    # the public account. The opaque /token/... route is not
+                    # exported as an account: if none of these facts exists,
+                    # the shared author finalizer deliberately uses nickname.
+                    "author_id": text_at(
+                        media,
+                        (
+                            "user_id",
+                            "userId",
+                            "media_id",
+                            "mediaId",
+                            "uid",
+                            "id",
+                        ),
+                    ),
+                    "author_url": text_at(
+                        media,
+                        (
+                            "url",
+                            "user_url",
+                            "userUrl",
+                            "home_url",
+                            "homeUrl",
+                        ),
+                    )
+                    or text_at(node, ("source_url", "sourceUrl")),
                     "published_at_raw": published_raw,
                     "published_at_dt": epoch_to_datetime(
                         epoch_at(node, ("publishTime", "publish_time"))

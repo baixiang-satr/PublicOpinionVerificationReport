@@ -8,9 +8,6 @@ from src.crawler.author_profile_urls import derive_author_profile_url
 from src.domain.models import ExtractionSource, PageData, RouteDecision
 
 
-ID_REQUIRED_SHEETS = frozenset({"公众号", "图文视频", "浏览器"})
-
-
 class AuthorExtractor:
     def __init__(self, allow_nickname_as_id: bool = True) -> None:
         self._allow_nickname_as_id = allow_nickname_as_id
@@ -24,12 +21,13 @@ class AuthorExtractor:
                 page.field_sources["author_url"] = ExtractionSource.DERIVED_URL
         if route.sheet_name == "电商平台" and not page.store_name:
             page.store_name = page.author_name
-        if (
-            route.sheet_name in ID_REQUIRED_SHEETS
-            and not page.author_id
-            and page.author_name
-            and self._allow_nickname_as_id
-        ):
+        # Every crawled website follows the same auditable fallback rule.
+        # Some sheets (notably 生活资讯 / 今日头条) keep 用户账号 optional,
+        # but an available nickname is still more useful than a blank cell.
+        # A later identity-verified profile extraction may replace this value
+        # with the real public account ID.
+        if not page.author_id and page.author_name and self._allow_nickname_as_id:
             page.author_id = page.author_name
             page.author_id_is_fallback = True
             page.field_sources["author_id"] = ExtractionSource.NICKNAME_FALLBACK
+            page.field_confidences["author_id"] = 0.25
