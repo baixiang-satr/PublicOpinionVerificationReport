@@ -462,7 +462,7 @@ def test_sohu_video_fills_author() -> None:
         "authorUrl": "https://tv.sohu.com/user/123",
         "time": "2025-06-27 20:00",
     }
-    page = FakePage({"user-name": probe})
+    page = FakePage({"_videoInfo": probe})
     document = RenderedDocument(url="https://tv.sohu.com/v/abc.html")
 
     data = _run(SohuVideoExtractor().extract(page, document, _definition("sohu_video")))
