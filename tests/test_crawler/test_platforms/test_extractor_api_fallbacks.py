@@ -170,6 +170,100 @@ def test_xiaohongshu_author_dom_fallback() -> None:
     assert data.field_sources["author_name"].value == "platform_dom"
 
 
+def test_xiaohongshu_reads_current_initial_state_script() -> None:
+    note = {
+        "noteId": "6a5dd45a0000000001033293",
+        "title": "脚本中的目标笔记",
+        "desc": "正文#AI人工智能[话题]#",
+        "time": 1_784_534_106_000,
+        "imageList": [
+            {"urlDefault": "https://sns-img.example.test/target.webp"},
+        ],
+        "user": {
+            "nickname": "脚本作者",
+            "userId": "user-123",
+            "redId": "public-red-123",
+            "xsecToken": "token+/=",
+        },
+    }
+    page = FakePage({"window.__INITIAL_STATE__": note})
+    document = RenderedDocument(
+        url=(
+            "https://www.xiaohongshu.com/explore/"
+            "6a5dd45a0000000001033293?xsec_source=app_share"
+        )
+    )
+
+    data = _run(
+        XiaohongshuExtractor().extract(
+            page,
+            document,
+            _definition("xiaohongshu"),
+        )
+    )
+
+    assert data is not None
+    assert data.title == "脚本中的目标笔记"
+    assert data.content_text == "正文#AI人工智能"
+    assert data.author_name == "脚本作者"
+    assert data.author_id == "public-red-123"
+    assert data.author_url == (
+        "https://www.xiaohongshu.com/user/profile/user-123"
+        "?xsec_token=token%2B%2F%3D&xsec_source=pc_note"
+    )
+    assert data.published_at is not None
+    assert data.image_urls == ["https://sns-img.example.test/target.webp"]
+    assert data.field_sources["content_text"].value == "embedded_json"
+
+
+def test_xiaohongshu_selects_note_detail_by_url_id() -> None:
+    state = {
+        "note": {
+            "noteDetailMap": {
+                "recommended": {
+                    "note": {
+                        "title": "推荐笔记",
+                        "desc": "不属于目标 URL 的推荐正文",
+                        "time": 1_751_000_000_000,
+                        "user": {"nickname": "推荐作者", "userId": "other"},
+                    }
+                },
+                "target123": {
+                    "note": {
+                        "title": "目标笔记",
+                        "desc": "目标正文",
+                        "time": 1_752_000_000_000,
+                        "user": {
+                            "nickname": "目标作者",
+                            "userId": "target-user",
+                        },
+                    }
+                },
+            }
+        }
+    }
+    document = RenderedDocument(
+        url=(
+            "https://www.xiaohongshu.com/explore/"
+            "target123?xsec_source=app_share"
+        ),
+        embedded_payloads=(state,),
+    )
+
+    data = _run(
+        XiaohongshuExtractor().extract(
+            FakePage({}),
+            document,
+            _definition("xiaohongshu"),
+        )
+    )
+
+    assert data is not None
+    assert data.title == "目标笔记"
+    assert data.content_text == "目标正文"
+    assert data.author_name == "目标作者"
+
+
 def test_kuaishou_photo_with_nested_user_node() -> None:
     body = {
         "data": {
