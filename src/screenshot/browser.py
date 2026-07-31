@@ -388,15 +388,8 @@ class BrowserPool:
                 or policy.platform_key == "kuaishou"
             )
         ):
-            # Public XHS shares and Kuaishou's mobile SSR client require an
-            # isolated platform context. A verified login still wins above:
-            # author-page navigation and later screenshots need that session.
-            return (
-                f"guest:{policy.platform_key}",
-                policy.platform_key,
-                "guest",
-                None,
-            )
+            # Public XHS shares and Kuaishou mobile SSR need isolation.
+            return (f"guest:{policy.platform_key}", policy.platform_key, "guest", None)
         return "guest", None, "guest", None
 
     async def _save_login_states(self, slots: tuple[_ContextSlot, ...]) -> None:

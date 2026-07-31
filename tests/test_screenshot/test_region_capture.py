@@ -276,10 +276,21 @@ async def test_arm_grabs_screen_and_opens_selection_tab(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(region_capture, "_ARM_DELAY_SECONDS", 0)
+    events: list[str] = []
+
+    async def ready(*_args: object, **_kwargs: object) -> bool:
+        events.append("ready")
+        return True
+
+    def grab_after_ready() -> Image.Image:
+        events.append("grab")
+        return _striped_image()
+
+    monkeypatch.setattr(region_capture, "wait_for_capture_ready", ready)
     context = FakeContext()
     state = _state(context)
     results: list[RegionCaptureResult] = []
-    await _service(_striped_image)._handle_action(
+    await _service(grab_after_ready)._handle_action(
         state.browse_page,
         json.dumps({"action": "arm"}),
         evidence_id=1,
@@ -293,6 +304,7 @@ async def test_arm_grabs_screen_and_opens_selection_tab(
     assert state.select_page is context.pages[0]
     assert state.select_page.content is not None
     assert "data:image/jpeg;base64," in state.select_page.content
+    assert events == ["ready", "grab"]
     # 截屏前先隐藏浏览页工具条
     assert any("__poirRegionCaptureHide" in script for script in state.browse_page.scripts())
 

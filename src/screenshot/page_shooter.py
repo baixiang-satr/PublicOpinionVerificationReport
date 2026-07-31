@@ -12,6 +12,8 @@ from src.crawler.platform_catalog import find_platform
 from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
 from src.screenshot.page_layout import (
     align_page_for_capture,
+)
+from src.screenshot.page_layout import (
     page_dimensions as _page_dimensions,
 )
 from src.utils.file_utils import UnsafeFileNameError, require_safe_file_name
@@ -259,7 +261,10 @@ async def wait_for_capture_ready(
                     && rect.top <= window.innerHeight
                     && rect.right >= 0
                     && rect.left <= window.innerWidth;
-                  return !visible || video.readyState >= 2 || Boolean(video.poster);
+                  // A poster URL can exist before its pixels are painted.
+                  // Require actual current-frame data; the bounded timeout
+                  // still lets image-only or access-restricted pages proceed.
+                  return !visible || video.readyState >= 2;
                 })
             """,
             timeout=6_000,

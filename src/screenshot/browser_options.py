@@ -9,7 +9,6 @@ from typing import Any
 from src.config.settings import TaskConfig
 from src.screenshot.browser_runtime import mask_proxy
 
-
 logger = logging.getLogger(__name__)
 
 STEALTH_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "libs" / "stealth.min.js"

@@ -9,7 +9,6 @@ from typing import Mapping
 
 from src.crawler.platform_types import ExtractorFamily, PlatformDefinition, _selectors
 
-
 # These public sites appeared in field tests, but the immutable workbook has no
 # truthful platform enum for them. Keep the distinction explicit so callers can
 # explain why they are not auto-routed instead of disguising them as UC/360/etc.

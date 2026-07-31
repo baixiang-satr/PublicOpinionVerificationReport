@@ -132,6 +132,14 @@ async def test_normal_page_keeps_full_page_mode_and_waits_for_platform_content(
         int(options.get("timeout", 0)) >= 8_000
         for options in page.wait_options
     )
+    assert any(
+        "video.readyState >= 2" in script and "video.poster" not in script
+        for script in page.wait_scripts
+    )
+    assert any(
+        int(options.get("timeout", 0)) >= 6_000
+        for options in page.wait_options
+    )
     assert any(milliseconds >= 500 for milliseconds in page.wait_timeouts)
 
 

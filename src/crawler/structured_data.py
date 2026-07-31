@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from html import unescape
-import re
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from src.crawler.field_resolver import consider_field
 from src.domain.models import ExtractionSource, PageData
-
 
 _TITLE_KEYS = (
     "headline",
