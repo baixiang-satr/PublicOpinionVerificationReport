@@ -33,7 +33,6 @@ class FakeScreenshotPage:
 
     async def wait_for_timeout(self, milliseconds: int) -> None:
         self.wait_timeouts.append(milliseconds)
-        return None
 
     async def evaluate(self, script: str, *args: object) -> object:
         if "documentWidth" in script and "viewportWidth" in script:
