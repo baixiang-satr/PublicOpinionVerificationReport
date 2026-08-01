@@ -69,7 +69,11 @@ class CaptureSession:
         from playwright.async_api import async_playwright
 
         self._playwright = await async_playwright().start()
-        config = replace(self._config, headless=False)
+        config = replace(
+            self._config,
+            headless=False,
+            background_crawl_browser=False,
+        )
         launch_options = browser_launch_options(config)
         launch_options["args"] = [*launch_options.get("args", ()), "--start-maximized"]
         try:
@@ -96,7 +100,11 @@ class CaptureSession:
         context = self._contexts.get(key)
         if context is not None:
             return context
-        config = replace(self._config, headless=False)
+        config = replace(
+            self._config,
+            headless=False,
+            background_crawl_browser=False,
+        )
         options = browser_context_options(
             config,
             storage_state,

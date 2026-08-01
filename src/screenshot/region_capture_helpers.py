@@ -35,6 +35,27 @@ class _CaptureState:
     select_pending: bool = False  # selection tab is being created
 
 
+def page_is_closed(page: Any) -> bool:
+    """True when a Playwright page is unusable or already closed."""
+
+    checker = getattr(page, "is_closed", None)
+    try:
+        return bool(checker()) if callable(checker) else False
+    except Exception:  # noqa: BLE001 - a broken page is unusable
+        return True
+
+
+def _live_pages(context: Any, *excluded: Any) -> list[Any]:
+    """Open pages in a context, ignoring the given instances."""
+
+    return [
+        candidate
+        for candidate in list(getattr(context, "pages", ()) or ())
+        if all(candidate is not item for item in excluded)
+        and not page_is_closed(candidate)
+    ]
+
+
 async def _hide_overlay(page: Any) -> None:
     if page is None:
         return
@@ -118,12 +139,13 @@ def _save_region(
 ) -> None:
     """Crop the confirmed region out of the frozen screen image."""
 
-    box = (
-        clip["x"],
-        clip["y"],
-        clip["x"] + clip["width"],
-        clip["y"] + clip["height"],
-    )
+    left = min(max(0, clip["x"]), image.width)
+    top = min(max(0, clip["y"]), image.height)
+    right = min(image.width, max(0, clip["x"]) + clip["width"])
+    bottom = min(image.height, max(0, clip["y"]) + clip["height"])
+    if right - left < _MIN_REGION_PX or bottom - top < _MIN_REGION_PX:
+        raise ValueError("Selected region falls outside the captured screen.")
+    box = (left, top, right, bottom)
     region = image.crop(box)
     if config.screenshot_format == "jpeg":
         region.convert("RGB").save(

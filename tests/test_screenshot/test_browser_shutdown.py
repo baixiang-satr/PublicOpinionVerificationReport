@@ -4,6 +4,7 @@ import pytest
 
 from src.config.settings import TaskConfig
 from src.screenshot.browser import BrowserPool, _ContextSlot
+from src.screenshot.browser_state import preserve_indexed_db
 
 
 class FakeBrowser:
@@ -49,6 +50,38 @@ class FakeStore:
 
     def commit_validated_state(self, *_args: object) -> None:
         return None
+
+    @staticmethod
+    def load_state(_platform_key: str, *, include_inactive: bool = False) -> dict:
+        del include_inactive
+        return {"cookies": [], "origins": []}
+
+
+def test_preserve_indexed_db_merges_previous_origin_without_losing_fresh_storage() -> None:
+    previous = {
+        "origins": [
+            {
+                "origin": "https://example.test",
+                "localStorage": [{"name": "old", "value": "1"}],
+                "indexedDB": [{"name": "auth", "data": []}],
+            }
+        ]
+    }
+    refreshed = {
+        "cookies": [{"name": "session", "value": "new"}],
+        "origins": [
+            {
+                "origin": "https://example.test",
+                "localStorage": [{"name": "new", "value": "2"}],
+            }
+        ],
+    }
+
+    merged = preserve_indexed_db(previous, refreshed)
+
+    assert merged["cookies"] == refreshed["cookies"]
+    assert merged["origins"][0]["localStorage"] == refreshed["origins"][0]["localStorage"]
+    assert merged["origins"][0]["indexedDB"] == previous["origins"][0]["indexedDB"]
 
 
 @pytest.mark.asyncio

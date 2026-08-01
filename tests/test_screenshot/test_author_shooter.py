@@ -7,6 +7,7 @@ from src.screenshot.author_evidence import identity_verdict
 from src.screenshot.author_shooter import (
     AuthorShooter,
     AuthorScreenshotError,
+    _best_header_name,
 )
 
 
@@ -239,3 +240,12 @@ def test_author_identity_does_not_accept_name_from_navigation() -> None:
 
     assert state == "mismatch"
     assert rejection == "AUTHOR_IDENTITY_MISMATCH"
+
+
+def test_profile_header_selection_prefers_expected_author_over_city_switcher() -> None:
+    signals = {
+        "headerName": "北京",
+        "headerNames": ["北京", "新华社", "推荐账号"],
+    }
+
+    assert _best_header_name(signals, "新华社") == "新华社"

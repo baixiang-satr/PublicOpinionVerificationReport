@@ -21,11 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.config.settings import TaskConfig
 from src.crawler.navigation import navigate_page, stabilize_rendered_page
-from src.screenshot.browser_options import (
-    STEALTH_SCRIPT_PATH,
-    browser_context_options,
-    browser_launch_options,
-)
+from src.screenshot.browser_options import STEALTH_SCRIPT_PATH, browser_context_options, browser_launch_options
 from src.screenshot.capture_session import GUEST_KEY, CaptureSession
 from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
 from src.screenshot.page_layout import align_page_for_capture
@@ -36,10 +32,14 @@ from src.screenshot.region_capture_helpers import (
     _clip_from_payload,
     _grab_full_screen,
     _hide_overlay,
+    _live_pages,
     _reset_overlay,
     _reset_selection,
     _save_region,
     _selection_html,
+)
+from src.screenshot.region_page_tracker import (
+    track_active_browse_page as _track_active_browse_page,
 )
 from src.screenshot.region_capture_scripts import BINDING_NAME, OVERLAY_JS
 
@@ -71,6 +71,34 @@ def _uses_desktop_profile_context(
     """Keep Kuaishou profile capture off its mobile share-page context."""
 
     return platform_key == "kuaishou" and target == "author"
+
+
+async def _navigate_and_stabilize(
+    page: Any,
+    url: str,
+    config: TaskConfig,
+    cancel_event: asyncio.Event | None,
+) -> None:
+    """Navigate the browse window; a failed trip is never fatal."""
+
+    try:
+        await navigate_page(
+            page,
+            url,
+            config.page_timeout_seconds * 1000,
+            cancel_event,
+        )
+        await stabilize_rendered_page(
+            page,
+            config.page_stabilize_milliseconds,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        # 导航失败不致命：窗口保持打开，用户可自行跳转/登录后再框选。
+        logger.warning(
+            "Region capture navigation failed, window left open: %s", error
+        )
 
 
 @dataclass(frozen=True)
@@ -105,16 +133,10 @@ class RegionCaptureService:
         platform_key: str | None = None,
     ) -> RegionCaptureResult:
         if self._session is not None:
-            return await self._capture_in_session(
-                url,
-                evidence_id=evidence_id,
-                target=target,
-                platform_key=platform_key,
-                storage_state=storage_state,
-                assets_dir=assets_dir,
-                cancel_event=cancel_event,
-            )
-        return await self._capture_standalone(
+            capture = self._capture_in_session
+        else:
+            capture = self._capture_standalone
+        return await capture(
             url,
             evidence_id=evidence_id,
             target=target,
@@ -176,34 +198,29 @@ class RegionCaptureService:
         def _on_context_page(new_page: Any) -> None:
             if not state.select_pending and new_page is not state.select_page:
                 state.browse_page = new_page
+                new_page.on("close", _on_browse_close)
 
         def _on_browse_close(*_args: Any) -> None:
+            # Follow replacement/profile tabs instead of cancelling.
+            live = _live_pages(context, state.select_page)
+            if live:
+                state.browse_page = live[-1]
+                return
             _finish(RegionCaptureResult(status="cancelled"))
 
         session.set_binding_handler(_on_binding)
         context.on("page", _on_context_page)
         page.on("close", _on_browse_close)
+        active_page_tracker = asyncio.create_task(
+            _track_active_browse_page(state, done),
+            name=f"capture-active-page-{evidence_id}",
+        )
         try:
-            try:
-                await navigate_page(
-                    page,
-                    url,
-                    self._config.page_timeout_seconds * 1000,
-                    cancel_event,
-                )
-                await stabilize_rendered_page(
-                    page,
-                    self._config.page_stabilize_milliseconds,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                # 导航失败不致命：窗口保持打开，用户可自行跳转/登录后再框选。
-                logger.warning(
-                    "Region capture navigation failed, window left open: %s", error
-                )
+            await _navigate_and_stabilize(page, url, self._config, cancel_event)
             return await self._wait_for_result(done, cancel_event)
         finally:
+            active_page_tracker.cancel()
+            await asyncio.gather(active_page_tracker, return_exceptions=True)
             try:
                 context.remove_listener("page", _on_context_page)
                 page.remove_listener("close", _on_browse_close)
@@ -229,15 +246,17 @@ class RegionCaptureService:
     ) -> RegionCaptureResult:
         from playwright.async_api import async_playwright
 
-        config = replace(self._config, headless=False)
+        config = replace(
+            self._config,
+            headless=False,
+            background_crawl_browser=False,
+        )
         launch_options = browser_launch_options(config)
         launch_options["args"] = [*launch_options.get("args", ()), "--start-maximized"]
         context_options = browser_context_options(
-            config,
-            storage_state,
+            config, storage_state,
             platform_key=(
-                None
-                if _uses_desktop_profile_context(platform_key, target)
+                None if _uses_desktop_profile_context(platform_key, target)
                 else platform_key
             ),
         )
@@ -282,23 +301,31 @@ class RegionCaptureService:
             await context.expose_binding(BINDING_NAME, _on_binding)
             page = await context.new_page()
             state.browse_page = page
-            page.on("close", lambda *_: _finish(RegionCaptureResult(status="cancelled")))
+
+            def _on_browse_close(*_args: Any) -> None:
+                live = _live_pages(context, state.select_page)
+                if live:
+                    state.browse_page = live[-1]
+                else:
+                    _finish(RegionCaptureResult(status="cancelled"))
+
+            def _on_context_page(new_page: Any) -> None:
+                if not state.select_pending and new_page is not state.select_page:
+                    state.browse_page = new_page
+                    new_page.on("close", _on_browse_close)
+
+            context.on("page", _on_context_page)
+            page.on("close", _on_browse_close)
+            active_page_tracker = asyncio.create_task(
+                _track_active_browse_page(state, done),
+                name=f"capture-active-page-{evidence_id}",
+            )
             try:
-                await navigate_page(
-                    page,
-                    url,
-                    config.page_timeout_seconds * 1000,
-                    cancel_event,
-                )
-                await stabilize_rendered_page(page, config.page_stabilize_milliseconds)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                # 导航失败不致命：窗口保持打开，用户可自行跳转/登录后再框选。
-                logger.warning(
-                    "Region capture navigation failed, window left open: %s", error
-                )
-            return await self._wait_for_result(done, cancel_event)
+                await _navigate_and_stabilize(page, url, config, cancel_event)
+                return await self._wait_for_result(done, cancel_event)
+            finally:
+                active_page_tracker.cancel()
+                await asyncio.gather(active_page_tracker, return_exceptions=True)
         finally:
             if browser is not None:
                 try:
@@ -347,10 +374,10 @@ class RegionCaptureService:
             finish(RegionCaptureResult(status="cancelled"))
             return
         if action == "arm":
-            await self._arm(state)
+            await self._arm(state, finish)
             return
         if action == "abort":
-            await self._abort_selection(state)
+            await self._abort_selection(state, finish)
             return
         if action != "confirm":
             return
@@ -382,7 +409,11 @@ class RegionCaptureService:
             return
         finish(RegionCaptureResult(status="saved", name=name))
 
-    async def _arm(self, state: _CaptureState) -> None:
+    async def _arm(
+        self,
+        state: _CaptureState,
+        finish: Callable[[RegionCaptureResult], None],
+    ) -> None:
         """Freeze the whole screen and open the rubber-band selection tab."""
 
         if state.select_page is not None or state.browse_page is None:
@@ -413,6 +444,7 @@ class RegionCaptureService:
             )
             return
         state.image = image
+        select_page = None
         try:
             state.select_pending = True
             try:
@@ -422,19 +454,28 @@ class RegionCaptureService:
             state.select_page = select_page
             select_page.on(
                 "close",
-                lambda *_: asyncio.ensure_future(self._abort_selection(state)),
+                lambda *_: asyncio.ensure_future(self._abort_selection(state, finish)),
             )
             await select_page.set_content(_selection_html(image))
         except Exception as error:  # noqa: BLE001 — 打开选区页失败回退浏览态
             logger.warning("Open selection page failed: %s", error)
             state.image = None
             state.select_page = None
+            if select_page is not None:
+                try:
+                    await select_page.close()
+                except Exception:  # noqa: BLE001 — 页面可能已关闭
+                    pass
             await _reset_overlay(
                 state.browse_page,
                 f"无法打开框选页面：{type(error).__name__}，请点「开始框选」重试。",
             )
 
-    async def _abort_selection(self, state: _CaptureState) -> None:
+    async def _abort_selection(
+        self,
+        state: _CaptureState,
+        finish: Callable[[RegionCaptureResult], None] | None = None,
+    ) -> None:
         """Close the selection tab and return the browse window to browsing."""
 
         page = state.select_page
@@ -445,6 +486,14 @@ class RegionCaptureService:
                 await page.close()
             except Exception:  # noqa: BLE001 — 页面可能已关闭
                 pass
+        # The browse window may already be gone (e.g. the operator closed it
+        # while the selection tab was being armed): with no live page the
+        # overlay cannot be restored, so end the capture instead of hanging
+        # the UI forever on a never-satisfied future.
+        if not _live_pages(state.context):
+            if finish is not None:
+                finish(RegionCaptureResult(status="cancelled"))
+            return
         await _reset_overlay(state.browse_page, None)
 
 

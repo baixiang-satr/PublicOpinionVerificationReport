@@ -17,7 +17,7 @@ class FakeAuthStore:
         return {
             "cookies": [
                 {
-                    "name": "session",
+                    "name": "web_session",
                     "value": "saved",
                     "domain": ".xiaohongshu.com",
                     "path": "/",

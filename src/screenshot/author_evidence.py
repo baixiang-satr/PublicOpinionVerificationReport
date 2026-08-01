@@ -128,6 +128,9 @@ PAGE_SIGNAL_SCRIPT = """() => {
       '[class*="profile-header"] [class*="name"]',
       '[class*="user-info"] [class*="name"]',
       '[class*="author-info"] [class*="name"]',
+      'main [class*="nickname"]',
+      'main [class*="display-name"]',
+      'main [class*="user-name"]',
       '[class*="nickname"]',
       '[class*="display-name"]',
       '[class*="user-name"]',
@@ -135,12 +138,17 @@ PAGE_SIGNAL_SCRIPT = """() => {
       'main h2',
       'h1'
     ];
-    let headerName = '';
+    const headerNames = [];
     for (const selector of headerSelectors) {
-      const element = document.querySelector(selector);
-      const text = (element?.innerText || element?.textContent || '').trim();
-      if (text && text.length <= 100) { headerName = text; break; }
+      for (const element of Array.from(document.querySelectorAll(selector)).slice(0, 4)) {
+        const text = (element?.innerText || element?.textContent || '')
+          .trim().replace(/\\s+/g, ' ');
+        if (text && text.length <= 100 && !headerNames.includes(text)) {
+          headerNames.push(text);
+        }
+      }
     }
+    const headerName = headerNames[0] || '';
     const idSelectors = [
       '[class*="profile-header"] a[href*="/user"]',
       '[class*="user-info"] a[href*="/user"]',
@@ -181,6 +189,7 @@ PAGE_SIGNAL_SCRIPT = """() => {
     ));
     return {
       headerName,
+      headerNames,
       headerId,
       headerIdSource,
       title: (document.title || '').trim(),

@@ -26,6 +26,7 @@ class FakeScreenshotPage:
         self.wait_options: list[dict[str, object]] = []
         self.wait_timeouts: list[int] = []
         self.horizontal_scrolls: list[int] = []
+        self.css_alignments: list[dict[str, object]] = []
 
     async def wait_for_function(self, script: str, **options: object) -> None:
         self.wait_scripts.append(script)
@@ -46,6 +47,8 @@ class FakeScreenshotPage:
             }
         if "window.scrollTo(left, top)" in script and args:
             self.horizontal_scrolls.append(int(args[0]))
+        if "data-por-capture-aligned" in script and args:
+            self.css_alignments.append(dict(args[0]))
         return None
 
     async def screenshot(self, **options: object) -> None:
@@ -160,12 +163,7 @@ async def test_douyin_video_uses_stable_viewport_capture(tmp_path: Path) -> None
 
     assert page.options is not None
     assert page.options["full_page"] is False
-    assert page.options["clip"] == {
-        "x": 0,
-        "y": 0,
-        "width": 1_440,
-        "height": 1_100,
-    }
+    assert "clip" not in page.options
     assert page.horizontal_scrolls == [1_180]
 
 
@@ -188,13 +186,39 @@ async def test_horizontal_overflow_is_cropped_around_substantive_content(
 
     assert page.options is not None
     assert page.options["full_page"] is False
-    assert page.options["clip"] == {
-        "x": 0,
-        "y": 0,
-        "width": 1_440,
-        "height": 1_100,
-    }
+    assert "clip" not in page.options
     assert page.horizontal_scrolls == [1_180]
+
+
+@pytest.mark.asyncio
+async def test_css_offset_does_not_mutate_target_site_transforms(
+    tmp_path: Path,
+) -> None:
+    page = FakeScreenshotPage(width=1_440, document_width=1_440, focus_x=0)
+
+    async def dimensions(script: str, *args: object) -> object:
+        if "documentWidth" in script and "viewportWidth" in script:
+            return {
+                "viewportWidth": 1_440,
+                "documentWidth": 1_440,
+                "height": 1_100,
+                "focusX": 0,
+                "scrollX": 0,
+                "needsHorizontalAlignment": True,
+                "focusSelector": "main",
+                "focusIndex": 0,
+                "desiredLeft": 96,
+            }
+        return await FakeScreenshotPage.evaluate(page, script, *args)
+
+    page.evaluate = dimensions  # type: ignore[method-assign]
+    await PageShooter(TaskConfig(full_page_screenshot=True)).capture(
+        page,
+        4,
+        tmp_path,
+    )
+
+    assert page.css_alignments == []
 
 
 @pytest.mark.asyncio

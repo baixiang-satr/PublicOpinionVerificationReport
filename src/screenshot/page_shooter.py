@@ -8,8 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from src.config.settings import TaskConfig
+from src.crawler.navigation import wait_for_substantive_content
 from src.crawler.platform_catalog import find_platform
 from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
+from src.screenshot.capture_auth import (
+    GuestCaptureError,
+    douyin_desktop_surface_ready,
+    require_authenticated_capture,
+)
 from src.screenshot.page_layout import (
     align_page_for_capture,
 )
@@ -70,7 +76,16 @@ class PageShooter:
         }
         if definition is None:
             definition = find_platform(str(getattr(page, "url", "") or ""))
-        await wait_for_capture_ready(page, definition, cancel_event)
+        await wait_for_capture_ready(
+            page,
+            definition,
+            cancel_event,
+            strict_platform_content=not bool(focus_selectors),
+        )
+        try:
+            await require_authenticated_capture(page, definition)
+        except GuestCaptureError as error:
+            raise PageScreenshotError(str(error)) from error
         await hide_obstructive_login_overlays(page)
         await _pause_playing_media(page)
         is_douyin_video = bool(
@@ -92,10 +107,9 @@ class PageShooter:
             )
             if (
                 dimensions is not None
-                and dimensions["document_width"]
-                > dimensions["viewport_width"] + 32
+                and dimensions["needs_horizontal_alignment"]
             ):
-                await align_page_for_capture(
+                aligned = await align_page_for_capture(
                     page,
                     definition=definition,
                     focus_selectors=(
@@ -104,18 +118,10 @@ class PageShooter:
                         "[class*='player']",
                     ),
                 )
-                options["clip"] = {
-                    # Playwright clip coordinates are viewport-relative. The
-                    # substantive document X is applied by scrolling above;
-                    # using it here again would double-offset/crop the image.
-                    "x": 0,
-                    "y": 0,
-                    "width": dimensions["viewport_width"],
-                    "height": min(
-                        dimensions["height"],
-                        self._config.max_full_page_screenshot_height,
-                    ),
-                }
+                if not aligned:
+                    raise PageScreenshotError(
+                        "Target content could not be framed completely in the viewport."
+                    )
         is_long_page = False
         if self._config.full_page_screenshot and not is_douyin_video:
             dimensions = await _page_dimensions(
@@ -132,25 +138,44 @@ class PageShooter:
                     dimensions["document_width"]
                     > dimensions["viewport_width"] + 32
                 )
+                needs_horizontal_alignment = bool(
+                    dimensions["needs_horizontal_alignment"]
+                )
             else:
                 has_horizontal_overflow = False
-            if dimensions is not None and (is_long_page or has_horizontal_overflow):
-                if has_horizontal_overflow:
-                    await align_page_for_capture(
+                needs_horizontal_alignment = False
+            if dimensions is not None and (
+                is_long_page
+                or has_horizontal_overflow
+                or needs_horizontal_alignment
+                or bool(focus_selectors)
+            ):
+                aligned = True
+                if has_horizontal_overflow or needs_horizontal_alignment:
+                    aligned = await align_page_for_capture(
                         page,
                         definition=definition,
                         focus_selectors=focus_selectors,
                     )
                 options["full_page"] = False
-                options["clip"] = {
-                    "x": 0,
-                    "y": 0,
-                    "width": dimensions["viewport_width"],
-                    "height": min(
-                        dimensions["height"],
-                        self._config.max_full_page_screenshot_height,
-                    ),
-                }
+                if not aligned and (needs_horizontal_alignment or focus_selectors):
+                    raise PageScreenshotError(
+                        "Target content could not be framed completely in the viewport."
+                    )
+                # A Playwright clip and a horizontally scrolled document use
+                # different coordinate spaces on several Chromium builds.
+                # Let the browser capture the current viewport after verified
+                # alignment.  Only an unshifted long document uses a clip.
+                if not (has_horizontal_overflow or needs_horizontal_alignment or focus_selectors):
+                    options["clip"] = {
+                        "x": 0,
+                        "y": 0,
+                        "width": dimensions["viewport_width"],
+                        "height": min(
+                            dimensions["height"],
+                            self._config.max_full_page_screenshot_height,
+                        ),
+                    }
         if self._config.screenshot_format == "jpeg":
             options["quality"] = (
                 self._config.long_page_jpeg_quality
@@ -180,6 +205,7 @@ async def wait_for_capture_ready(
     cancel_event: asyncio.Event | None = None,
     *,
     require_content: bool = True,
+    strict_platform_content: bool = True,
 ) -> bool:
     """Wait for substantive content and stable visible assets before capture.
 
@@ -194,6 +220,11 @@ async def wait_for_capture_ready(
         return False
     if definition is None:
         definition = find_platform(str(getattr(page, "url", "") or ""))
+    strict_platform = bool(
+        definition is not None
+        and getattr(definition, "key", "")
+        in {"douyin", "toutiao", "wechat_video", "xiaohongshu", "ixigua"}
+    )
     selectors = [
         selector
         for field in ("title", "content_text")
@@ -237,6 +268,24 @@ async def wait_for_capture_ready(
         )
     if not content_ready:
         return False
+    if strict_platform and strict_platform_content:
+        substantive = await wait_for_substantive_content(
+            page,
+            definition,
+            timeout_milliseconds=15_000,
+        )
+        if (
+            not substantive
+            and getattr(definition, "key", "") == "douyin"
+            and await douyin_desktop_surface_ready(page)
+        ):
+            substantive = True
+        if not substantive and require_content:
+            raise PageScreenshotError(
+                "Platform content/player did not finish rendering before screenshot."
+            )
+        if not substantive:
+            return False
     try:
         await page.wait_for_function(
             """() =>
@@ -320,7 +369,7 @@ async def _wait_for_dom_quiet(page: Any) -> None:
 
 
 async def hide_obstructive_login_overlays(page: Any) -> None:
-    """Hide only large login dialogs/masks when substantive content is behind them."""
+    """Dismiss large login/app-open overlays while preserving page content."""
 
     if not hasattr(page, "evaluate"):
         return
@@ -329,7 +378,12 @@ async def hide_obstructive_login_overlays(page: Any) -> None:
             """() => {
                 const markers = [
                   '扫码登录', '账号登录', '手机号登录', '验证码登录',
-                  '登录后免费', '登录后查看', 'sign in', 'log in'
+                  '登录后免费', '登录后查看', 'sign in', 'log in',
+                  '打开app看完整内容', '打开app查看', '打开客户端查看',
+                  '打开西瓜视频查看', '打开方式', '下载app继续观看'
+                ];
+                const dismissLabels = [
+                  '否', '取消', '稍后', '关闭', '继续浏览器', '继续使用浏览器'
                 ];
                 const viewportArea = Math.max(1, innerWidth * innerHeight);
                 const candidates = Array.from(document.querySelectorAll(
@@ -350,6 +404,17 @@ async def hide_obstructive_login_overlays(page: Any) -> None:
                     || ['fixed', 'absolute'].includes(style.position)
                     || rect.width * rect.height >= viewportArea * 0.08;
                   if (!visible || !looksLikeLogin || !looksLikeOverlay) continue;
+
+                  const buttons = Array.from(element.querySelectorAll(
+                    'button, [role="button"], a'
+                  ));
+                  const dismiss = buttons.find(button => {
+                    const label = (button.innerText || button.textContent || '').trim();
+                    return dismissLabels.some(item => label === item || label.includes(item));
+                  });
+                  if (dismiss) {
+                    try { dismiss.click(); } catch (_) {}
+                  }
 
                   let target = element;
                   for (let depth = 0; depth < 3 && target.parentElement; depth += 1) {

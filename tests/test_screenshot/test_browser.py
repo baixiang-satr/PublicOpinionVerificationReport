@@ -102,7 +102,7 @@ async def test_cross_site_horizontal_overflow_is_framed_in_real_browser(
                     if image.getpixel((x, 120))[:3] == (220, 40, 40)
                 ]
             assert red_columns
-            assert min(red_columns) <= 180
+            assert 180 <= min(red_columns) <= 280
     finally:
         await pool.close()
 
@@ -150,7 +150,7 @@ async def test_interactive_capture_alignment_moves_profile_into_view() -> None:
 
             assert aligned is True
             assert geometry["scrollX"] > 1_000
-            assert 100 <= geometry["left"] <= 180
+        assert 190 <= geometry["left"] <= 280
     finally:
         await pool.close()
 
@@ -319,7 +319,7 @@ async def test_platform_states_are_isolated_between_contexts(tmp_path: Path) -> 
         {
             "cookies": [
                 {
-                    "name": "session",
+                    "name": "SUB",
                     "value": "weibo-only",
                     "domain": ".weibo.com",
                     "path": "/",

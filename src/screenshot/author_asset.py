@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from src.crawler.author_profile_urls import derive_author_profile_url
+from src.crawler.author_profile_urls import (
+    derive_author_profile_url,
+    is_author_profile_url,
+)
 from src.domain.models import ExtractionSource, RecordResult, TaskError
 from src.screenshot.author_evidence import (
     AuthorEvidenceDecision,
@@ -31,6 +34,13 @@ async def capture_author_home_asset(
     author_url = result.page.author_url
     if not author_url:
         return None, None
+    if not is_author_profile_url(author_url, result.page.final_url):
+        return None, TaskError(
+            "author_screenshot",
+            "AUTHOR_URL_NOT_PROFILE",
+            "候选链接是来源/正文页，不是可确认的作者个人主页，已跳过主页截图。",
+            retryable=False,
+        )
     if _is_self_profile(author_url):
         # 查看者自己的主页（抖音登录后导航栏 /user/self）绝不是作者证据。
         return None, TaskError(

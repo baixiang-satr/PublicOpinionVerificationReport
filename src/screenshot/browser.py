@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from src.auth.models import AuthProbeResult, AuthStatus
+from src.auth.login_evidence import state_has_authenticated_session
 from src.auth.registry import auth_policy_for_key, auth_policy_for_url
 from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
@@ -27,6 +28,7 @@ from src.screenshot.browser_runtime import (
     close_quietly,
     connection_closed,
 )
+from src.screenshot.browser_state import preserve_indexed_db
 from src.screenshot.stealth import apply_extra_stealth
 
 logger = logging.getLogger(__name__)
@@ -125,15 +127,11 @@ class BrowserPool:
         self._context_ids.clear()
         if slots and persist_login_state and self._driver_is_connected():
             try:
-                await asyncio.wait_for(
-                    self._save_login_states(slots),
-                    timeout=5.0,
-                )
-            except TimeoutError:
-                logger.warning(
-                    "Timed out refreshing authentication profiles during shutdown; "
-                    "continuing browser cleanup."
-                )
+                # Do not cancel the whole refresh midway: Playwright may still
+                # be collecting IndexedDB on an internal page, and tearing
+                # the browser down at that instant leaks TargetClosed future
+                # warnings to the console.
+                await self._save_login_states(slots)
             except Exception as error:
                 logger.warning(
                     "Unable to refresh authentication profiles during shutdown: %s",
@@ -233,11 +231,31 @@ class BrowserPool:
 
             try:
                 context = await self._browser.new_context(**context_options)
-            except Exception:
+            except Exception as error:
                 if "storage_state" not in context_options:
                     raise
+                if platform_key is not None:
+                    if self._auth_store is not None:
+                        self._auth_store.record_result(
+                            AuthProbeResult(
+                                platform_key=platform_key,
+                                status=AuthStatus.ERROR,
+                                checked_at=datetime.now().astimezone(),
+                                original_url=url or "",
+                                barrier_code="AUTH_CONTEXT_RESTORE_FAILED",
+                                message=(
+                                    "浏览器无法载入已验证登录态；已拒绝回退到游客会话，"
+                                    "请重新登录后再抓取。"
+                                ),
+                                used_saved_state=True,
+                            )
+                        )
+                    raise AuthenticationRequiredError(
+                        "浏览器无法载入该平台的已验证登录态；"
+                        "为避免生成未登录截图，任务已在访问前停止。"
+                    ) from error
                 logger.warning(
-                    "Configured browser login state is unreadable; starting with a fresh session: %s",
+                    "Legacy browser state is unreadable; starting a fresh guest session: %s",
                     key,
                 )
                 context_options.pop("storage_state", None)
@@ -357,6 +375,11 @@ class BrowserPool:
                 )
                 state = None
             if state is not None:
+                if state_has_authenticated_session(policy.platform_key, state) is False:
+                    raise AuthenticationRequiredError(
+                        f"{policy.display_name} 保存的是游客会话，未检测到账号级登录凭据；"
+                        "请先在“管理平台登录态”中执行“登录 / 更新”。"
+                    )
                 return (
                     f"profile:{policy.platform_key}",
                     policy.platform_key,
@@ -396,9 +419,18 @@ class BrowserPool:
                 break
             try:
                 state = await asyncio.wait_for(
-                    slot.context.storage_state(indexed_db=True),
+                    # Crawling never mutates IndexedDB intentionally.  Asking
+                    # Playwright to re-read it may create hidden navigation
+                    # tasks during shutdown, so refresh cookies/localStorage
+                    # and preserve the already validated IndexedDB payload.
+                    slot.context.storage_state(),
                     timeout=2.0,
                 )
+                previous = self._auth_store.load_state(
+                    slot.platform_key,
+                    include_inactive=True,
+                )
+                state = preserve_indexed_db(previous, state)
                 profile = self._auth_store.profile_for(slot.platform_key)
                 validation_url = (
                     profile.validation_url

@@ -43,6 +43,9 @@ class FakePage:
     def scripts(self) -> list[str]:
         return [script for script, _args in self.evaluated]
 
+    def is_closed(self) -> bool:
+        return self.closed
+
 
 class HorizontallyOffsetPage(FakePage):
     async def evaluate(self, script: str, *args: object) -> object:
@@ -265,13 +268,8 @@ def test_selection_html_embeds_frozen_image() -> None:
 async def test_handle_action_cancel_finishes(tmp_path: Path) -> None:
     results: list[RegionCaptureResult] = []
     await _service()._handle_action(
-        FakePage(),
-        json.dumps({"action": "cancel"}),
-        evidence_id=1,
-        target="content",
-        assets_dir=tmp_path,
-        state=_state(),
-        finish=results.append,
+        FakePage(), json.dumps({"action": "cancel"}), evidence_id=1,
+        target="content", assets_dir=tmp_path, state=_state(), finish=results.append,
     )
     assert [result.status for result in results] == ["cancelled"]
 
@@ -296,13 +294,8 @@ async def test_arm_grabs_screen_and_opens_selection_tab(
     state = _state(context)
     results: list[RegionCaptureResult] = []
     await _service(grab_after_ready)._handle_action(
-        state.browse_page,
-        json.dumps({"action": "arm"}),
-        evidence_id=1,
-        target="content",
-        assets_dir=tmp_path,
-        state=state,
-        finish=results.append,
+        state.browse_page, json.dumps({"action": "arm"}), evidence_id=1,
+        target="content", assets_dir=tmp_path, state=state, finish=results.append,
     )
     assert results == []
     assert state.image is not None
@@ -323,7 +316,7 @@ async def test_arm_aligns_cross_site_horizontal_overflow_before_screen_grab(
     page = HorizontallyOffsetPage()
     state = _CaptureState(context=context, browse_page=page)
 
-    await _service(_striped_image)._arm(state)
+    await _service(_striped_image)._arm(state, lambda _r: None)
 
     scroll_calls = [
         args
@@ -346,13 +339,8 @@ async def test_arm_grabber_failure_recovers_to_browse(
 
     state = _state()
     await _service(broken)._handle_action(
-        state.browse_page,
-        json.dumps({"action": "arm"}),
-        evidence_id=1,
-        target="content",
-        assets_dir=tmp_path,
-        state=state,
-        finish=lambda _r: None,
+        state.browse_page, json.dumps({"action": "arm"}), evidence_id=1,
+        target="content", assets_dir=tmp_path, state=state, finish=lambda _r: None,
     )
     assert state.image is None
     assert state.select_page is None
@@ -369,13 +357,8 @@ async def test_handle_action_confirm_saves_clip(tmp_path: Path) -> None:
     state.select_page = FakePage()
     results: list[RegionCaptureResult] = []
     await _service()._handle_action(
-        state.select_page,
-        _confirm_payload(x=10, y=20, w=200, h=120),
-        evidence_id=3,
-        target="author",
-        assets_dir=tmp_path,
-        state=state,
-        finish=results.append,
+        state.select_page, _confirm_payload(x=10, y=20, w=200, h=120), evidence_id=3,
+        target="author", assets_dir=tmp_path, state=state, finish=results.append,
     )
     assert [result.status for result in results] == ["saved"]
     assert results[0].name == "003_author.jpg"
@@ -388,13 +371,8 @@ async def test_handle_action_rejects_tiny_region(tmp_path: Path) -> None:
     state.select_page = FakePage()
     results: list[RegionCaptureResult] = []
     await _service()._handle_action(
-        state.select_page,
-        _confirm_payload(w=4, h=4),
-        evidence_id=1,
-        target="content",
-        assets_dir=tmp_path,
-        state=state,
-        finish=results.append,
+        state.select_page, _confirm_payload(w=4, h=4), evidence_id=1,
+        target="content", assets_dir=tmp_path, state=state, finish=results.append,
     )
     assert results == []
     assert any("__poirSelectReset" in script for script in state.select_page.scripts())
@@ -407,13 +385,8 @@ async def test_handle_action_rejects_blank_capture(tmp_path: Path) -> None:
     state.select_page = FakePage()
     results: list[RegionCaptureResult] = []
     await _service()._handle_action(
-        state.select_page,
-        _confirm_payload(),
-        evidence_id=1,
-        target="content",
-        assets_dir=tmp_path,
-        state=state,
-        finish=results.append,
+        state.select_page, _confirm_payload(), evidence_id=1,
+        target="content", assets_dir=tmp_path, state=state, finish=results.append,
     )
     assert results == []
     assert list(tmp_path.iterdir()) == []  # 空白图已删除
@@ -426,13 +399,8 @@ async def test_handle_action_confirm_without_image_resets(tmp_path: Path) -> Non
     state.select_page = FakePage()
     results: list[RegionCaptureResult] = []
     await _service()._handle_action(
-        state.select_page,
-        _confirm_payload(),
-        evidence_id=1,
-        target="content",
-        assets_dir=tmp_path,
-        state=state,
-        finish=results.append,
+        state.select_page, _confirm_payload(), evidence_id=1,
+        target="content", assets_dir=tmp_path, state=state, finish=results.append,
     )
     assert results == []
     assert any("__poirSelectReset" in script for script in state.select_page.scripts())
@@ -440,17 +408,15 @@ async def test_handle_action_confirm_without_image_resets(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_abort_closes_selection_and_restores_browse(tmp_path: Path) -> None:
-    state = _state(image=_striped_image())
+    context = FakeContext()
+    browse_page = FakePage()
+    context.pages.append(browse_page)  # 真实 Playwright 中浏览页在 context.pages 内
+    state = _CaptureState(context=context, browse_page=browse_page, image=_striped_image())
     state.select_page = FakePage()
     results: list[RegionCaptureResult] = []
     await _service()._handle_action(
-        state.select_page,
-        json.dumps({"action": "abort"}),
-        evidence_id=1,
-        target="content",
-        assets_dir=tmp_path,
-        state=state,
-        finish=results.append,
+        state.select_page, json.dumps({"action": "abort"}), evidence_id=1,
+        target="content", assets_dir=tmp_path, state=state, finish=results.append,
     )
     assert results == []
     assert state.select_page is None
@@ -459,16 +425,31 @@ async def test_abort_closes_selection_and_restores_browse(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_abort_with_all_windows_closed_finishes_cancelled(
+    tmp_path: Path,
+) -> None:
+    """浏览窗口先于框选页全部关闭时，capture 必须结束而非永久挂起（回归：
+    旧实现从不 finish，`done` 永不满足导致 UI 持续 busy）。"""
+    context = FakeContext()
+    dead = FakePage()
+    dead.closed = True  # 浏览页已关闭，overlay 无从恢复
+    context.pages.append(dead)
+    state = _state(context, image=_striped_image())
+    state.select_page = FakePage()
+    results: list[RegionCaptureResult] = []
+    await _service()._handle_action(
+        state.select_page, json.dumps({"action": "abort"}), evidence_id=1,
+        target="content", assets_dir=tmp_path, state=state, finish=results.append,
+    )
+    assert [result.status for result in results] == ["cancelled"]
+
+
+@pytest.mark.asyncio
 async def test_handle_action_ignores_malformed_payload(tmp_path: Path) -> None:
     results: list[RegionCaptureResult] = []
     await _service()._handle_action(
-        FakePage(),
-        "not-json",
-        evidence_id=1,
-        target="content",
-        assets_dir=tmp_path,
-        state=_state(),
-        finish=results.append,
+        FakePage(), "not-json", evidence_id=1,
+        target="content", assets_dir=tmp_path, state=_state(), finish=results.append,
     )
     assert results == []
 

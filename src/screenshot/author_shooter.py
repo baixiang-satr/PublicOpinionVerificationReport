@@ -19,6 +19,7 @@ from src.screenshot.author_evidence import (
     classify_profile_page,
     dismiss_profile_overlays,
     identity_verdict,
+    normalize_identity,
     write_decision,
 )
 from src.screenshot.page_shooter import (
@@ -177,6 +178,13 @@ class AuthorShooter:
                 )
 
             signals = await _page_signals(author_page)
+            if not _signals_have_identity(signals):
+                # SPA profile shells often paint the navigation and content
+                # grid before the account header arrives.  Treating that
+                # intermediate frame as a mismatch both drops valid evidence
+                # and produces offset screenshots of an incomplete layout.
+                await _wait_for_profile_identity(author_page)
+                signals = await _page_signals(author_page)
             if not signals:
                 # Pages without JS evaluation support (legacy/fake contexts)
                 # keep the previous capture behavior; every real browser page
@@ -192,7 +200,10 @@ class AuthorShooter:
                 decision.accepted = True
                 decision.rejection_code = None
                 return path
-            decision.detected_name = str(signals.get("headerName") or "") or None
+            decision.detected_name = _best_header_name(
+                signals,
+                decision.expected_name,
+            )
             decision.detected_id = str(signals.get("headerId") or "") or None
             decision.detected_id_source = str(signals.get("headerIdSource") or "")
             title = str(signals.get("title") or "")
@@ -380,6 +391,64 @@ async def _page_signals(page: Any) -> dict[str, Any]:
     except Exception:
         return {}
     return signals if isinstance(signals, dict) else {}
+
+
+def _signals_have_identity(signals: dict[str, Any]) -> bool:
+    names = signals.get("headerNames")
+    return bool(
+        signals.get("headerName")
+        or signals.get("headerId")
+        or (isinstance(names, list) and any(str(name).strip() for name in names))
+    )
+
+
+async def _wait_for_profile_identity(page: Any) -> None:
+    if not hasattr(page, "wait_for_function"):
+        return
+    try:
+        await page.wait_for_function(
+            r"""() => {
+                const body = (document.body?.innerText || '').trim();
+                const header = document.querySelector(
+                  'h1, main h2, [class*="nickname"], [class*="user-name"], '
+                  + '[class*="display-name"], [class*="author-name"]'
+                );
+                const name = (header?.innerText || header?.textContent || '').trim();
+                const hasAccount = /(?:抖音号|小红书号|账号|UID)[:：]/i.test(body);
+                const isDouyin = /(^|\.)douyin\.com$/i.test(location.hostname);
+                return isDouyin ? hasAccount : (name.length >= 2 || hasAccount);
+            }""",
+            timeout=12_000,
+        )
+        await stabilize_rendered_page(page, 600)
+    except Exception:
+        pass
+
+
+def _best_header_name(
+    signals: dict[str, Any],
+    expected_name: str | None,
+) -> str | None:
+    """Prefer a profile-header candidate matching the content-page author."""
+
+    raw_names = signals.get("headerNames")
+    candidates = (
+        [str(value).strip() for value in raw_names if str(value).strip()]
+        if isinstance(raw_names, list)
+        else []
+    )
+    fallback = str(signals.get("headerName") or "").strip()
+    if fallback and fallback not in candidates:
+        candidates.append(fallback)
+    expected_key = normalize_identity(expected_name)
+    if expected_key:
+        for candidate in candidates:
+            candidate_key = normalize_identity(candidate)
+            if candidate_key and (
+                expected_key in candidate_key or candidate_key in expected_key
+            ):
+                return candidate
+    return candidates[0] if candidates else None
 
 
 async def _has_author_content(page: Any) -> bool:
