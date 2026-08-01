@@ -5,6 +5,7 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from src.auth.models import AuthProfile, AuthStatus, PlatformAuthPolicy
+from src.auth.login_evidence import state_has_authenticated_session
 from src.auth.registry import auth_policy_for_url
 from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
@@ -89,6 +90,9 @@ class PlatformTaskScheduler:
         if policy.requires_valid_state:
             try:
                 if not self._auth_store.has_valid_state(policy.platform_key):
+                    return policy, profile
+                state = self._auth_store.load_state(policy.platform_key)
+                if state_has_authenticated_session(policy.platform_key, state) is False:
                     return policy, profile
             except (AuthStateStoreError, KeyError):
                 return policy, profile

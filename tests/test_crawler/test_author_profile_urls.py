@@ -1,4 +1,7 @@
-from src.crawler.author_profile_urls import derive_author_profile_url
+from src.crawler.author_profile_urls import (
+    derive_author_profile_url,
+    is_author_profile_url,
+)
 
 
 def test_derives_stable_platform_profile_urls() -> None:
@@ -49,3 +52,14 @@ def test_derives_wechat_and_existing_profile_urls_without_guessing_an_id() -> No
 def test_does_not_guess_unknown_or_nonnumeric_profile_ids() -> None:
     assert derive_author_profile_url("https://example.com/post/1", "42") is None
     assert derive_author_profile_url("https://www.bilibili.com/video/BV1abc", "nickname") is None
+
+
+def test_repost_source_article_is_not_treated_as_author_home() -> None:
+    assert not is_author_profile_url(
+        "https://h.xinhuaxmt.com/vh512/share/13222030?homeshow=1",
+        "https://www.163.com/news/article/L35RNISH000189FH.html",
+    )
+    assert is_author_profile_url(
+        "https://tv.sohu.com/user/386234413",
+        "https://tv.sohu.com/v/example.html",
+    )

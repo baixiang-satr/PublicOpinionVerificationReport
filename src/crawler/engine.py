@@ -1,5 +1,4 @@
 """Bounded, cancellable browser crawl engine producing runtime RecordResult objects."""
-
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +11,7 @@ from typing import Any
 
 from src.auth.store import AuthProfileStore
 from src.config.settings import TaskConfig
+from src.crawler.auth_preflight import preflight_or_empty, try_heal_auth
 from src.crawler.author_extractor import AuthorExtractor
 from src.crawler.content_parser import ContentParser
 from src.crawler.crawl_navigation import CrawlFailure, navigate_with_fallback
@@ -83,6 +83,10 @@ class CrawlEngine:
         queues = self._scheduler.queues(tasks)
         await self._browser_pool.start()
         try:
+            auth_preflight = await preflight_or_empty(
+                self._config, self._browser_pool, self._auth_store,
+                queues, on_event, self._emit, cancellation,
+            )
             jobs = [
                 asyncio.create_task(
                     self._process_platform_queue(
@@ -91,6 +95,7 @@ class CrawlEngine:
                         on_event,
                         on_result,
                         cancellation,
+                        auth_preflight,
                     ),
                     name=f"crawl-platform-{queue_key}",
                 )
@@ -122,6 +127,7 @@ class CrawlEngine:
         on_event: Callable[[TaskEvent], None] | None,
         on_result: Callable[[RecordResult], None] | None,
         cancel_event: asyncio.Event,
+        auth_preflight: dict[str, bool],
     ) -> list[RecordResult]:
         results: list[RecordResult] = []
         known_block = self._scheduler.known_auth_block(tasks[0])
@@ -131,8 +137,13 @@ class CrawlEngine:
             # Give the preserved state one probe inside the crawl browser
             # before pausing the whole platform.
             blocked_platform = self._scheduler.blocked_auth_platform(tasks[0])
-            if blocked_platform is not None and await self._try_heal_auth(
-                blocked_platform
+            preflight_result = auth_preflight.get(blocked_platform) if blocked_platform else None
+            if blocked_platform is not None and (
+                preflight_result is True
+                or (
+                    blocked_platform not in auth_preflight
+                    and await try_heal_auth(self._browser_pool, blocked_platform)
+                )
             ):
                 logger.info(
                     "Auth profile for %s self-healed before crawl; platform not paused.",
@@ -201,20 +212,6 @@ class CrawlEngine:
             except Exception:
                 pass
         return result
-
-    async def _try_heal_auth(self, platform_key: str) -> bool:
-        revalidate = getattr(self._browser_pool, "revalidate_platform_profile", None)
-        if revalidate is None:
-            return False
-        try:
-            return bool(await revalidate(platform_key))
-        except Exception as error:
-            logger.warning(
-                "Auth self-heal probe failed for %s: %s",
-                platform_key,
-                error,
-            )
-            return False
 
     def _publish_paused_result(
         self,
@@ -379,24 +376,25 @@ class CrawlEngine:
                     )
                 except PageScreenshotError as error:
                     raise CrawlFailure(
-                        TaskError("screenshot", "PAGE_SCREENSHOT_FAILED", str(error), retryable=False),
+                        TaskError("screenshot", "PAGE_SCREENSHOT_FAILED", str(error), retryable=True),
                         RecordStatus.FAILED,
                     ) from error
-                enrichment_timeout = min(
-                    50.0,
-                    max(
-                        0.05,
-                        self._config.page_processing_timeout_seconds / 3,
-                    )
+                await self._collect_optional_assets(
+                    page,
+                    result,
+                    output_dir,
+                    cancel_event,
+                )
+                screenshot_ocr_timeout = max(
+                    0.05,
+                    min(
+                        75.0,
+                        self._config.ocr_worker_timeout_seconds + 20.0,
+                        self._config.page_processing_timeout_seconds * 0.20,
+                    ),
                 )
                 try:
-                    async with asyncio.timeout(enrichment_timeout):
-                        await self._collect_optional_assets(
-                            page,
-                            result,
-                            output_dir,
-                            cancel_event,
-                        )
+                    async with asyncio.timeout(screenshot_ocr_timeout):
                         result.errors.extend(
                             await self._ocr_pipeline.recover_screenshot_fields(
                                 result.page,
@@ -407,9 +405,9 @@ class CrawlEngine:
                 except TimeoutError:
                     result.errors.append(
                         TaskError(
-                            "optional_enrichment",
-                            "OPTIONAL_ENRICHMENT_TIMEOUT",
-                            "主页截图、正文图片或 OCR 补充超时；已保留正文和主截图",
+                            "ocr",
+                            "SCREENSHOT_OCR_TIMEOUT",
+                            "主截图 OCR 字段恢复超时；已保留已提取字段",
                             retryable=True,
                         )
                     )

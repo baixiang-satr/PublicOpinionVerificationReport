@@ -85,7 +85,12 @@ def test_weibo_validated_login_state_allows_crawling(tmp_path: Path) -> None:
     store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
     store.commit_validated_state(
         "weibo",
-        {"cookies": [], "origins": []},
+        {
+            "cookies": [
+                {"name": "SUB", "value": "saved", "domain": ".weibo.com"}
+            ],
+            "origins": [],
+        },
         AuthProbeResult(
             platform_key="weibo",
             status=AuthStatus.VALID,

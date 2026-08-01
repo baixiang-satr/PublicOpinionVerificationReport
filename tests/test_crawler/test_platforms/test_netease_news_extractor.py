@@ -50,7 +50,8 @@ async def test_netease_news_extracts_article_scoped_fields() -> None:
     assert data.title == "测试新闻标题"
     assert data.content_text == "第一段正文。\n第二段正文。"
     assert data.author_name == "新华社客户端"
-    assert data.author_url == "https://h.xinhuaxmt.com/vh512/share/13222030"
+    # “本文来源” links to a syndicated source article, not the author's home.
+    assert data.author_url is None
     assert data.published_at is not None
     assert data.published_at.strftime("%Y-%m-%d %H:%M:%S") == (
         "2026-07-31 12:36:27"

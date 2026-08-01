@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import random
 from typing import Any
@@ -16,6 +17,14 @@ _EVALUATE_TIMEOUT_SECONDS = 5.0
 # self-redirect to the real page within a few seconds.
 _CHALLENGE_TITLE_MARKERS = ("验证码中间页", "安全验证", "访问验证", "人机验证")
 _CHALLENGE_WAIT_MILLISECONDS = 8_000
+
+_STRICT_RENDER_KEYS = {
+    "douyin",
+    "toutiao",
+    "wechat_video",
+    "xiaohongshu",
+    "ixigua",
+}
 
 
 async def wait_out_challenge_interstitial(
@@ -142,13 +151,59 @@ async def _wait_for_platform_marker(page: Any, definition: Any) -> None:
     ]
     if not selectors:
         return
+    timeout = 15_000 if getattr(definition, "key", "") in _STRICT_RENDER_KEYS else 3_000
+    await wait_for_substantive_content(page, definition, timeout_milliseconds=timeout)
+
+
+async def wait_for_substantive_content(
+    page: Any,
+    definition: Any,
+    *,
+    timeout_milliseconds: int = 12_000,
+) -> bool:
+    """Wait for platform content, not merely navigation/sidebar shell text."""
+
+    if definition is None or not hasattr(page, "wait_for_function"):
+        return False
+    selectors = [
+        selector
+        for field in ("content_text", "title", "author_name")
+        for selector in definition.selectors.get(field, ())
+    ]
+    if not selectors:
+        return False
+    selector_json = json.dumps(list(dict.fromkeys(selectors)), ensure_ascii=False)
+    script = f"""() => {{
+        const selectors = {selector_json};
+        const visible = (element) => {{
+          if (!element) return false;
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden'
+            && rect.width > 0 && rect.height > 0;
+        }};
+        const loadingPlaceholder = /^(?:视频)?数据?加载中[.。…]*$|^(?:正在)?加载(?:中)?[.。…]*$|^请稍候[.。…]*$|^loading[.。…]*$/i;
+        const primary = selectors.some(selector => {{
+          try {{
+            return Array.from(document.querySelectorAll(selector)).some(element =>
+              visible(element)
+              && (() => {{
+                const text = (element.innerText || element.textContent || '').trim();
+                return text.length >= 2 && !loadingPlaceholder.test(text);
+              }})()
+            );
+          }} catch (_) {{ return false; }}
+        }});
+        return primary;
+    }}"""
     try:
-        await page.locator(", ".join(selectors)).first.wait_for(
-            state="visible",
-            timeout=3_000,
-        )
+        await page.wait_for_function(script, timeout=timeout_milliseconds)
+        return True
     except Exception:
-        pass
+        try:
+            return bool(await page.evaluate(script))
+        except Exception:
+            return False
 
 
 async def _scroll_for_lazy_content(page: Any, stabilize_milliseconds: int) -> None:

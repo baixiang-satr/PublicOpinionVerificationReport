@@ -4,7 +4,6 @@ This module contains the platform definitions and unmapped host mappings,
 split from platform_catalog.py to keep each module under the 500-line limit.
 """
 from __future__ import annotations
-
 from collections.abc import Mapping
 
 from src.crawler.platform_types import ExtractorFamily, PlatformDefinition, _selectors
@@ -278,8 +277,17 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         ExtractorFamily.SOCIAL,
         ("douyin.com", "iesdouyin.com"),
         _selectors(
-            content_text=("[data-e2e='video-desc']", "[data-e2e='browse-video-desc']"),
-            author_name=("[data-e2e='video-author-name']", "[data-e2e='browse-username']"),
+            content_text=(
+                "[data-e2e='video-desc']",
+                "[data-e2e='browse-video-desc']",
+                ".author-container + .desc",
+                ".desc",
+            ),
+            author_name=(
+                "[data-e2e='video-author-name']",
+                "[data-e2e='browse-username']",
+                ".author-container .author-name",
+            ),
             author_url=("[data-e2e='video-author-name'] a",),
             published_at=("[data-e2e='video-publish-time']",),
         ),

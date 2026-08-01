@@ -28,20 +28,79 @@ async def collect_optional_assets(
 ) -> None:
     """Collect optional assets; failures never fail the main record."""
 
-    if result.page.author_url:
-        asset, error = await capture_author_home_asset(
-            author_shooter,
-            page,
-            result,
-            output_dir,
-            cancel_event,
+    # Field recovery has priority over a potentially slow author homepage.
+    # Each stage owns its timeout, so one optional asset can never starve the
+    # next stage in a multi-URL batch.
+    ocr_timeout = max(
+        0.05,
+        min(
+            75.0,
+            config.ocr_worker_timeout_seconds + 20.0,
+            config.page_processing_timeout_seconds * 0.40,
+        ),
+    )
+    try:
+        async with asyncio.timeout(ocr_timeout):
+            await _collect_ocr_assets(
+                config=config,
+                asset_collector=asset_collector,
+                ocr_pipeline=ocr_pipeline,
+                page=page,
+                result=result,
+                output_dir=output_dir,
+                cancel_event=cancel_event,
+            )
+    except TimeoutError:
+        result.errors.append(
+            TaskError(
+                "ocr",
+                "OCR_TIMEOUT",
+                "正文图片 OCR 超时；正文和主截图已保留",
+                retryable=True,
+            )
         )
-        result.assets.author_screenshot = asset
-        if error is not None:
-            result.errors.append(error)
 
-    # Body images are temporary OCR inputs, including mixed text/image
-    # posts. They never become delivery attachments.
+    if not result.page.author_url:
+        return
+    author_timeout = max(
+        0.05,
+        min(90.0, config.page_processing_timeout_seconds * 0.35),
+    )
+    try:
+        async with asyncio.timeout(author_timeout):
+            asset, error = await capture_author_home_asset(
+                author_shooter,
+                page,
+                result,
+                output_dir,
+                cancel_event,
+            )
+            result.assets.author_screenshot = asset
+            if error is not None:
+                result.errors.append(error)
+    except TimeoutError:
+        result.errors.append(
+            TaskError(
+                "author_screenshot",
+                "AUTHOR_SCREENSHOT_TIMEOUT",
+                "作者主页截图超时；正文和主截图已保留",
+                retryable=True,
+            )
+        )
+
+
+async def _collect_ocr_assets(
+    *,
+    config: TaskConfig,
+    asset_collector: Any,
+    ocr_pipeline: Any,
+    page: Any,
+    result: RecordResult,
+    output_dir: Path,
+    cancel_event: asyncio.Event,
+) -> None:
+    """Collect and consume temporary body images for OCR."""
+
     if not config.ocr_enabled or not result.page.image_urls:
         result.errors.extend(
             await ocr_pipeline.process_content_images(

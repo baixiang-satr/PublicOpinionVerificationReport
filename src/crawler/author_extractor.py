@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from urllib.parse import urljoin, urlsplit
 
-from src.crawler.author_profile_urls import derive_author_profile_url
+from src.crawler.author_profile_urls import (
+    derive_author_profile_url,
+    is_author_profile_url,
+)
 from src.domain.models import ExtractionSource, PageData, RouteDecision
 
 
@@ -15,6 +18,15 @@ class AuthorExtractor:
     def finalize(self, page: PageData, route: RouteDecision) -> None:
         if page.author_url and not urlsplit(page.author_url).scheme and page.final_url:
             page.author_url = urljoin(page.final_url, page.author_url)
+        if page.author_url and not is_author_profile_url(
+            page.author_url,
+            page.final_url,
+        ):
+            # A repost's visible source/original-article link is provenance,
+            # not personal-home evidence.
+            page.author_url = None
+            page.field_sources.pop("author_url", None)
+            page.field_confidences.pop("author_url", None)
         if not page.author_url and not page.author_id_is_fallback:
             page.author_url = derive_author_profile_url(page.final_url, page.author_id)
             if page.author_url:

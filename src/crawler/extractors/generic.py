@@ -75,7 +75,11 @@ DOCUMENT_SCRIPT = r"""
   ]) {
     try { pushPayload(window[key]); } catch (_) {}
   }
-  const bodyText = text(document.body);
+  // ``textContent`` includes script source when an SPA fails before its
+  // first paint.  That previously exported bootstrap JavaScript as article
+  // text on blank WeChat Video pages.  Evidence fallback must be rendered
+  // user-visible text only.
+  const bodyText = (document.body?.innerText || '').trim();
   if (/^\s*[\[{]/.test(bodyText)) pushPayload(bodyText);
   const domSelectors = {
     content_text: ['article', '[role="main"]', 'main', '.article-content', '.post-content', '.content'],

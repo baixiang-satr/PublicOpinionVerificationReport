@@ -137,7 +137,8 @@ class NeteaseNewsExtractor:
                 "title": _clean(probe.get("title")),
                 "content_text": _clean(probe.get("content")),
                 "author_name": _clean(probe.get("author")),
-                "author_url": _clean(probe.get("authorUrl")),
+                # ``sourceAnchor`` is 网易's “本文来源” link and normally
+                # targets the original article, not a publisher homepage.
                 "published_at_raw": published_raw,
                 "published_at_dt": (
                     parse_web_published_at(published_raw)

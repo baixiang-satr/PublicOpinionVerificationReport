@@ -128,7 +128,7 @@ class AssetParser:
             content_text="Answer body",
             content_summary="Answer body",
             author_name="Author",
-            author_url="https://example.test/author",
+            author_url="https://www.zhihu.com/people/author",
             image_urls=["https://example.test/image.png"],
         )
 
@@ -388,7 +388,7 @@ async def test_optional_ocr_timeout_keeps_main_content_and_screenshot(
     assert result.status == RecordStatus.ASSETS_READY
     assert result.page.content_text == "Answer body"
     assert result.assets.page_screenshot == tmp_path / "001.jpg"
-    assert "OPTIONAL_ENRICHMENT_TIMEOUT" in [
+    assert "OCR_TIMEOUT" in [
         error.code for error in result.errors
     ]
 
