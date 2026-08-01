@@ -12,7 +12,8 @@
     .venv\\Scripts\\python.exe -X utf8 tools\\test_xiaohongshu_fix.py --headless
     .venv\\Scripts\\python.exe -X utf8 tools\\test_xiaohongshu_fix.py --precheck-only
 
-工具只读取公开页面，不自动登录、不处理验证码，也不绕过访问控制。
+工具只复用本机已经验证的小红书登录态，不自动登录、不处理验证码，
+也不绕过访问控制；缺少账号级登录凭据时会在导航前退出。
 """
 from __future__ import annotations
 
@@ -58,8 +59,6 @@ EXPECTED_PUBLISHED_AT = "2026-07-20 15:55:06"
 def _config(
     headed: bool,
     edge: bool = False,
-    *,
-    guest: bool = False,
 ) -> TaskConfig:
     return TaskConfig(
         max_concurrency=1,
@@ -72,7 +71,7 @@ def _config(
         full_page_screenshot=True,
         headless=not headed,
         browser_channel="msedge" if edge else None,
-        auth_store_dir=None if guest else default_auth_store_dir(),
+        auth_store_dir=default_auth_store_dir(),
         # Xiaohongshu's current public SSR page is most reliable with the
         # browser's native fingerprint.  The shared stealth scripts are
         # useful for some platforms but trigger 300012 on this route.
@@ -91,6 +90,7 @@ async def precheck(config: TaskConfig, url: str) -> bool:
     from playwright.async_api import async_playwright
 
     from src.auth.store import AuthProfileStore
+    from src.auth.login_evidence import state_has_authenticated_session
     from src.crawler.navigation import stabilize_rendered_page
     from src.screenshot.browser_options import (
         browser_context_options,
@@ -108,14 +108,14 @@ async def precheck(config: TaskConfig, url: str) -> bool:
             if store is not None
             else None
         )
-    except Exception:  # noqa: BLE001 - a corrupt optional auth state means guest mode
-        state = None
+    except Exception as error:  # noqa: BLE001 - report without guest fallback
+        print(f"登录态读取失败：{error}")
+        return False
     profile = store.profile_for("xiaohongshu") if store is not None else None
-    state_label = (
-        f"已加载（{profile.status.value}）"
-        if state is not None and profile is not None
-        else "无（游客模式）"
-    )
+    if state_has_authenticated_session("xiaohongshu", state) is not True:
+        print("登录态: 无账号级凭据；已在导航前停止，请先在桌面工具中登录小红书。")
+        return False
+    state_label = f"已加载（{profile.status.value}）" if profile is not None else "已加载"
     print(f"登录态: {state_label}")
 
     playwright = await async_playwright().start()
@@ -287,11 +287,6 @@ def _arguments() -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
-        "--use-saved-login",
-        action="store_true",
-        help="显式加载本机小红书登录态；默认游客优先，避免过期状态污染公开分享页",
-    )
-    parser.add_argument(
         "--precheck-only",
         action="store_true",
         help="只验证页面内嵌笔记状态，不运行完整截图流程",
@@ -311,7 +306,6 @@ async def main() -> int:
     config = _config(
         headed,
         edge,
-        guest=not bool(args.use_saved_login),
     )
     mode = "headed" if headed else "headless"
     output_dir = args.output_dir or (

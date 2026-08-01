@@ -11,7 +11,6 @@ binaries = []
 hiddenimports = [
     "clr",
     "win32timezone",
-    "src.ocr.worker_main",
 ]
 # 平台专用提取器是 importlib 动态加载的（registry._DEFAULT_MODULES）
 for _module in (
@@ -27,7 +26,7 @@ for _module in (
 ):
     hiddenimports.append(f"src.crawler.platforms.{_module}")
 
-for _package in ("playwright", "webview", "rapidocr_onnxruntime", "onnxruntime"):
+for _package in ("playwright", "webview"):
     _datas, _binaries, _hidden = collect_all(_package)
     datas += _datas
     binaries += _binaries

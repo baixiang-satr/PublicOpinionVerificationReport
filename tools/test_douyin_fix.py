@@ -22,6 +22,8 @@ from pathlib import Path
 import sys
 import time
 
+from PIL import Image
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config.settings import TaskConfig, default_auth_store_dir
@@ -158,12 +160,24 @@ async def crawl(
             assets.author_screenshot
             and Path(assets.author_screenshot).is_file()
         )
+        desktop_capture_ok = False
+        if page_shot_ok and assets.page_screenshot:
+            try:
+                with Image.open(assets.page_screenshot) as image:
+                    desktop_capture_ok = image.width >= 1_000
+            except Exception:
+                desktop_capture_ok = False
+        final_host_ok = "douyin.com" in (page.final_url or "") and "iesdouyin.com" not in (
+            page.final_url or ""
+        )
         ok = (
             result.status == RecordStatus.ASSETS_READY
             and content_ok
             and time_ok
             and bool(page.author_name)
             and page_shot_ok
+            and desktop_capture_ok
+            and final_host_ok
             and author_shot_ok
         )
         all_ok = all_ok and ok
@@ -181,6 +195,7 @@ async def crawl(
         print(
             f"    截图: 内容页={'有' if page_shot_ok else '无'}"
             f" 个人页={'有' if author_shot_ok else '无'}"
+            f" 桌面构图={'通过' if desktop_capture_ok else '失败'}"
         )
         for error in result.errors[:3]:
             print(f"    错误 [{error.code}]: {error.message[:100]}")

@@ -25,8 +25,12 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "舆情验证报告工具"
 SPEC_FILE = PROJECT_ROOT / "poir.spec"
+OCR_SPEC_FILE = PROJECT_ROOT / "poir_ocr_worker.spec"
+OCR_PYTHON = PROJECT_ROOT / ".ocr-venv" / "Scripts" / "python.exe"
 DIST_DIR = PROJECT_ROOT / "dist" / APP_NAME
 WORK_DIR = PROJECT_ROOT / "output" / "build-pyi"
+OCR_WORK_DIR = PROJECT_ROOT / "output" / "build-ocr-pyi"
+OCR_DIST_DIR = PROJECT_ROOT / "output" / "ocr-dist"
 RESOURCE_DIRS = (("template", "template"), ("web/dist", "web/dist"))
 
 USAGE_TEXT = """\
@@ -51,11 +55,17 @@ USAGE_TEXT = """\
 按左侧步骤条操作：
 1. 欢迎页：新建采集任务，或上传 template.zip 继续补录。
 2. 选择 URL 文件（TXT / CSV / XLSX）。
-3. 抓取结果：预览表格，点击蓝色链接可打开原页面。
-4. 采集与补录：红色空格是必补项；选中行后点「截取内容页 / 截取个人页」，
+3. 打开「管理平台登录态」，逐个处理本次 URL 涉及的平台：点击
+   「登录 / 更新」，在稳定显示的官方登录页完成登录，再回到工具点击
+   「完成登录并保存」。只有显示「登录态有效」的平台才会开始访问。
+4. 开始抓取；任务完成后预览表格，点击蓝色链接可打开原页面。
+5. 采集与补录：红色空格是必补项；选中行后点「截取内容页 / 截取个人页」，
    在打开的窗口中浏览到目标内容，点「开始框选」后框选屏幕任意区域
    （可包含浏览器地址栏 URL），保存即自动关联到该行。
-5. 导出：生成 template.zip 交付包。
+6. 导出：生成 template.zip 交付包。
+
+重要：工具拒绝把游客页当作证据截图。若显示「需要重新登录」，请先更新
+该平台登录态；微信视频号必须完成二维码登录并保存，不能只停留在公开分享页。
 
 四、文件说明
 ------------
@@ -64,12 +74,17 @@ USAGE_TEXT = """\
 - ms-playwright/：随包浏览器，请勿删除。
 - 登录态保存在当前 Windows 用户的 AppData 目录（加密存储）；
   换电脑或换 Windows 用户后，需要在「登录态管理」中重新登录平台。
+- poir_ocr_worker.exe：独立 OCR 识别组件，请勿删除或单独移动。
 
 五、常见问题
 ------------
 - 双击没反应：等 15 秒；仍无反应请检查杀毒软件拦截记录。
 - 提示缺少 WebView2：安装微软 WebView2 Runtime 后重试。
 - 截图窗口打不开：确认没有同时开着其他截图窗口，关闭后重试。
+- 平台提示需要重新登录：说明保存态没有账号级 Cookie 或已失效；重新点击
+  「登录 / 更新」，完成后点击「完成登录并保存」。
+- 某条记录待补录：先检查登录态，再使用「重试失败项」；若原网页已删除、
+  风控或必须在手机 App 内打开，则按页面证据人工补录。
 """
 
 
@@ -88,6 +103,30 @@ def _run_pyinstaller() -> None:
     ]
     print(">>>", " ".join(command), flush=True)
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
+
+
+def _run_ocr_pyinstaller() -> None:
+    if not OCR_PYTHON.is_file():
+        raise SystemExit("缺少 .ocr-venv Python 3.12，无法构建 OCR worker。")
+    command = [
+        str(OCR_PYTHON),
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--workpath",
+        str(OCR_WORK_DIR),
+        "--distpath",
+        str(OCR_DIST_DIR),
+        str(OCR_SPEC_FILE),
+    ]
+    print(">>>", " ".join(command), flush=True)
+    subprocess.run(command, cwd=PROJECT_ROOT, check=True)
+    worker = OCR_DIST_DIR / "poir_ocr_worker.exe"
+    if not worker.is_file():
+        raise SystemExit(f"OCR worker 构建失败：{worker}")
+    shutil.copy2(worker, DIST_DIR / worker.name)
+    print(f"copied OCR worker ({worker.stat().st_size / 1024 / 1024:.0f} MB)")
 
 
 def _copy_tree(source: Path, target: Path) -> int:
@@ -149,6 +188,8 @@ def main() -> int:
         _run_pyinstaller()
     if not DIST_DIR.is_dir():
         raise SystemExit(f"PyInstaller 未产出 {DIST_DIR}")
+    if not args.skip_pyinstaller:
+        _run_ocr_pyinstaller()
     _copy_resources(args.skip_browsers)
     _write_usage()
     print(f"build-release-ok: {DIST_DIR} ({_folder_size_mb(DIST_DIR):.0f} MB)")

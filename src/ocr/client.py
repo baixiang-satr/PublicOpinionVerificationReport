@@ -115,8 +115,14 @@ class OcrClient:
             else 0
         )
         if getattr(sys, "frozen", False):
-            # PyInstaller 打包：OCR worker 复用本 exe 的 --ocr-worker 入口
-            args = [str(self._executable), "--ocr-worker"]
+            main_executable = Path(sys.executable).resolve()
+            if self._executable.resolve() == main_executable:
+                # Development-compatible fallback for an older release folder.
+                args = [str(self._executable), "--ocr-worker"]
+            else:
+                # The release ships a Python 3.12 worker because onnxruntime
+                # does not support the main application's Python 3.14 runtime.
+                args = [str(self._executable)]
             cwd = str(Path(sys.executable).resolve().parent)
         else:
             args = [
@@ -222,8 +228,9 @@ def _resolve_executable(configured: Path | None) -> Path | None:
         path = Path(configured).expanduser().resolve()
         return path if path.is_file() else None
     if getattr(sys, "frozen", False):
-        # PyInstaller 打包：worker 复用本 exe（--ocr-worker 入口）
-        return Path(sys.executable).resolve()
+        release_dir = Path(sys.executable).resolve().parent
+        worker = release_dir / "poir_ocr_worker.exe"
+        return worker if worker.is_file() else Path(sys.executable).resolve()
     project = Path(__file__).resolve().parents[2]
     candidates = (
         project / ".ocr-venv" / "Scripts" / "python.exe",

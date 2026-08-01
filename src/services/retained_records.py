@@ -10,6 +10,7 @@ from src.domain.models import RecordResult, RecordStatus
 from src.domain.models import UrlTask
 from src.services.checkpoint_store import CheckpointStore
 from src.services.models import JobRequest
+from src.screenshot.author_evidence import decision_sidecar_name
 from src.utils.file_utils import require_safe_file_name
 
 
@@ -25,20 +26,8 @@ def copy_retained_records(
 ) -> list[RecordResult]:
     copied: list[RecordResult] = []
     for source_record in records:
-        reusable = source_record.status in {
-            RecordStatus.ASSETS_READY,
-            RecordStatus.READY_FOR_EXPORT,
-            RecordStatus.EXPORTED,
-        }
-        if not reusable and not (
-            include_all_completed
-            and source_record.status
-            not in {
-                RecordStatus.PENDING,
-                RecordStatus.RUNNING,
-                RecordStatus.CANCELLED,
-            }
-        ):
+        reusable = _is_reusable(source_record)
+        if not reusable and not _is_completed(source_record, include_all_completed):
             continue
         record = deepcopy(source_record)
         record.assets.page_screenshot = _copy_asset(
@@ -49,6 +38,7 @@ def copy_retained_records(
             source_record.assets.author_screenshot,
             template_dir,
         )
+        _copy_author_decision(source_record, template_dir)
         record.assets.downloaded_images = []
         if reusable:
             record.status = RecordStatus.ASSETS_READY
@@ -79,24 +69,58 @@ def prepare_retained_records(
     tasks: tuple[UrlTask, ...],
     template_dir: Path,
 ) -> list[RecordResult]:
-    retained = copy_retained_records(
-        request.retained_records,
-        template_dir,
+    # Merge source records before copying any attachment.  A freshly retried
+    # record intentionally has the same evidence filename (for example
+    # ``003.jpg``) as the checkpoint record it replaces.  Copying both first
+    # incorrectly treated that normal override as a filename collision and
+    # could also leave a stale homepage-decision sidecar behind.
+    retained_by_id: dict[int, RecordResult] = {}
+    if request.resume_checkpoint_path is not None:
+        snapshot = CheckpointStore.load(
+            request.resume_checkpoint_path,
+            expected_tasks=tasks,
+        )
+        retained_by_id.update(
+            {
+                record.task.evidence_id: record
+                for record in snapshot.records
+                if _is_reusable(record)
+                or _is_completed(record, request.reexport_only)
+            }
+        )
+    retained_by_id.update(
+        {
+            record.task.evidence_id: record
+            for record in request.retained_records
+            if _is_reusable(record)
+        }
     )
-    if request.resume_checkpoint_path is None:
-        return retained
-    resumed = load_resumable_records(
-        request.resume_checkpoint_path,
-        tasks=tasks,
-        template_dir=template_dir,
+    selected = tuple(
+        record
+        for evidence_id, record in retained_by_id.items()
+        if evidence_id not in request.retry_evidence_ids
+    )
+    return copy_retained_records(
+        selected,
+        template_dir,
         include_all_completed=request.reexport_only,
     )
-    retained_by_id = {
-        record.task.evidence_id: record
-        for record in [*resumed, *retained]
-        if record.task.evidence_id not in request.retry_evidence_ids
+
+
+def _is_reusable(record: RecordResult) -> bool:
+    return record.status in {
+        RecordStatus.ASSETS_READY,
+        RecordStatus.READY_FOR_EXPORT,
+        RecordStatus.EXPORTED,
     }
-    return list(retained_by_id.values())
+
+
+def _is_completed(record: RecordResult, include_all_completed: bool) -> bool:
+    return include_all_completed and record.status not in {
+        RecordStatus.PENDING,
+        RecordStatus.RUNNING,
+        RecordStatus.CANCELLED,
+    }
 
 
 def _copy_asset(source: Path | None, template_dir: Path) -> Path | None:
@@ -110,3 +134,26 @@ def _copy_asset(source: Path | None, template_dir: Path) -> Path | None:
         raise RetainedRecordError(f"重试附件文件名冲突：{destination.name}")
     shutil.copy2(source, destination)
     return destination
+
+
+def _copy_author_decision(source_record: RecordResult, template_dir: Path) -> None:
+    """Carry the accepted/rejected homepage audit fact into a resumed job."""
+
+    author = source_record.assets.author_screenshot
+    if author is None:
+        return
+    author = Path(author)
+    sidecar_name = decision_sidecar_name(source_record.task.evidence_id)
+    candidates = [author.with_suffix(".decision.json")]
+    # Normal completed jobs archive sidecars outside staging so cleanup keeps
+    # them out of template.zip.  A checkpoint record still points to the
+    # staging image, from which its job root is deterministic.
+    if len(author.parents) >= 3:
+        candidates.append(author.parents[2] / "author_decisions" / sidecar_name)
+    source = next((path for path in candidates if path.is_file()), None)
+    if source is None:
+        return
+    destination = Path(template_dir) / sidecar_name
+    if destination.exists():
+        return
+    shutil.copy2(source, destination)

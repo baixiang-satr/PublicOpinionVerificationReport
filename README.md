@@ -110,7 +110,7 @@ python -m pytest -m "not excel and not external"
 
 ### 小红书笔记专项验收工具
 
-`tools/test_xiaohongshu_fix.py` 使用游客优先的独立浏览器上下文，按 URL 中的笔记 ID 提取标题、正文、作者、账号和完整发布时间，并生成内容页截图及可取得的作者主页截图。默认 URL 是当前小红书回归样例；完整验收只请求笔记一次，以降低触发平台频控的概率。默认使用可视 Edge，因为小红书当前会对部分无头 Chromium 会话返回安全限制。
+`tools/test_xiaohongshu_fix.py` 默认复用小红书已验证登录态，按 URL 中的笔记 ID 提取标题、正文、作者、账号和完整发布时间，并生成内容页截图及可取得的作者主页截图。默认 URL 是当前小红书回归样例；完整验收只请求笔记一次，以降低触发平台频控的概率。默认使用可视 Edge，因为小红书当前会对部分无头 Chromium 会话返回安全限制。
 
 ```powershell
 # 使用默认回归 URL 完整验收
@@ -122,8 +122,8 @@ python -m pytest -m "not excel and not external"
 # CI/无桌面环境可尝试无头模式；若出现 300012 请改回默认模式
 .venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py --headless
 
-# 仅在游客访问确实要求登录时，显式复用已保存的小红书登录态
-.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py --use-saved-login
+# 默认即强制复用已保存的小红书登录态；缺少登录凭据会在导航前停止
+.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py
 ```
 
 ## 打包分发（免安装）
@@ -141,7 +141,7 @@ python tools/build_release.py
 
 `references/MediaCrawler-main` 的任务生命周期、资源清理、浏览器上下文和平台适配器设计被吸收；`MediaCrawler-new-main` 提供了保持骨架精简的思路；浏览器插件帮助确认模板字段、示例行和截图附件关联。
 
-登录态采用“全平台强制、逐平台隔离”的方式管理：首次使用在登录态中心执行“首次登录全部未登录平台”，按顺序在平台官方页面完成手机号登录、验证码或扫码；已有效的平台会自动跳过。候选会话必须在全新的 Playwright context 中复验成功，才会按平台写入 Windows 当前用户 DPAPI 加密存储。后续抓取只加载已验证的对应平台状态，成功访问后刷新状态；不同平台不共享 context，旧版综合 `storage_state` JSON 只作为兼容迁移来源。
+登录态采用“按平台隔离、一次登录持续复用”的方式管理：在登录态中心逐项点击本次 URL 涉及平台的“登录 / 更新”，每次只打开所选网站的一个官方登录界面，不再轮流启动多个浏览器。完成手机号登录、验证码或扫码后，回到登录态中心点击“完成登录并保存”；工具再把会话按平台写入 Windows 当前用户 DPAPI 加密存储并关闭登录窗口。后续抓取自动加载、在后台复验并刷新对应平台状态，无需重复登录。不同平台不共享 context，旧版综合 `storage_state` JSON 只作为兼容迁移来源。
 
 批量抓取统一使用可见浏览器，并先读取逐平台健康状态；没有已验证状态的平台不会导航。同平台 URL 串行复用独立 context。首条记录一旦确认登录失效、验证码或访问验证屏障，当前平台剩余 URL 会暂停并进入待补录/重试清单，其他平台继续并行处理。页面字段依次尝试平台 DOM、JSON-LD、Next/Nuxt 等内嵌状态、内容型 XHR/Fetch JSON、Meta 和可见文本；微信公众号与微信视频号另有专用页面/载荷提取器。
 
