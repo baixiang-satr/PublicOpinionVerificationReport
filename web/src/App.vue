@@ -70,6 +70,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px 22px 12px;
 }
 

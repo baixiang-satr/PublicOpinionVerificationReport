@@ -10,15 +10,28 @@ import type { AuthPlatform } from '@/types'
 
 const visible = defineModel<boolean>({ required: true })
 const store = useJobStore()
-const probingAll = ref(false)
-const loggingAll = ref(false)
 const busyKeys = ref<Set<string>>(new Set())
+const activeStatuses = new Set(['probing', 'waiting_user', 'validating'])
 
-const platforms = computed(() => store.authPlatforms)
+const relevantPlatforms = computed(() => store.authPlatforms.filter((item) => item.relevant))
+const otherPlatforms = computed(() => store.authPlatforms.filter((item) => !item.relevant))
+const operationActive = computed(() => busyKeys.value.size > 0)
 
 watch(visible, async (open) => {
   if (open) await store.refreshAuth()
 })
+
+watch(
+  () => store.authPlatforms.map((item) => `${item.key}:${item.status}`).join('|'),
+  () => {
+    const next = new Set(busyKeys.value)
+    for (const key of next) {
+      const platform = store.authPlatforms.find((item) => item.key === key)
+      if (platform && !activeStatuses.has(platform.status)) next.delete(key)
+    }
+    busyKeys.value = next
+  },
+)
 
 function isBusy(key: string) {
   return busyKeys.value.has(key)
@@ -31,53 +44,36 @@ function setBusy(key: string, busy: boolean) {
   busyKeys.value = next
 }
 
-async function probeAll() {
-  probingAll.value = true
-  try {
-    await bridge.authProbeAll()
-  } finally {
-    // 状态通过 auth 事件逐个推送；这里兜底延时解锁
-    window.setTimeout(() => (probingAll.value = false), 1500)
-  }
-}
-
-async function loginAll() {
-  const confirmed = await ElMessageBox.confirm(
-    '将按平台依次打开官方页面。请在每个浏览器窗口中完成登录、扫码或验证码；已有效的平台会自动跳过。',
-    '首次登录全部平台',
-    { type: 'info', confirmButtonText: '开始', cancelButtonText: '取消' },
-  ).catch(() => false)
-  if (!confirmed) return
-  loggingAll.value = true
-  try {
-    const result = await bridge.authLoginAll()
-    if (!result.ok) {
-      ElMessage.warning(result.message || '已有登录态操作正在进行。')
-      return
-    }
-    ElMessage.info('首次登录流程已启动，请按浏览器窗口提示依次完成各平台登录。')
-  } finally {
-    window.setTimeout(() => (loggingAll.value = false), 1500)
-  }
-}
-
 async function probe(platform: AuthPlatform) {
   setBusy(platform.key, true)
-  try {
-    await bridge.authProbe(platform.key)
-  } finally {
-    window.setTimeout(() => setBusy(platform.key, false), 1200)
+  const result = await bridge.authProbe(platform.key)
+  if (!result.ok) {
+    setBusy(platform.key, false)
+    ElMessage.warning(result.message || '已有登录态操作正在进行。')
   }
 }
 
 async function login(platform: AuthPlatform) {
   setBusy(platform.key, true)
-  try {
-    await bridge.authLogin(platform.key)
-    ElMessage.info('已打开平台官方页面，请在浏览器窗口中完成登录；完成后工具会自动复验。')
-  } finally {
-    window.setTimeout(() => setBusy(platform.key, false), 1200)
+  const result = await bridge.authLogin(platform.key)
+  if (!result.ok) {
+    setBusy(platform.key, false)
+    ElMessage.warning(result.message || '已有登录态操作正在进行。')
+    return
   }
+  ElMessage.info(`已打开「${platform.name}」登录界面；完成后请点击“完成登录并保存”。`)
+}
+
+async function confirmLogin(platform: AuthPlatform) {
+  const result = await bridge.authConfirm(platform.key)
+  if (result.ok) ElMessage.info(result.message)
+  else ElMessage.warning(result.message)
+}
+
+async function cancelLogin(platform: AuthPlatform) {
+  const result = await bridge.authCancel(platform.key)
+  if (result.ok) ElMessage.info(result.message)
+  else ElMessage.warning(result.message)
 }
 
 async function logout(platform: AuthPlatform) {
@@ -99,14 +95,20 @@ async function logout(platform: AuthPlatform) {
     width="min(920px, 94vw)"
     top="4vh"
     class="auth-dialog"
+    :close-on-click-modal="!operationActive"
+    :close-on-press-escape="!operationActive"
+    :show-close="!operationActive"
   >
     <div class="notice-banner">
-      所有网站抓取都要求已验证登录态。首次使用可点「首次登录全部未登录平台」，
-      在官方页面里人工完成登录（含扫码、验证码）；工具会逐平台复验、加密保存，后续持续复用并刷新。
+      开始抓取前，请确保“本次 URL 涉及的平台”全部显示“登录态有效”。
+      请逐个平台点击“登录 / 更新”；每次只打开所选网站的登录界面。
+      在网站完成登录后，请回到这里点击“完成登录并保存”。保存后抓取会自动复用。
     </div>
 
     <div class="platform-list">
-      <div v-for="platform in platforms" :key="platform.key" class="platform-card">
+      <div v-if="relevantPlatforms.length" class="platform-section-title">本次 URL 涉及的平台</div>
+      <div v-for="platform in relevantPlatforms" :key="platform.key" class="platform-card relevant">
+        <span class="task-badge">本次任务</span>
         <span class="status-dot" :class="platform.tone"></span>
         <div class="platform-main">
           <div class="platform-head">
@@ -117,34 +119,64 @@ async function logout(platform: AuthPlatform) {
           <div class="muted platform-msg">{{ platform.message }}</div>
         </div>
         <div class="platform-actions">
-          <el-button size="small" :loading="isBusy(platform.key)" @click="probe(platform)">
+          <template v-if="platform.status === 'waiting_user' && isBusy(platform.key)">
+            <el-button size="small" type="primary" @click="confirmLogin(platform)">完成登录并保存</el-button>
+            <el-button size="small" @click="cancelLogin(platform)">取消</el-button>
+          </template>
+          <template v-else>
+          <el-button size="small" :loading="isBusy(platform.key)" :disabled="operationActive && !isBusy(platform.key)" @click="probe(platform)">
+            验证
+          </el-button>
+          <el-button size="small" type="primary" :loading="isBusy(platform.key)" :disabled="operationActive && !isBusy(platform.key)" @click="login(platform)">
+            登录 / 更新
+          </el-button>
+          <el-button size="small" plain type="danger" :disabled="operationActive" @click="logout(platform)">退出登录</el-button>
+          </template>
+        </div>
+      </div>
+
+      <div v-if="otherPlatforms.length" class="platform-section-title secondary">其他平台（本次未涉及）</div>
+      <div v-for="platform in otherPlatforms" :key="platform.key" class="platform-card unrelated">
+        <span class="status-dot" :class="platform.tone"></span>
+        <div class="platform-main">
+          <div class="platform-head">
+            <span class="platform-name">{{ platform.name }}</span>
+            <span class="muted">{{ platform.status_text }}</span>
+            <span v-if="platform.account" class="muted account">（{{ platform.account }}）</span>
+          </div>
+          <div class="muted platform-msg">{{ platform.message }}</div>
+        </div>
+        <div class="platform-actions">
+          <template v-if="platform.status === 'waiting_user' && isBusy(platform.key)">
+            <el-button size="small" type="primary" @click="confirmLogin(platform)">完成登录并保存</el-button>
+            <el-button size="small" @click="cancelLogin(platform)">取消</el-button>
+          </template>
+          <template v-else>
+          <el-button size="small" :loading="isBusy(platform.key)" :disabled="operationActive && !isBusy(platform.key)" @click="probe(platform)">
             验证
           </el-button>
           <el-button
             size="small"
             type="primary"
             :loading="isBusy(platform.key)"
+            :disabled="operationActive && !isBusy(platform.key)"
             @click="login(platform)"
           >
             登录 / 更新
           </el-button>
-          <el-button size="small" plain type="danger" @click="logout(platform)">
+          <el-button size="small" plain type="danger" :disabled="operationActive" @click="logout(platform)">
             退出登录
           </el-button>
+          </template>
         </div>
       </div>
-      <div v-if="platforms.length === 0" class="muted empty">正在加载平台列表…</div>
+      <div v-if="store.authPlatforms.length === 0" class="muted empty">正在加载平台列表…</div>
     </div>
 
     <template #footer>
       <div class="footer-row">
-        <div class="footer-actions">
-          <el-button :loading="probingAll" @click="probeAll">全部重新验证</el-button>
-          <el-button type="primary" :loading="loggingAll" @click="loginAll">
-            首次登录全部未登录平台
-          </el-button>
-        </div>
-        <el-button @click="visible = false">完成</el-button>
+        <span class="muted">一次只处理一个平台，避免多个登录窗口切换。</span>
+        <el-button :disabled="operationActive" @click="visible = false">完成</el-button>
       </div>
     </template>
   </el-dialog>
@@ -206,6 +238,41 @@ async function logout(platform: AuthPlatform) {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+}
+
+.platform-card.relevant {
+  border-color: color-mix(in srgb, var(--el-color-primary) 38%, var(--poir-border));
+}
+
+.platform-card.unrelated {
+  filter: grayscale(0.72);
+  opacity: 0.62;
+  background: #f7f7f8;
+}
+
+.platform-section-title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 2px 4px;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.platform-section-title.secondary {
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+}
+
+.task-badge {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  font-size: 11px;
 }
 
 .footer-actions {

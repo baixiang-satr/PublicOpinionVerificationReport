@@ -52,9 +52,15 @@ async function importZip() {
 </template>
 
 <style scoped>
+section {
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .mode-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
   gap: 14px;
 }
 
@@ -74,6 +80,8 @@ async function importZip() {
   transition:
     border-color 0.15s,
     box-shadow 0.15s;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .mode-card:hover {
@@ -90,9 +98,9 @@ async function importZip() {
   line-height: 1.6;
 }
 
-@media (max-width: 991px) {
+@media (max-width: 1399px) {
   .mode-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .mode-card {

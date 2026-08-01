@@ -271,6 +271,11 @@ def test_start_region_capture_author_target_opens_profile_url_directly(
     assert ok
     capture = _FakeCapture()
     monkeypatch.setattr(bridge, "capture", capture)
+    monkeypatch.setattr(
+        bridge,
+        "_capture_storage_state",
+        lambda _url: {"cookies": [{"name": "sessionid", "value": "x"}]},
+    )
 
     result = bridge.start_region_capture(1, "author")
     assert result["ok"] is True
@@ -321,7 +326,7 @@ def test_auth_start_guard(tmp_path: Path) -> None:
     assert runner.start("probe_all")[0] is False
 
 
-def test_auth_login_all_starts_batch_action(
+def test_auth_login_all_is_disabled_to_prevent_window_churn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -334,8 +339,11 @@ def test_auth_login_all_starts_batch_action(
 
     monkeypatch.setattr(bridge.auth, "start", fake_start)
 
-    assert bridge.auth_login_all() == {"ok": True, "message": ""}
-    assert calls == [("login_all", None)]
+    assert bridge.auth_login_all() == {
+        "ok": False,
+        "message": "批量弹出登录页已停用，请逐个平台点击“登录 / 更新”。",
+    }
+    assert calls == []
 
 
 def test_event_sink_without_window_is_silent() -> None:

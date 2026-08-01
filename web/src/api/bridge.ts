@@ -32,8 +32,10 @@ interface PyWebviewApi {
   auth_list(): Promise<AuthPlatform[]>
   auth_probe_all(): Promise<{ ok: boolean }>
   auth_login_all(): Promise<{ ok: boolean; message: string }>
-  auth_probe(key: string): Promise<{ ok: boolean }>
-  auth_login(key: string): Promise<{ ok: boolean }>
+  auth_probe(key: string): Promise<{ ok: boolean; message: string }>
+  auth_login(key: string): Promise<{ ok: boolean; message: string }>
+  auth_confirm(key: string): Promise<{ ok: boolean; message: string }>
+  auth_cancel(key: string): Promise<{ ok: boolean; message: string }>
   auth_logout(key: string): Promise<{ ok: boolean }>
 }
 
@@ -61,6 +63,37 @@ const mockLogs = [
   { time: '10:00:01', level: 'INFO', message: '已读取 3 条有效 URL，开始准备任务目录。', evidence_id: null },
   { time: '10:00:03', level: 'INFO', message: '模板副本准备完成，开始抓取。', evidence_id: null },
 ]
+
+const mockAuthPlatforms: AuthPlatform[] = [
+  {
+    key: 'weibo',
+    name: '新浪微博',
+    status: 'unknown',
+    status_text: '未检查',
+    tone: 'muted',
+    message: '尚未验证过该平台。',
+    account: '',
+    relevant: false,
+  },
+  {
+    key: 'bilibili',
+    name: '哔哩哔哩',
+    status: 'auth_required',
+    status_text: '需要登录',
+    tone: 'warn',
+    message: '尚未保存已验证登录态。',
+    account: '',
+    relevant: true,
+  },
+]
+
+function updateMockAuth(key: string, patch: Partial<AuthPlatform>) {
+  const platform = mockAuthPlatforms.find((item) => item.key === key)
+  if (!platform) return null
+  Object.assign(platform, patch)
+  window.__poir_event?.({ type: 'auth', payload: { ...platform } })
+  return platform
+}
 
 const mockSheets: SheetPayload[] = [
   {
@@ -168,10 +201,53 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
       return respond({ ok: false })
     }
     case 'auth_list':
-      return respond([
-        { key: 'weibo', name: '新浪微博', status: 'unknown', status_text: '未检查', tone: 'muted', message: '尚未验证过该平台。', account: '' },
-        { key: 'bilibili', name: '哔哩哔哩', status: 'auth_required', status_text: '需要登录', tone: 'warn', message: '尚未保存已验证登录态。', account: '' },
-      ])
+      return respond(mockAuthPlatforms.map((item) => ({ ...item })))
+    case 'auth_login': {
+      const [key] = args as [string]
+      updateMockAuth(key, {
+        status: 'waiting_user',
+        status_text: '等待完成登录',
+        tone: 'muted',
+        message: '登录页已稳定打开；请完成登录后返回并保存。',
+      })
+      return respond({ ok: true, message: '' })
+    }
+    case 'auth_confirm': {
+      const [key] = args as [string]
+      updateMockAuth(key, {
+        status: 'valid',
+        status_text: '登录态有效',
+        tone: 'ok',
+        message: '已验证并保存登录态。',
+        account: '演示账号',
+      })
+      return respond({ ok: true, message: '正在检查登录结果，成功后会保存并关闭登录窗口。' })
+    }
+    case 'auth_cancel': {
+      const [key] = args as [string]
+      updateMockAuth(key, {
+        status: 'auth_required',
+        status_text: '需要登录',
+        tone: 'warn',
+        message: '已取消本次登录；原有登录态不会被覆盖。',
+      })
+      return respond({ ok: true, message: '已取消本次登录；原有登录态不会被覆盖。' })
+    }
+    case 'auth_probe': {
+      const [key] = args as [string]
+      const platform = mockAuthPlatforms.find((item) => item.key === key)
+      if (platform?.status !== 'valid') {
+        updateMockAuth(key, {
+          status: 'auth_required',
+          status_text: '需要登录',
+          tone: 'warn',
+          message: '未检测到可用登录态。',
+        })
+      } else {
+        updateMockAuth(key, { message: '登录态验证通过。' })
+      }
+      return respond({ ok: true, message: '' })
+    }
     case 'list_screenshots':
       return respond({ content: null, author: null })
     case 'start_region_capture':
@@ -246,8 +322,10 @@ export const bridge = {
   authList: () => call<AuthPlatform[]>('auth_list'),
   authProbeAll: () => call<{ ok: boolean }>('auth_probe_all'),
   authLoginAll: () => call<{ ok: boolean; message: string }>('auth_login_all'),
-  authProbe: (key: string) => call<{ ok: boolean }>('auth_probe', key),
-  authLogin: (key: string) => call<{ ok: boolean }>('auth_login', key),
+  authProbe: (key: string) => call<{ ok: boolean; message: string }>('auth_probe', key),
+  authLogin: (key: string) => call<{ ok: boolean; message: string }>('auth_login', key),
+  authConfirm: (key: string) => call<{ ok: boolean; message: string }>('auth_confirm', key),
+  authCancel: (key: string) => call<{ ok: boolean; message: string }>('auth_cancel', key),
   authLogout: (key: string) => call<{ ok: boolean }>('auth_logout', key),
 }
 

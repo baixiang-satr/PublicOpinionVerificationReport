@@ -103,6 +103,7 @@ export interface AuthPlatform {
   tone: 'ok' | 'warn' | 'err' | 'muted'
   message: string
   account: string
+  relevant: boolean
 }
 
 export interface InputFileInfo {

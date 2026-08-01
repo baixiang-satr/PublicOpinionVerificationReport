@@ -40,8 +40,9 @@ function openAuth() {
       文件里只要出现 http(s) 链接即可，重复链接会自动去重。
     </p>
     <div class="notice-banner">
-      首次使用请先进入「管理平台登录态」，一次完成全部平台登录。
-      后续任务会持续复用各平台独立加密登录态，并统一使用可见浏览器抓取。
+      首次使用请进入「管理平台登录态」，只登录本次 URL 涉及的平台。
+      后续任务会持续复用各平台独立加密登录态；自动抓取使用后台有界面浏览器，
+      不抢占前台，登录和人工截图时才显示窗口。
     </div>
 
     <div class="card">
@@ -84,8 +85,8 @@ function openAuth() {
           </el-radio-group>
         </el-form-item>
         <el-form-item label="浏览器模式">
-          <span>可见浏览器（固定）</span>
-          <span class="muted form-hint">所有网站抓取强制使用登录态和有界面模式。</span>
+          <span>后台有界面浏览器（固定）</span>
+          <span class="muted form-hint">保留真实浏览器指纹与登录态，窗口在后台运行并于任务结束后退出。</span>
         </el-form-item>
       </el-form>
       <div class="auth-row">

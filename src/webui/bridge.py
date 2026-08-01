@@ -15,8 +15,10 @@ from pathlib import Path
 import shutil
 import webbrowser
 
-from src.auth.registry import AUTH_POLICIES, auth_policy_for_url
+from src.auth.login_evidence import state_has_authenticated_session
+from src.auth.registry import auth_policy_for_url
 from src.config.settings import AppConfig, TaskConfig
+from src.crawler.author_profile_urls import is_author_profile_url
 from src.input.reader import InputReadError, read_url_input
 from src.services.checkpoint_store import CheckpointStore
 from src.services.models import JobRequest
@@ -24,8 +26,8 @@ from src.services.review_session import ReviewSession
 from src.services.zip_import import TemplateZipImportError, TemplateZipImporter
 from src.utils.file_utils import require_safe_file_name
 from src.webui.runner import AuthRunner, CaptureRunner, EventSink, JobRunner
+from src.webui.auth_ui import build_auth_list, missing_auth_platforms
 from src.webui.serialize import (
-    auth_profile_payload,
     row_delta,
     session_overview,
     sheet_payload,
@@ -50,6 +52,7 @@ class WebUIBridge:
         self.jobs = JobRunner(self._current_config, self._sink)
         self.auth = AuthRunner(lambda: self._task_config, self._sink)
         self.capture = CaptureRunner(lambda: self._task_config, self._sink)
+        self._input_platform_keys: set[str] = set()
         self.jobs.refresh_latest_checkpoint(base_config.template.output_dir)
 
     # ── 基础 ──
@@ -120,6 +123,11 @@ class WebUIBridge:
             result = read_url_input(path)
         except InputReadError as error:
             return {"path": str(path), "url_count": 0, "rejected_count": 0, "error": str(error)}
+        self._input_platform_keys = {
+            policy.platform_key
+            for task in result.tasks
+            if (policy := auth_policy_for_url(task.normalized_url)) is not None
+        }
         return {
             "path": str(path),
             "url_count": len(result.tasks),
@@ -145,6 +153,25 @@ class WebUIBridge:
     def start_crawl(self, input_path: str) -> dict:
         if not input_path:
             return {"ok": False, "message": "请先选择 URL 文件。"}
+        try:
+            parsed = read_url_input(Path(input_path))
+        except InputReadError as error:
+            return {"ok": False, "message": f"无法读取 URL 文件：{error}"}
+        missing = missing_auth_platforms(
+            self._task_config,
+            self.auth.store(),
+            parsed.tasks,
+        )
+        if missing:
+            names = "、".join(missing)
+            return {
+                "ok": False,
+                "message": (
+                    f"开始前登录态检查未通过：{names}。"
+                    "请在“管理平台登录态”中只点击对应平台的“登录 / 更新”；"
+                    "成功保存一次后，后续抓取会自动复用。"
+                ),
+            }
         request = JobRequest(input_path=Path(input_path))
         ok, message = self.jobs.start(request)
         return {"ok": ok, "message": message}
@@ -312,13 +339,25 @@ class WebUIBridge:
             # 有已核验的作者主页 URL 时直达个人页，避免用户在窗口里手动
             # 跳转（SPA 路由不再需要工具条跨页跟随）。
             author_url = (record.page.author_url or "").strip()
-            if author_url.startswith(("http://", "https://")):
+            if author_url.startswith(("http://", "https://")) and is_author_profile_url(
+                author_url,
+                record.page.final_url,
+            ):
                 url = author_url
         if not url.startswith(("http://", "https://")):
             return {"ok": False, "code": "no_url", "message": "该行没有可打开的链接。"}
         eid = int(evidence_id)
         policy = auth_policy_for_url(url)
         storage_state = self._capture_storage_state(url)
+        if policy is not None and storage_state is None:
+            return {
+                "ok": False,
+                "code": "auth_required",
+                "message": (
+                    f"{policy.display_name} 没有可用的已验证登录态。"
+                    "请先在“管理平台登录态”中执行“登录 / 更新”。"
+                ),
+            }
         assets_dir = session.manual_assets_dir()
 
         def _on_saved(name: str, *, _eid: int = eid, _target: str = target) -> None:
@@ -344,11 +383,16 @@ class WebUIBridge:
         if policy is None:
             return None
         try:
-            return self.auth.store().load_state(
+            state = self.auth.store().load_state(
                 policy.platform_key,
-                include_inactive=True,
             )
-        except Exception:  # noqa: BLE001 — 登录态不可用时以游客模式打开
+            if (
+                state is not None
+                and state_has_authenticated_session(policy.platform_key, state) is False
+            ):
+                return None
+            return state
+        except Exception:  # noqa: BLE001 — 登录态不可用时拒绝游客截图
             return None
 
     # ── 系统动作 ──
@@ -371,32 +415,37 @@ class WebUIBridge:
 
     # ── 登录态 ──
     def auth_list(self) -> list[dict]:
-        store = self.auth.store()
-        return [
-            auth_profile_payload(policy.display_name, store.profile_for(policy.platform_key))
-            for policy in AUTH_POLICIES
-        ]
+        return build_auth_list(self.auth.store(), self._input_platform_keys)
 
     def auth_probe_all(self) -> dict:
         ok, _message = self.auth.start("probe_all")
         return {"ok": ok}
 
     def auth_login_all(self) -> dict:
-        ok, message = self.auth.start("login_all")
-        return {"ok": ok, "message": message}
+        return {
+            "ok": False,
+            "message": "批量弹出登录页已停用，请逐个平台点击“登录 / 更新”。",
+        }
 
     def auth_probe(self, platform_key: str) -> dict:
-        ok, _message = self.auth.start("probe", str(platform_key))
-        return {"ok": ok}
+        ok, message = self.auth.start("probe", str(platform_key))
+        return {"ok": ok, "message": message}
 
     def auth_login(self, platform_key: str) -> dict:
-        ok, _message = self.auth.start("login", str(platform_key))
-        return {"ok": ok}
+        ok, message = self.auth.start("login", str(platform_key))
+        return {"ok": ok, "message": message}
+
+    def auth_confirm(self, platform_key: str) -> dict:
+        ok, message = self.auth.confirm_login(str(platform_key))
+        return {"ok": ok, "message": message}
+
+    def auth_cancel(self, platform_key: str) -> dict:
+        ok, message = self.auth.cancel_login(str(platform_key))
+        return {"ok": ok, "message": message}
 
     def auth_logout(self, platform_key: str) -> dict:
         self.auth.store().delete_state(str(platform_key))
         return {"ok": True}
-
 
 def _screenshot_asset_name(
     assets_dir: Path,

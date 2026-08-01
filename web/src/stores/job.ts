@@ -152,8 +152,13 @@ export const useJobStore = defineStore('job', {
     },
     onAuthEvent(platform: AuthPlatform) {
       const index = this.authPlatforms.findIndex((p) => p.key === platform.key)
-      if (index >= 0) this.authPlatforms[index] = platform
-      else this.authPlatforms.push(platform)
+      if (index >= 0) {
+        platform.relevant = this.authPlatforms[index].relevant
+        this.authPlatforms[index] = platform
+      } else {
+        platform.relevant = false
+        this.authPlatforms.push(platform)
+      }
     },
     onCaptureEvent(capture: CaptureEventPayload) {
       this.lastCapture = capture

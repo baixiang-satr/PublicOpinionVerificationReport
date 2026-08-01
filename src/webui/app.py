@@ -36,9 +36,9 @@ def run_app() -> int:
         "舆情验证报告工作台",
         url,
         js_api=bridge,
-        width=1280,
-        height=860,
-        min_size=(360, 640),
+        width=1180,
+        height=760,
+        min_size=(800, 640),
         text_select=True,
     )
     window_box["window"] = window
