@@ -175,6 +175,8 @@ class AuthRunner(_AsyncThreadJob):
     def __init__(self, task_config_getter, sink: EventSink) -> None:
         super().__init__(sink)
         self._task_config_getter = task_config_getter
+        self._login_confirmation: Event | None = None
+        self._active_login_platform: str | None = None
 
     def store(self) -> AuthProfileStore:
         config: TaskConfig = self._task_config_getter()
@@ -191,8 +193,31 @@ class AuthRunner(_AsyncThreadJob):
     def start(self, action: str, platform_key: str | None = None) -> tuple[bool, str]:
         if self.is_running():
             return False, "登录态操作正在进行中，请稍候。"
+        if action == "login":
+            with self._lock:
+                self._login_confirmation = Event()
+                self._active_login_platform = platform_key
         self._spawn(self._run_action(action, platform_key))
         return True, ""
+
+    def confirm_login(self, platform_key: str) -> tuple[bool, str]:
+        with self._lock:
+            confirmation = self._login_confirmation
+            active_platform = self._active_login_platform
+        if confirmation is None or active_platform != platform_key or not self.is_running():
+            return False, "该平台当前没有等待确认的登录窗口。"
+        confirmation.set()
+        return True, "正在检查登录结果，成功后会保存并关闭登录窗口。"
+
+    def cancel_login(self, platform_key: str) -> tuple[bool, str]:
+        with self._lock:
+            active_platform = self._active_login_platform
+        if active_platform != platform_key or not self.is_running():
+            return False, "该平台当前没有正在进行的登录。"
+        self.cancel()
+        message = "已取消本次登录；原有登录态不会被覆盖。"
+        self._emit(platform_key, self.store().profile_for(platform_key).status, message)
+        return True, message
 
     async def _run_action(self, action: str, platform_key: str | None) -> None:
         cancel_event = Event()
@@ -217,14 +242,23 @@ class AuthRunner(_AsyncThreadJob):
             return
         if platform_key is None:
             raise ValueError("必须选择一个平台。")
-        result = await service.probe(
-            platform_key,
-            use_saved_state=action != "probe_guest",
-            interactive=action == "login",
-            cancel_event=cancel_event,
-            on_progress=self._emit,
-        )
-        self._emit(result.platform_key, result.status, result.message)
+        try:
+            result = await service.probe(
+                platform_key,
+                use_saved_state=action != "probe_guest",
+                interactive=action == "login",
+                cancel_event=cancel_event,
+                login_confirmation_event=(
+                    self._login_confirmation if action == "login" else None
+                ),
+                on_progress=self._emit,
+            )
+            self._emit(result.platform_key, result.status, result.message)
+        finally:
+            if action == "login":
+                with self._lock:
+                    self._login_confirmation = None
+                    self._active_login_platform = None
 
     def _emit(self, platform_key: str, status: AuthStatus, message: str) -> None:
         display_name = next(

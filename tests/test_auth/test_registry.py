@@ -13,6 +13,8 @@ def test_auth_registry_covers_all_34_template_platforms_once() -> None:
     assert len(AUTH_POLICIES) == 34
     assert len(policy_keys) == 34
     assert policy_keys == catalog_keys
+    assert all(policy.login_url.startswith("https://") for policy in AUTH_POLICIES)
+    assert all(policy.login_url != policy.probe_url for policy in AUTH_POLICIES)
     assert all(policy.probe_url.startswith("https://") for policy in AUTH_POLICIES)
     assert all(policy.requires_valid_state for policy in AUTH_POLICIES)
     assert all(
@@ -57,3 +59,18 @@ def test_given_wechat_urls_route_to_login_profiles() -> None:
 
     assert official is not None and official.platform_key == "wechat_official"
     assert video is not None and video.platform_key == "wechat_video"
+
+
+def test_selected_login_entries_are_dedicated_auth_surfaces() -> None:
+    assert auth_policy_for_key("xiaohongshu").login_url.endswith("/login")
+    assert "passport.bilibili.com/login" in auth_policy_for_key("bilibili").login_url
+    assert auth_policy_for_key("zhihu").login_url.endswith("/signin")
+    baijiahao_login = auth_policy_for_key("baijiahao").login_url
+    assert baijiahao_login.startswith("https://passport.baidu.com/v2/?login&")
+    assert "tpl=mn" in baijiahao_login
+    assert "u=https%3A%2F%2Fbaijiahao.baidu.com%2F" in baijiahao_login
+    assert "/theme/bjh/login" not in baijiahao_login
+    ixigua_login = auth_policy_for_key("ixigua").login_url
+    assert ixigua_login.startswith("https://sso.toutiao.com/login/")
+    assert "service=https%3A%2F%2Fwww.ixigua.com%2F" in ixigua_login
+    assert auth_policy_for_key("ixigua").open_login_trigger is False

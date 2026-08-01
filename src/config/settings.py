@@ -49,7 +49,7 @@ class TaskConfig:
     # ── Core crawling ─────────────────────────────────────────────────
     max_concurrency: int = 3
     page_timeout_seconds: int = 30
-    page_processing_timeout_seconds: float = 150.0
+    page_processing_timeout_seconds: float = 240.0
     max_retries: int = 2
     retry_base_delay_seconds: float = 2.0
     min_host_interval_seconds: float = 3.0
@@ -84,6 +84,10 @@ class TaskConfig:
     # the stable config contract avoids breaking older checkpoints/UI
     # payloads, but production construction and BrowserPool both force False.
     headless: bool = False
+    # Keep the real headed browser fingerprint/codecs, but place automatic
+    # crawl windows off-screen so batch work does not steal keyboard focus.
+    # Login and manual-capture windows explicitly override this to False.
+    background_crawl_browser: bool = True
     # Legacy combined Playwright state. New verified states live in
     # auth_store_dir and are isolated by platform.
     storage_state_path: Path | None = None
@@ -254,6 +258,10 @@ class AppConfig:
                 os.getenv("POR_LONG_PAGE_JPEG_QUALITY", defaults.task.long_page_jpeg_quality)
             ),
             headless=False,
+            background_crawl_browser=_bool_env(
+                "POR_BACKGROUND_CRAWL_BROWSER",
+                defaults.task.background_crawl_browser,
+            ),
             storage_state_path=(
                 _path_from_environment("POR_STORAGE_STATE_PATH")
                 or _default_storage_state_path()

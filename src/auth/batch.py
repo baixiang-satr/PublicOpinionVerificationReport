@@ -7,6 +7,7 @@ from threading import Event
 from typing import Any
 
 from src.auth.models import AuthProbeResult, AuthStatus, PlatformAuthPolicy
+from src.auth.login_evidence import state_has_authenticated_session
 from src.auth.probe_helpers import ProgressCallback, _publish
 from src.auth.store import AuthStateStoreError
 
@@ -48,7 +49,15 @@ async def login_all_missing(
         if cancel_event is not None and cancel_event.is_set():
             break
         try:
-            if service._store.has_valid_state(policy.platform_key):
+            state = service._store.load_state(
+                policy.platform_key,
+                include_inactive=True,
+            )
+            if (
+                service._store.has_valid_state(policy.platform_key)
+                and state_has_authenticated_session(policy.platform_key, state)
+                is not False
+            ):
                 profile = service._store.profile_for(policy.platform_key)
                 result = AuthProbeResult(
                     platform_key=policy.platform_key,

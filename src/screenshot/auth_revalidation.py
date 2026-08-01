@@ -14,6 +14,10 @@ import logging
 from typing import Any
 
 from src.auth.models import AuthProbeResult, AuthStatus
+from src.auth.login_evidence import (
+    page_authenticated_ui_state,
+    state_has_authenticated_session,
+)
 from src.auth.registry import auth_policy_for_key
 from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
@@ -54,6 +58,22 @@ async def revalidate_platform_profile(
         return False
     if state is None:
         return False
+    if state_has_authenticated_session(platform_key, state) is False:
+        store.record_result(
+            AuthProbeResult(
+                platform_key=platform_key,
+                status=AuthStatus.EXPIRED,
+                checked_at=datetime.now().astimezone(),
+                original_url=policy.probe_url,
+                barrier_code="LOGIN_EVIDENCE_MISSING",
+                message=(
+                    "保存状态只有游客/设备 Cookie，没有账号级登录凭据；"
+                    "请在登录态管理中重新登录。"
+                ),
+                used_saved_state=True,
+            )
+        )
+        return False
 
     saw_login_wall = False
     for probe_url in policy.probe_candidates:
@@ -72,6 +92,9 @@ async def revalidate_platform_profile(
             if barrier is None:
                 barrier = await inspect_page_access(page, str(page.url), probe_url)
             if barrier is None:
+                if await page_authenticated_ui_state(page) is False:
+                    saw_login_wall = True
+                    continue
                 refreshed = await context.storage_state(indexed_db=True)
                 store.commit_validated_state(
                     platform_key,

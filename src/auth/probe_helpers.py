@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import datetime
-from threading import Event
 from typing import Any
 
 from src.auth.models import AuthProbeResult, AuthStatus
@@ -29,6 +28,27 @@ async def _navigate(page: Any, url: str, config: TaskConfig) -> Any | None:
         # A partially rendered page may still provide a precise access barrier.
         pass
     await stabilize_rendered_page(page, config.page_stabilize_milliseconds)
+    return response
+
+
+async def _navigate_login(page: Any, url: str, config: TaskConfig) -> Any | None:
+    """Start rendering a visible login page without waiting on a slow SPA."""
+
+    response = None
+    try:
+        response = await page.goto(
+            url,
+            wait_until="commit",
+            timeout=config.page_timeout_seconds * 1_000,
+        )
+    except Exception:
+        # Keep the one visible page open: partial navigation can continue and
+        # the user must not see a fallback browser window replace it.
+        pass
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=5_000)
+    except Exception:
+        pass
     return response
 
 
@@ -66,23 +86,6 @@ async def _navigate_probe_candidates(
     return last
 
 
-async def _wait_for_user(
-    page: Any,
-    original_url: str,
-    timeout_seconds: int,
-    cancel_event: Event | None,
-) -> Any | None:
-    remaining = max(0, timeout_seconds)
-    barrier = await inspect_page_access(page, str(page.url), original_url)
-    while barrier is not None and barrier.manual_recoverable and remaining > 0:
-        if cancel_event is not None and cancel_event.is_set():
-            raise asyncio.CancelledError
-        await page.wait_for_timeout(1_000)
-        remaining -= 1
-        barrier = await inspect_page_access(page, str(page.url), original_url)
-    return barrier
-
-
 async def _fill_phone_without_submitting(page: Any, phone: str) -> bool:
     selectors = (
         "input[type='tel']",
@@ -99,6 +102,46 @@ async def _fill_phone_without_submitting(page: Any, phone: str) -> bool:
         except Exception:
             continue
     return False
+
+
+async def _activate_login_trigger(page: Any) -> bool:
+    """Open a site's login modal when it has no stable dedicated login URL."""
+
+    if not hasattr(page, "evaluate"):
+        return False
+    try:
+        return bool(
+            await page.evaluate(
+                r"""() => {
+                    const visible = (element) => {
+                      const style = getComputedStyle(element);
+                      const rect = element.getBoundingClientRect();
+                      return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.width > 0 && rect.height > 0;
+                    };
+                    const labels = /^(立即)?登录(\s*\/\s*注册)?$|^注册\s*\/\s*登录$/;
+                    const candidates = Array.from(document.querySelectorAll(
+                      'button, a, [role="button"], [class*="login" i]'
+                    )).filter(visible);
+                    const trigger = candidates.find((element) => {
+                      const label = (
+                        element.getAttribute('aria-label')
+                        || element.getAttribute('title')
+                        || element.innerText
+                        || element.textContent
+                        || ''
+                      ).trim().replace(/\s+/g, ' ');
+                      return labels.test(label);
+                    });
+                    if (!trigger) return false;
+                    trigger.click();
+                    return true;
+                }"""
+            )
+        )
+    except Exception:
+        return False
 
 
 def _barrier_result(

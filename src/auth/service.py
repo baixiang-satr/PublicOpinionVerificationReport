@@ -3,39 +3,42 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import datetime
-import json
 from pathlib import Path
 from threading import Event
 from typing import Any
 
 from src.auth.batch import (
     login_all_missing as run_login_all_missing,
+)
+from src.auth.batch import (
     probe_all_saved as run_probe_all_saved,
 )
+from src.auth.login_evidence import wait_for_login_evidence
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.probe_helpers import (
     ProgressCallback,
+    _activate_login_trigger,
     _barrier_result,
     _close_quietly,
     _fill_phone_without_submitting,
-    _navigate,
+    _navigate_login,
     _navigate_probe_candidates,
     _publish,
     _result,
-    _wait_for_user,
 )
 from src.auth.registry import AUTH_POLICIES, auth_policy_for_key
 from src.auth.state_filter import filter_state_for_policy
 from src.auth.store import AuthProfileStore
+from src.auth.validation import validate_candidate
+from src.auth.window_visibility import reveal_window_once, stage_window_offscreen
 from src.config.settings import TaskConfig
 from src.screenshot.browser_options import (
     browser_context_options,
     browser_launch_options,
-    launch_headed_with_fallback,
 )
-from src.tools.page_access import inspect_http_response, inspect_page_access
 
 __all__ = ["AuthManagerService", "ProgressCallback", "filter_state_for_policy"]
 
@@ -204,10 +207,20 @@ class AuthManagerService:
         interactive: bool = False,
         phone: str | None = None,
         cancel_event: Event | None = None,
+        login_confirmation_event: Event | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> AuthProbeResult:
         policy = auth_policy_for_key(platform_key)
         saved_state, state_source = self._initial_state(platform_key, use_saved_state)
+        had_valid_state = self._store.has_valid_state(platform_key)
+        if interactive:
+            # "登录 / 更新" is an explicit request for a fresh account login.
+            # Never preload the old profile into this window: otherwise a
+            # signed-in landing page can be mistaken for newly completed login
+            # and the browser closes after only a brief flash.  The old state
+            # remains encrypted on disk until a new candidate succeeds.
+            saved_state = None
+            state_source = "guest"
         used_saved_state = saved_state is not None
         browser = None
         context = None
@@ -219,62 +232,129 @@ class AuthManagerService:
                 auth_config = replace(
                     self._config,
                     headless=not interactive,
+                    background_crawl_browser=False,
                     max_concurrency=1,
                 )
                 launch_options = browser_launch_options(auth_config)
                 if interactive:
-                    browser = await launch_headed_with_fallback(
-                        playwright,
-                        auth_config,
+                    # Chromium otherwise paints a visible about:blank window,
+                    # navigates, and resizes again.  Stage that first paint
+                    # outside the desktop and reveal the completed login page
+                    # through CDP exactly once.
+                    launch_options = stage_window_offscreen(
                         launch_options,
+                        width=auth_config.viewport_width,
+                        height=auth_config.viewport_height,
                     )
-                else:
-                    browser = await playwright.chromium.launch(**launch_options)
+                # One login click creates exactly one browser process.  Auth
+                # UI does not cycle through Edge/Chrome/Chromium fallbacks,
+                # which previously caused a series of one-second windows.
+                browser = await playwright.chromium.launch(**launch_options)
                 context = await browser.new_context(
                     **browser_context_options(auth_config, saved_state)
                 )
                 if auth_config.enable_stealth and _STEALTH_SCRIPT_PATH.is_file():
                     await context.add_init_script(path=str(_STEALTH_SCRIPT_PATH))
                 page = await context.new_page()
-                barrier, probe_url = await _navigate_probe_candidates(
-                    page,
-                    policy,
-                    auth_config,
-                )
-                if barrier is not None and barrier.manual_recoverable and interactive:
+                if interactive:
+                    # A login action opens exactly one page for exactly the
+                    # selected platform.  Content probe URLs are reserved for
+                    # the later, hidden fresh-context validation.
+                    await _navigate_login(page, policy.login_url, auth_config)
+                    if policy.open_login_trigger:
+                        for _attempt in range(12):
+                            if await _activate_login_trigger(page):
+                                break
+                            await page.wait_for_timeout(500)
+                    revealed = await reveal_window_once(
+                        page,
+                        width=auth_config.viewport_width,
+                        height=auth_config.viewport_height,
+                    )
+                    if not revealed and hasattr(context, "new_cdp_session"):
+                        raise RuntimeError("无法稳定显示登录窗口，请重试。")
+                    baseline_state = await context.storage_state(indexed_db=True)
                     _publish(
                         on_progress,
                         platform_key,
                         AuthStatus.WAITING_USER,
-                        "请在平台页面中完成人工登录、扫码或验证码。",
+                        (
+                            f"已打开{policy.display_name}登录界面；"
+                            "请完成登录、扫码或验证码，再回到此窗口点击“完成登录并保存”。"
+                        ),
                     )
                     if phone and policy.phone_assist:
                         await _fill_phone_without_submitting(page, phone)
-                    barrier = await _wait_for_user(
+                    authenticated = await wait_for_login_evidence(
+                        context,
                         page,
-                        probe_url,
+                        platform_key,
                         self._config.manual_intervention_timeout_seconds,
                         cancel_event,
+                        baseline_state=baseline_state,
+                        confirmation_event=login_confirmation_event,
                     )
-                    if barrier is not None and barrier.code == "CONTENT_REDIRECTED_TO_HOME":
-                        await _navigate(page, probe_url, auth_config)
-                        barrier = await inspect_page_access(
-                            page,
-                            str(page.url),
-                            probe_url,
+                    if not authenticated:
+                        if had_valid_state:
+                            result = _result(
+                                platform_key,
+                                AuthStatus.VALID,
+                                policy.login_url,
+                                str(page.url),
+                                "本次重新登录未完成，原有有效登录态已保留。",
+                                used_saved_state=True,
+                            )
+                            self._store.record_result(result)
+                            _publish(
+                                on_progress,
+                                platform_key,
+                                result.status,
+                                result.message,
+                            )
+                            return result
+                        result = AuthProbeResult(
+                            platform_key=platform_key,
+                            status=AuthStatus.AUTH_REQUIRED,
+                            checked_at=datetime.now().astimezone(),
+                            original_url=policy.login_url,
+                            final_url=str(page.url),
+                            barrier_code="LOGIN_EVIDENCE_MISSING",
+                            message=(
+                                "本次未检测到登录成功，未覆盖已保存的登录态；"
+                                "请重新点击该平台的“登录 / 更新”并完成登录。"
+                            ),
+                            used_saved_state=used_saved_state,
                         )
-
-                if barrier is not None:
-                    result = _barrier_result(
-                        platform_key,
-                        policy.probe_url,
-                        str(page.url),
-                        barrier,
-                        used_saved_state,
+                        self._store.record_result(result)
+                        _publish(
+                            on_progress,
+                            platform_key,
+                            result.status,
+                            result.message,
+                        )
+                        return result
+                else:
+                    barrier, _probe_url = await _navigate_probe_candidates(
+                        page,
+                        policy,
+                        auth_config,
                     )
-                    self._store.record_result(result)
-                    _publish(on_progress, platform_key, result.status, result.message)
-                    return result
+                    if barrier is not None:
+                        result = _barrier_result(
+                            platform_key,
+                            policy.probe_url,
+                            str(page.url),
+                            barrier,
+                            used_saved_state,
+                        )
+                        self._store.record_result(result)
+                        _publish(
+                            on_progress,
+                            platform_key,
+                            result.status,
+                            result.message,
+                        )
+                        return result
 
                 if cancel_event is not None and cancel_event.is_set():
                     raise asyncio.CancelledError
@@ -289,7 +369,7 @@ class AuthManagerService:
                             barrier_code="LOGIN_STATE_MISSING",
                             message=(
                                 "该平台尚未保存已验证登录态；"
-                                "请先执行“登录 / 更新”或“首次登录全部未登录平台”。"
+                                "请在登录态管理中点击该平台的“登录 / 更新”。"
                             ),
                             used_saved_state=False,
                         )
@@ -315,41 +395,48 @@ class AuthManagerService:
                 candidate = await context.storage_state(indexed_db=True)
                 if state_source == "legacy":
                     candidate = filter_state_for_policy(candidate, platform_key)
+                if interactive:
+                    # Interactive login must not open any probe/content page.
+                    # Clear login evidence is persisted immediately; the
+                    # regular crawl preflight performs the fresh-context
+                    # validation later in its already-background browser.
+                    result = _result(
+                        platform_key,
+                        AuthStatus.VALID,
+                        policy.login_url,
+                        str(page.url),
+                        (
+                            "登录成功，该平台登录态已加密保存；"
+                            "后续抓取将自动加载并在后台复验。"
+                        ),
+                        used_saved_state=True,
+                    )
+                    self._store.commit_validated_state(
+                        platform_key,
+                        candidate,
+                        result,
+                        phone=phone,
+                    )
+                    _publish(
+                        on_progress,
+                        platform_key,
+                        result.status,
+                        result.message,
+                    )
+                    return result
                 _publish(
                     on_progress,
                     platform_key,
                     AuthStatus.VALIDATING,
-                    "正在使用新 context 复验保存后的登录态。",
+                    "正在后台复验该平台已保存的登录态。",
                 )
-                validation = await self._validate_candidate(
+                validation = await validate_candidate(
                     browser,
                     auth_config,
                     platform_key,
                     candidate,
                     cancel_event,
                 )
-                if (
-                    interactive
-                    and validation.status
-                    not in {AuthStatus.VALID, AuthStatus.EXPIRED, AuthStatus.AUTH_REQUIRED}
-                ):
-                    # The user just completed a manual login in the visible
-                    # context.  A dead, emptied or risk-blocked probe page
-                    # cannot disprove those fresh cookies, so the candidate
-                    # state is committed with a caveat instead of discarding
-                    # the login work the user just did.
-                    validation = _result(
-                        platform_key,
-                        AuthStatus.VALID,
-                        policy.probe_url,
-                        validation.final_url,
-                        (
-                            "人工登录已完成；探测页暂时无法复验"
-                            f"（{validation.barrier_code or validation.status.value}），"
-                            "已直接保存登录态。"
-                        ),
-                        used_saved_state=True,
-                    )
                 if validation.status == AuthStatus.VALID:
                     self._store.commit_validated_state(
                         platform_key,
@@ -385,67 +472,6 @@ class AuthManagerService:
             self._store.record_result(result)
             _publish(on_progress, platform_key, result.status, result.message)
             return result
-
-    async def _validate_candidate(
-        self,
-        browser: Any,
-        config: TaskConfig,
-        platform_key: str,
-        state: dict[str, Any],
-        cancel_event: Event | None,
-    ) -> AuthProbeResult:
-        policy = auth_policy_for_key(platform_key)
-        last_inconclusive: AuthProbeResult | None = None
-        for probe_url in policy.probe_candidates:
-            validation_context = await browser.new_context(
-                **browser_context_options(config, state)
-            )
-            try:
-                page = await validation_context.new_page()
-                response = await _navigate(page, probe_url, config)
-                if cancel_event is not None and cancel_event.is_set():
-                    raise asyncio.CancelledError
-                barrier = inspect_http_response(
-                    int(response.status) if response is not None else None
-                )
-                if barrier is None:
-                    barrier = await inspect_page_access(
-                        page,
-                        str(page.url),
-                        probe_url,
-                    )
-                if barrier is None:
-                    return _result(
-                        platform_key,
-                        AuthStatus.VALID,
-                        probe_url,
-                        str(page.url),
-                        "新 context 复验成功，登录态已安全保存。",
-                        used_saved_state=True,
-                    )
-                result = _barrier_result(
-                    platform_key,
-                    probe_url,
-                    str(page.url),
-                    barrier,
-                    True,
-                )
-                if result.status in {AuthStatus.EXPIRED, AuthStatus.AUTH_REQUIRED}:
-                    # An explicit login wall is the only definitive proof that
-                    # the saved state expired; dead or risk-blocked probe
-                    # pages are inconclusive, so try the next candidate.
-                    return result
-                last_inconclusive = result
-            finally:
-                await _close_quietly(validation_context)
-        return last_inconclusive or _result(
-            platform_key,
-            AuthStatus.ERROR,
-            policy.probe_url,
-            None,
-            "登录态复验失败：没有可用的探测页。",
-            used_saved_state=True,
-        )
 
     def _initial_state(
         self,

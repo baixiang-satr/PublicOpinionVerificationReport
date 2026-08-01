@@ -7,6 +7,68 @@ from urllib.parse import urlsplit
 from src.auth.models import PlatformAuthPolicy
 from src.crawler.platform_catalog import PLATFORM_DEFINITIONS
 
+# Interactive login must never start from a sample content/probe URL.  Direct
+# sign-in endpoints are preferred.  Platforms that expose login as a modal on
+# their official landing page opt into ``open_login_trigger`` below.
+_LOGIN_URLS: dict[str, str] = {
+    "douyin_ecommerce": "https://fxg.jinritemai.com/login",
+    "xianyu": "https://www.goofish.com/",
+    "tmall": "https://login.tmall.com/",
+    "taobao": "https://login.taobao.com/member/login.jhtml",
+    "1688": "https://login.1688.com/member/signin.htm",
+    "jd": "https://passport.jd.com/new/login.aspx",
+    "pinduoduo": "https://mobile.yangkeduo.com/login.html",
+    "wechat_official": "https://mp.weixin.qq.com/",
+    # The Baijiahao shell stays blank for several seconds and then reloads
+    # itself before injecting Baidu Passport.  Open the same official account
+    # service directly so one click produces one stable login document.
+    "baijiahao": (
+        "https://passport.baidu.com/v2/?login&tpl=mn&"
+        "u=https%3A%2F%2Fbaijiahao.baidu.com%2F"
+    ),
+    "wechat_video": "https://channels.weixin.qq.com/login.html",
+    "sohu_video": "https://passport.sohu.com/",
+    "xiaohongshu": "https://www.xiaohongshu.com/login",
+    "douyin": "https://www.douyin.com/",
+    "kuaishou": "https://www.kuaishou.com/",
+    "bilibili": "https://passport.bilibili.com/login",
+    "tudou": "https://account.youku.com/",
+    "youku": "https://account.youku.com/",
+    # The consumer homepage now redirects desktop visitors to /app/ and its
+    # QR code only opens the app-download flow.  ByteDance's official SSO
+    # surface for the ixigua.com service still provides phone-code and
+    # account/password login in a normal desktop page.
+    "ixigua": (
+        "https://sso.toutiao.com/login/"
+        "?service=https%3A%2F%2Fwww.ixigua.com%2F"
+    ),
+    "iqiyi": "https://passport.iqiyi.com/",
+    "weibo": "https://weibo.com/login.php",
+    "tieba": "https://passport.baidu.com/v2/?login",
+    "zhihu": "https://www.zhihu.com/signin",
+    "toutiao": "https://www.toutiao.com/",
+    "netease_news": "https://reg.163.com/",
+    "ifeng_news": "https://id.ifeng.com/user/login",
+    "huyou": "https://passport.sohu.com/",
+    "sohu_news": "https://passport.sohu.com/",
+    "hupu": "https://passport.hupu.com/pc/login",
+    "meituan": "https://passport.meituan.com/account/unitivelogin",
+    "dongchedi": "https://www.dongchedi.com/",
+    "uc_browser": "https://id.uc.cn/",
+    "browser_360": "https://i.360.cn/login/",
+    "huawei_browser": "https://id1.cloud.huawei.com/CAS/portal/loginAuth.html",
+    "qq_browser": "https://xui.ptlogin2.qq.com/cgi-bin/xlogin",
+}
+
+
+_LOGIN_MODAL_PLATFORMS = {
+    "xianyu",
+    "douyin",
+    "kuaishou",
+    "toutiao",
+    "dongchedi",
+}
+
 
 _PROBE_URLS: dict[str, str] = {
     "douyin_ecommerce": "https://haohuo.jinritemai.com/views/product/item2?id=3578430953573501732",
@@ -77,6 +139,7 @@ AUTH_POLICIES: tuple[PlatformAuthPolicy, ...] = tuple(
     PlatformAuthPolicy(
         platform_key=definition.key,
         display_name=definition.platform_value,
+        login_url=_LOGIN_URLS[definition.key],
         probe_url=_PROBE_URLS[definition.key],
         host_suffixes=definition.hosts,
         auth_scope=definition.key,
@@ -89,6 +152,7 @@ AUTH_POLICIES: tuple[PlatformAuthPolicy, ...] = tuple(
             "huawei_browser",
             "qq_browser",
         },
+        open_login_trigger=definition.key in _LOGIN_MODAL_PLATFORMS,
         fallback_probe_urls=_FALLBACK_PROBE_URLS.get(definition.key, ()),
         # Crawling is profile-only for every supported website.  A profile
         # is accepted only after AuthManagerService has re-opened its state in
@@ -143,6 +207,12 @@ def validate_auth_registry() -> None:
         raise ValueError(f"Authentication registry mismatch; missing={missing}, extra={extra}")
     if len(AUTH_POLICIES) != len(policy_keys):
         raise ValueError("Authentication registry contains duplicate platform keys.")
+    if set(_LOGIN_URLS) != catalog_keys:
+        missing = sorted(catalog_keys - set(_LOGIN_URLS))
+        extra = sorted(set(_LOGIN_URLS) - catalog_keys)
+        raise ValueError(f"Login URL registry mismatch; missing={missing}, extra={extra}")
+    if any(policy.login_url == policy.probe_url for policy in AUTH_POLICIES):
+        raise ValueError("Interactive login URL must differ from the content probe URL.")
 
 
 validate_auth_registry()

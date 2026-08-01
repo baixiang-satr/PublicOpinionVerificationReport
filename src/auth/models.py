@@ -27,10 +27,12 @@ class AuthStatus(StrEnum):
 class PlatformAuthPolicy:
     platform_key: str
     display_name: str
+    login_url: str
     probe_url: str
     host_suffixes: tuple[str, ...]
     auth_scope: str
     phone_assist: bool = True
+    open_login_trigger: bool = False
     fallback_probe_urls: tuple[str, ...] = ()
     requires_valid_state: bool = False
 

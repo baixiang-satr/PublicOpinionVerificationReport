@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime
-import json
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from src.auth.models import AuthProfile, AuthProbeResult, AuthStatus, mask_phone
-from src.auth.registry import auth_policy_for_key
+from src.auth.models import AuthProbeResult, AuthProfile, AuthStatus, mask_phone
 from src.auth.protection import StateProtector, default_state_protector
-
+from src.auth.registry import auth_policy_for_key
 
 _INDEX_VERSION = 1
 
@@ -155,10 +154,15 @@ class AuthProfileStore:
         # load_state/has_valid_state require status == VALID, and a fresh
         # interactive login simply overwrites it.  Files are removed only by
         # an explicit delete_state() call.
-        if profile.status == AuthStatus.VALID and status not in {
-            AuthStatus.VALID,
-            AuthStatus.EXPIRED,
-        }:
+        explicit_clean_login_failure = (
+            result.barrier_code == "LOGIN_EVIDENCE_MISSING"
+            and not result.used_saved_state
+        )
+        if (
+            profile.status == AuthStatus.VALID
+            and status not in {AuthStatus.VALID, AuthStatus.EXPIRED}
+            and not explicit_clean_login_failure
+        ):
             status = AuthStatus.VALID
 
         updated = replace(

@@ -62,6 +62,13 @@ def browser_launch_options(config: TaskConfig) -> dict[str, Any]:
         # Headed windows must render video: --disable-gpu forces software
         # decode paths that leave douyin players black.
         launch_args = [arg for arg in launch_args if arg != "--disable-gpu"]
+        if config.background_crawl_browser:
+            launch_args.extend(
+                (
+                    "--window-position=-32000,-32000",
+                    f"--window-size={config.viewport_width},{config.viewport_height}",
+                )
+            )
     options: dict[str, Any] = {
         "headless": config.headless,
         "args": launch_args,
@@ -129,6 +136,10 @@ def browser_context_options(
         "color_scheme": "light",
         "reduced_motion": "no-preference",
         "forced_colors": "none",
+        "extra_http_headers": {
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "DNT": "1",
+        },
     }
     if config.user_agent:
         options["user_agent"] = config.user_agent

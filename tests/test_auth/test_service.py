@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pytest
 
+import src.auth.probe_helpers as probe_helpers_module
 import src.auth.service as service_module
+import src.auth.validation as validation_module
 from src.auth.models import (
     AuthProbeResult,
     AuthStatus,
@@ -106,8 +108,9 @@ async def test_probe_all_reuses_browser_but_isolates_guest_contexts(
     async def no_barrier(_page: FakePage, _final: str, _original: str):
         return None
 
-    monkeypatch.setattr(service_module, "_navigate", fake_navigate)
-    monkeypatch.setattr(service_module, "inspect_page_access", no_barrier)
+    monkeypatch.setattr(probe_helpers_module, "inspect_page_access", no_barrier)
+    monkeypatch.setattr(validation_module, "_navigate", fake_navigate)
+    monkeypatch.setattr(validation_module, "inspect_page_access", no_barrier)
     store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
     manager = service_module.AuthManagerService(TaskConfig(), store)
 
@@ -227,8 +230,10 @@ class FakeContext:
 class FakeBrowser:
     def __init__(self, contexts: list[FakeContext]) -> None:
         self._contexts = contexts
+        self.context_options: list[dict[str, object]] = []
 
     async def new_context(self, **_kwargs: object) -> FakeContext:
+        self.context_options.append(dict(_kwargs))
         context = FakeContext()
         self._contexts.append(context)
         return context
@@ -283,8 +288,9 @@ async def test_revalidation_restores_expired_profile_without_fresh_login(
     async def no_barrier(_page: FakePage, _final: str, _original: str):
         return None
 
-    monkeypatch.setattr(service_module, "_navigate", fake_navigate)
-    monkeypatch.setattr(service_module, "inspect_page_access", no_barrier)
+    monkeypatch.setattr(validation_module, "_navigate", fake_navigate)
+    monkeypatch.setattr(probe_helpers_module, "inspect_page_access", no_barrier)
+    monkeypatch.setattr(validation_module, "inspect_page_access", no_barrier)
 
     store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
     state = {
@@ -358,9 +364,14 @@ async def test_dead_probe_page_falls_back_to_next_candidate(
             )
         return None
 
-    monkeypatch.setattr(service_module, "_navigate", fake_navigate)
+    monkeypatch.setattr(validation_module, "_navigate", fake_navigate)
     monkeypatch.setattr(
-        service_module,
+        probe_helpers_module,
+        "inspect_page_access",
+        dead_first_candidate,
+    )
+    monkeypatch.setattr(
+        validation_module,
         "inspect_page_access",
         dead_first_candidate,
     )
@@ -418,14 +429,19 @@ async def test_interactive_login_commits_state_when_probe_pages_are_dead(
             RecordStatus.NEEDS_REVIEW,
         )
 
-    monkeypatch.setattr(service_module, "_navigate", fake_navigate)
+    monkeypatch.setattr(validation_module, "_navigate", fake_navigate)
     monkeypatch.setattr(
         service_module,
-        "_navigate_probe_candidates",
-        clean_initial_navigation,
+        "wait_for_login_evidence",
+        _successful_login,
     )
     monkeypatch.setattr(
-        service_module,
+        probe_helpers_module,
+        "inspect_page_access",
+        dead_probe_barrier,
+    )
+    monkeypatch.setattr(
+        validation_module,
         "inspect_page_access",
         dead_probe_barrier,
     )
@@ -438,5 +454,9 @@ async def test_interactive_login_commits_state_when_probe_pages_are_dead(
     # The user just logged in manually; dead probe pages cannot disprove the
     # fresh cookies, so the state is committed instead of discarded.
     assert result.status == AuthStatus.VALID
-    assert "已直接保存" in result.message
+    assert "后续抓取将自动加载" in result.message
     assert store.has_valid_state("zhihu")
+
+
+async def _successful_login(*_args: object, **_kwargs: object) -> bool:
+    return True

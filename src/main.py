@@ -20,6 +20,12 @@ def _prepare_frozen_environment() -> None:
 
 def main() -> int:
     _prepare_frozen_environment()
+    # Must happen before importing pywebview/WebView2; otherwise Windows may
+    # bitmap-scale the 1280px web surface and crop the right/bottom edge on
+    # 125%/150% displays.
+    from src.webui.dpi import enable_windows_dpi_awareness
+
+    enable_windows_dpi_awareness()
     if "--ocr-worker" in sys.argv[1:]:
         # 打包后 OCR 子进程复用本 exe（见 src/ocr/client.py）
         from src.ocr.worker_main import main as ocr_worker_main

@@ -1,5 +1,5 @@
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -221,3 +221,48 @@ def test_result_index_does_not_persist_arbitrary_content_url(
     index_text = store.index_path.read_text(encoding="utf-8")
     assert private_url not in index_text
     assert "private_token" not in index_text
+
+
+def test_failed_clean_login_downgrades_pseudo_valid_profile(
+    tmp_path: Path,
+) -> None:
+    store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
+    state = {
+        "cookies": [
+            {
+                "name": "BAIDUID",
+                "value": "anonymous-device",
+                "domain": ".baidu.com",
+                "path": "/",
+            }
+        ],
+        "origins": [],
+    }
+    profile = store.commit_validated_state(
+        "baijiahao",
+        state,
+        AuthProbeResult(
+            platform_key="baijiahao",
+            status=AuthStatus.VALID,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://baijiahao.baidu.com/s?id=1",
+        ),
+    )
+
+    store.record_result(
+        AuthProbeResult(
+            platform_key="baijiahao",
+            status=AuthStatus.AUTH_REQUIRED,
+            checked_at=datetime.now().astimezone(),
+            original_url="https://passport.baidu.com/v2/?login",
+            barrier_code="LOGIN_EVIDENCE_MISSING",
+            message="login was not completed",
+            used_saved_state=False,
+        )
+    )
+
+    updated = store.profile_for("baijiahao")
+    assert updated.status == AuthStatus.AUTH_REQUIRED
+    assert updated.state_filename == profile.state_filename
+    assert store.load_state("baijiahao") is None
+    assert store.load_state("baijiahao", include_inactive=True) == state
