@@ -10,6 +10,8 @@ datas = [("src/libs/stealth.min.js", "src/libs")]
 binaries = []
 hiddenimports = [
     "clr",
+    "tkinter",
+    "_tkinter",
     "win32timezone",
 ]
 # 平台专用提取器是 importlib 动态加载的（registry._DEFAULT_MODULES）
@@ -21,8 +23,11 @@ for _module in (
     "zhihu",
     "tieba",
     "baijiahao",
+    "wechat",
     "bytedance_ssr",
+    "netease_news",
     "sohu_video",
+    "bilibili",
 ):
     hiddenimports.append(f"src.crawler.platforms.{_module}")
 
