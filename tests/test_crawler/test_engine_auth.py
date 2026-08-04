@@ -30,6 +30,11 @@ class FakePage:
         return None
 
 
+class GuestUiPage(FakePage):
+    async def evaluate(self, _script: str) -> bool:
+        return False
+
+
 class FakeBrowserPool:
     def __init__(self, statuses: list[int], final_url: str) -> None:
         self._statuses = statuses
@@ -37,6 +42,7 @@ class FakeBrowserPool:
         self.started = False
         self.closed = False
         self.page_count = 0
+        self.invalidations: list[str] = []
 
     async def start(self) -> None:
         self.started = True
@@ -60,7 +66,14 @@ class FakeBrowserPool:
         barrier_code: str,
         message: str,
     ) -> None:
-        return None
+        self.invalidations.append(barrier_code)
+
+
+class GuestUiBrowserPool(FakeBrowserPool):
+    @asynccontextmanager
+    async def page(self, _cancel_event: object, _url: str | None = None):
+        self.page_count += 1
+        yield GuestUiPage(self._statuses.pop(0), self._final_url)
 
 
 class StubParser:
@@ -100,6 +113,29 @@ class ExpiredAuthStore:
 def _zhihu_task(evidence_id: int = 1) -> UrlTask:
     url = f"https://www.zhihu.com/question/{evidence_id}"
     return UrlTask(evidence_id, url, url)
+
+
+@pytest.mark.asyncio
+async def test_explicit_guest_ui_stops_before_parse_and_screenshot(tmp_path: Path) -> None:
+    pool = GuestUiBrowserPool([200], "https://www.zhihu.com/question/1")
+    engine = CrawlEngine(
+        TaskConfig(
+            enable_auth_health_gate=False,
+            max_retries=0,
+            min_host_interval_seconds=0,
+            page_stabilize_milliseconds=0,
+        ),
+        browser_pool=pool,
+        parser=StubParser(),
+        shooter=StubShooter(),
+    )
+
+    [result] = await engine.run([_zhihu_task()], tmp_path)
+
+    assert result.status == RecordStatus.NEEDS_REVIEW
+    assert [error.code for error in result.errors] == ["PLATFORM_AUTH_PAUSED"]
+    assert pool.invalidations == ["LOGIN_UI_VISIBLE"]
+    assert not (tmp_path / "001.jpg").exists()
 
 
 @pytest.mark.asyncio

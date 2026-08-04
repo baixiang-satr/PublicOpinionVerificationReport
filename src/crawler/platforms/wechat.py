@@ -16,6 +16,7 @@ from src.crawler.platform_types import PlatformDefinition
 from src.crawler.platforms.extract_helpers import (
     apply_json_fields,
     epoch_to_datetime,
+    evaluate_json,
     evaluate_value,
     found_any,
 )
@@ -104,6 +105,37 @@ _WECHAT_PAGE_PROBE = r"""
   };
 }
 """
+
+_WECHAT_VIDEO_GLOBALS_SCRIPT = r"""
+() => {
+  const pick = (value) => {
+    try { return value ? JSON.stringify(value) : null; } catch (error) { return null; }
+  };
+  const w = window;
+  for (const key of [
+    '__feedInfo__', '_feedInfo', '__feed_info__', '__INITIAL_STATE__',
+    '__INITIAL_DATA__', '__wxData__', '__wx_data__', '__wxStore__', '__wx_store__'
+  ]) {
+    const text = pick(w[key]);
+    if (text) return text;
+  }
+  return null;
+}
+"""
+
+# 空壳/中间页常见的假文案；命中时不得作为字段证据。
+_SHELL_TEXTS = frozenset(
+    {
+        "微信视频号",
+        "视频号",
+        "微信",
+        "wechat",
+        "weixin",
+        "wechatchannels",
+        "channels",
+        "wechat channels",
+    }
+)
 
 _VIDEO_CONTENT_KEYS = (
     "description",
@@ -205,7 +237,13 @@ class WechatExtractor:
     ) -> PageData | None:
         data = PageData(final_url=document.url)
         applied = 0
-        candidate, source = _best_video_candidate(document)
+        # 页面全局 hydration 对象（视频号 web 端常见 __feedInfo__ 等）与
+        # 网络/内嵌载荷一起参与最佳候选评分。
+        globals_payload = await evaluate_json(page, _WECHAT_VIDEO_GLOBALS_SCRIPT)
+        candidate, source = _best_video_candidate(
+            document,
+            extra_payloads=(globals_payload,) if globals_payload is not None else (),
+        )
         if candidate is not None:
             author = _video_author(candidate)
             content = text_at(candidate, _VIDEO_CONTENT_KEYS)
@@ -247,8 +285,8 @@ class WechatExtractor:
             applied += apply_json_fields(
                 data,
                 {
-                    "title": _clean(values.get("title")),
-                    "content_text": _clean(values.get("content")),
+                    "title": _not_shell(_clean(values.get("title"))),
+                    "content_text": _not_shell(_clean(values.get("content"))),
                     "author_name": _clean(values.get("author")),
                     "author_id": _clean_identifier(values.get("authorId")),
                     "author_url": _clean_url(values.get("authorUrl")),
@@ -258,13 +296,16 @@ class WechatExtractor:
             )
 
         # OpenGraph values are useful on the short /sph/ landing page even
-        # before the client application finishes hydrating.
-        meta_title = _meta(document, "og:title", "twitter:title")
-        meta_desc = _meta(
-            document,
-            "og:description",
-            "twitter:description",
-            "description",
+        # before the client application finishes hydrating.  Shell pages only
+        # carry boilerplate like "微信视频号" — never accept those as fields.
+        meta_title = _not_shell(_meta(document, "og:title", "twitter:title"))
+        meta_desc = _not_shell(
+            _meta(
+                document,
+                "og:description",
+                "twitter:description",
+                "description",
+            )
         )
         applied += apply_json_fields(
             data,
@@ -277,11 +318,23 @@ class WechatExtractor:
         return data if applied and found_any(data, "content_text", "title") else None
 
 
+def _not_shell(text: str | None) -> str | None:
+    """Reject boilerplate shell strings masquerading as page fields."""
+
+    if not text:
+        return None
+    compact = " ".join(text.split()).casefold()
+    return None if compact in _SHELL_TEXTS else text
+
+
 def _best_video_candidate(
     document: RenderedDocument,
+    *,
+    extra_payloads: tuple[Any, ...] = (),
 ) -> tuple[Mapping[str, Any] | None, ExtractionSource | None]:
     best: tuple[int, Mapping[str, Any], ExtractionSource] | None = None
     payloads = (
+        *((payload, ExtractionSource.EMBEDDED_JSON) for payload in extra_payloads),
         *((payload, ExtractionSource.NETWORK_JSON) for payload in document.network_payloads),
         *((payload, ExtractionSource.EMBEDDED_JSON) for payload in document.embedded_payloads),
     )

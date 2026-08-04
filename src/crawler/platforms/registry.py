@@ -27,6 +27,7 @@ _DEFAULT_MODULES: tuple[str, ...] = (
     "src.crawler.platforms.bytedance_ssr",
     "src.crawler.platforms.netease_news",
     "src.crawler.platforms.sohu_video",
+    "src.crawler.platforms.bilibili",
 )
 
 _REGISTRY: dict[str, DedicatedExtractor] = {}

@@ -1,7 +1,10 @@
 from datetime import datetime
 from pathlib import Path
 
-from src.crawler.screenshot_field_recovery import recover_fields_from_screenshot
+from src.crawler.screenshot_field_recovery import (
+    needs_screenshot_field_recovery,
+    recover_fields_from_screenshot,
+)
 from src.domain.models import ExtractionSource, PageData
 
 
@@ -47,3 +50,32 @@ def test_recovers_missing_content_and_preserves_good_title() -> None:
     assert page.content_text == "原始可信标题\n截图中的完整正文"
     assert page.content_summary == "原始可信标题\n截"
     assert page.summary_truncated
+
+
+def test_mbd_video_landing_never_uses_shell_screenshot_as_field_source() -> None:
+    page = PageData(
+        final_url=(
+            "https://mbd.baidu.com/newspage/data/videolanding"
+            "?nid=sv_4426235232588179908"
+        )
+    )
+    called = False
+
+    def ocr(*_args, **_kwargs) -> str:
+        nonlocal called
+        called = True
+        return "扫码下载百度APP\n搜最新资讯、看热门视频\n2026-07-20"
+
+    assert needs_screenshot_field_recovery(page) is False
+    recover_fields_from_screenshot(
+        page,
+        Path("001.jpg"),
+        summary_max_chars=2_000,
+        confidence_threshold=0.5,
+        ocr=ocr,
+    )
+
+    assert called is False
+    assert page.title is None
+    assert page.content_text is None
+    assert page.published_at is None

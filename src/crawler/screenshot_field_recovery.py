@@ -8,6 +8,7 @@ import re
 from typing import Callable
 
 from src.domain.models import ExtractionSource, PageData
+from src.crawler.platforms.baijiahao import is_video_landing_url
 from src.utils.ocr import extract_text_from_images
 from src.utils.time_utils import parse_web_published_at
 
@@ -39,6 +40,12 @@ _TITLE_REJECT_MARKERS = (
 
 
 def needs_screenshot_field_recovery(page: PageData) -> bool:
+    # A video landing page can visibly contain download chrome, recommendation
+    # cards and unrelated OCR-able player frames.  Without an exact nid match,
+    # screenshot OCR would merely reintroduce the fields discarded by the
+    # dedicated extractor as unverified.
+    if is_video_landing_url(page.final_url):
+        return False
     return (
         _noisy_title(page.title)
         or not page.content_text

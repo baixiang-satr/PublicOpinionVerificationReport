@@ -41,6 +41,41 @@ def _mbd_video_url() -> str:
     )
 
 
+def test_baijiahao_mbd_landingsuper_article_matches_nid_without_prefix() -> None:
+    """landingsuper 图文落地页：URL nid 带 news_ 前缀，节点常是纯数字。"""
+
+    target = {
+        "nid": "8767880893518512259",
+        "title": "图文落地页标题",
+        "content": "<p>图文落地页正文内容</p>",
+        "publishTime": "2026-08-01 09:30:00",
+        "mediaInfo": {"mediaName": "百家号图文作者", "id": "media-news-1"},
+    }
+    foreign = {
+        "nid": "1111111111111111111",
+        "title": "外域推荐文章标题",
+        "content": "<p>外域推荐正文不应进入结果</p>",
+        "mediaInfo": {"mediaName": "外域作者"},
+    }
+    document = RenderedDocument(
+        url=(
+            "https://mbd.baidu.com/newspage/data/landingsuper"
+            "?nid=news_8767880893518512259"
+        ),
+        network_payloads=(
+            {"data": {"articleInfo": foreign}},
+            {"data": {"articleInfo": target}},
+        ),
+    )
+
+    data = _extract(document)
+
+    assert data is not None
+    assert data.title == "图文落地页标题"
+    assert data.content_text == "图文落地页正文内容"
+    assert data.author_name == "百家号图文作者"
+
+
 def test_baijiahao_matches_requested_article_and_ignores_recommendation() -> None:
     target = {
         "articleId": "target123",
@@ -140,6 +175,28 @@ def test_baijiahao_mbd_video_landing_extracts_requested_video() -> None:
     assert data.author_name == "百家号视频作者"
     assert data.author_id == "media-7788"
     assert data.published_at is not None
+
+
+def test_baijiahao_mbd_rejects_download_chrome_even_when_it_carries_nid() -> None:
+    document = RenderedDocument(
+        url=_mbd_video_url(),
+        embedded_payloads=(
+            {
+                "videoInfo": {
+                    "nid": "sv_4426235232588179908",
+                    "title": "扫码下载百度APP",
+                    "content": "搜最新资讯、看热门视频",
+                    "author": {"name": "导航栏账号"},
+                }
+            },
+        ),
+        meta={
+            "og:title": "扫码下载百度APP",
+            "description": "搜最新资讯、看热门视频",
+        },
+    )
+
+    assert _extract(document) is None
 
 
 def test_baijiahao_builder_url_preserves_query_title_without_page_payload() -> None:

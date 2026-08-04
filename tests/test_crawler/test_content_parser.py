@@ -208,6 +208,72 @@ async def test_content_parser_prefers_platform_dom_and_marks_nickname_id_fallbac
     assert data.published_at is not None
 
 
+@pytest.mark.asyncio
+async def test_mbd_video_parser_discards_unverified_shell_and_ocr_images() -> None:
+    class MbdShellPage:
+        url = (
+            "https://mbd.baidu.com/newspage/data/videolanding"
+            "?nid=sv_4426235232588179908"
+        )
+
+        async def evaluate(self, script: str, *_args: object):
+            if "platformSelectors" in script:
+                return {
+                    "url": self.url,
+                    "title": "扫码下载百度APP",
+                    "visibleText": "搜最新资讯、看热门视频",
+                    "canonicalUrl": self.url,
+                    "meta": {
+                        "og:title": "扫码下载百度APP",
+                        "description": "搜最新资讯、看热门视频",
+                    },
+                    "jsonLd": [],
+                    "embeddedPayloads": [],
+                    "domValues": {
+                        "author_name": "午夜阳光飘雪",
+                        "published_at": "00:00 / 01:00",
+                    },
+                    "platformValues": {
+                        "title": "扫码下载百度APP",
+                        "content_text": "搜最新资讯、看热门视频",
+                    },
+                    "images": [
+                        {
+                            "url": "https://f7.baidu.com/unrelated-frame.jpg",
+                            "width": 1080,
+                            "height": 608,
+                            "alt": "",
+                            "context": "player",
+                            "inContent": True,
+                        }
+                    ],
+                }
+            return None
+
+    definition = find_platform(MbdShellPage.url)
+    assert definition is not None
+    data = await ContentParser().extract(
+        MbdShellPage(),
+        definition,
+        network_payloads=(
+            {
+                "videoInfo": {
+                    "nid": "sv_4426235232588179908",
+                    "title": "扫码下载百度APP",
+                    "content": "搜最新资讯、看热门视频",
+                }
+            },
+        ),
+    )
+
+    assert data.title is None
+    assert data.content_text is None
+    assert data.author_name is None
+    assert data.published_at is None
+    assert data.image_urls == []
+    assert data.field_rejection_notes
+
+
 def test_author_extractor_resolves_relative_home_url() -> None:
     data = GenericExtractor().extract(
         RenderedDocument(

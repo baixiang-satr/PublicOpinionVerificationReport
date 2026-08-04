@@ -38,12 +38,18 @@ _SHORT_LINK_HOSTS = frozenset(
         "v.kuaishou.com",
         "url.cn",
         "dwz.cn",
+        "m.toutiao.com",
+        "m.ixigua.com",
     }
 )
 
 _DOUYIN_SHARE_RE = re.compile(
     r"(?:iesdouyin\.com/share/(video|note)/|douyin\.com/(video|note)/)(\d{6,})"
 )
+
+# m.ixigua.com/dx/{group_id} share pages and www.ixigua.com/video/{group_id}
+# both expose the numeric group id directly in the path.
+_IXIGUA_SHARE_RE = re.compile(r"ixigua\.com/(?:dx|video)/(\d{10,})")
 
 
 def is_short_link(url: str) -> bool:
@@ -65,14 +71,19 @@ async def resolve_share_link(page: Any, url: str) -> str | None:
         return None
     final_url = await _final_url(page, url)
     if not final_url:
-        return None
+        # No HTTP redirect followed (JS-redirect share page or failure):
+        # ixigua /dx/ links still reveal the group id in the original path.
+        return _canonical_ixigua(url)
     canonical = _canonical_douyin(final_url)
+    if canonical is not None:
+        return canonical
+    canonical = _canonical_ixigua(final_url)
     if canonical is not None:
         return canonical
     final_host = (urlsplit(final_url).hostname or "").casefold()
     if final_host and final_host not in _SHORT_LINK_HOSTS:
         return final_url
-    return None
+    return _canonical_ixigua(url)
 
 
 def _canonical_douyin(url: str) -> str | None:
@@ -82,6 +93,15 @@ def _canonical_douyin(url: str) -> str | None:
     kind = match.group(1) or match.group(2)
     aweme_id = match.group(3)
     return f"https://www.douyin.com/{kind}/{aweme_id}"
+
+
+def _canonical_ixigua(url: str) -> str | None:
+    """Return the stable desktop video URL for an ixigua share/video URL."""
+
+    match = _IXIGUA_SHARE_RE.search(url)
+    if match is None:
+        return None
+    return f"https://www.ixigua.com/video/{match.group(1)}"
 
 
 async def _final_url(page: Any, url: str) -> str | None:

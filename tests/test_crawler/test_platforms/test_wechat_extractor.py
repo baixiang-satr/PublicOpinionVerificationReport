@@ -130,3 +130,51 @@ def test_given_wechat_urls_route_to_implemented_crawlers() -> None:
     assert video is not None and video.key == "wechat_video"
     assert not official.manual_only
     assert not video.manual_only
+
+
+class _ScriptAwarePage:
+    """按脚本内容分别应答：页面全局探测 vs DOM 探针。"""
+
+    def __init__(self, globals_payload: object, probe: dict[str, Any]) -> None:
+        self._globals_payload = globals_payload
+        self._probe = probe
+
+    async def evaluate(self, script: str) -> Any:
+        if "__feedInfo__" in script:
+            return self._globals_payload
+        return self._probe
+
+
+def test_wechat_video_reads_page_globals_feed_info() -> None:
+    definition = find_platform(VIDEO_URL)
+    assert definition is not None
+    feed_info = {
+        "feed": {
+            "objectDesc": "全局对象里的视频号文案",
+            "createTime": 1_785_800_000,
+            "finderUser": {"nickname": "全局作者", "username": "global_finder"},
+        }
+    }
+    import json
+
+    page = _ScriptAwarePage(json.dumps(feed_info), {"official": {}, "video": {}})
+
+    data = _run(WechatExtractor().extract(page, RenderedDocument(url=VIDEO_URL), definition))
+
+    assert data is not None
+    assert data.content_text == "全局对象里的视频号文案"
+    assert data.author_name == "全局作者"
+    assert data.author_id == "global_finder"
+    assert data.published_at is not None
+
+
+def test_wechat_video_rejects_shell_boilerplate_meta() -> None:
+    definition = find_platform(VIDEO_URL)
+    assert definition is not None
+    document = RenderedDocument(
+        url=VIDEO_URL,
+        meta={"og:title": "微信视频号", "og:description": "微信视频号"},
+    )
+    page = _ScriptAwarePage(None, {"official": {}, "video": {}})
+
+    assert _run(WechatExtractor().extract(page, document, definition)) is None

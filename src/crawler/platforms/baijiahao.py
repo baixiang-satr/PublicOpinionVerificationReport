@@ -8,22 +8,30 @@ are matched to the URL article ID or hot-detail title before they are accepted.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 from src.crawler.extractors.base import RenderedDocument
 from src.crawler.platform_types import PlatformDefinition
+from src.crawler.platforms.baijiahao_nodes import (
+    _TIME_KEYS,
+    _TITLE_KEYS,
+    _article_node,
+    _article_signature,
+    _author_mapping,
+    _clean,
+    _content_of,
+    _target_text,
+)
 from src.crawler.platforms.extract_helpers import (
     apply_json_fields,
     epoch_to_datetime,
     evaluate_json,
     evaluate_value,
     found_any,
-    strip_html,
 )
-from src.crawler.platforms.payload_search import epoch_at, iter_mappings, text_at
+from src.crawler.platforms.payload_search import epoch_at, text_at
 from src.crawler.platforms.registry import register
 from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import parse_web_published_at
@@ -105,63 +113,10 @@ _DOM_PROBE = """
 }
 """
 
-_TIME_KEYS = (
-    "publish_time",
-    "publishTime",
-    "publish_time_str",
-    "publishTimeText",
-    "create_time",
-    "createTime",
-    "created_at",
-    "release_time",
-    "ctime",
-    "time",
+_VIDEO_LANDING_PATHS = (
+    "/newspage/data/videolanding",
+    "/newspage/data/landingshare",
 )
-_ID_KEYS = (
-    "id",
-    "article_id",
-    "articleId",
-    "nid",
-    "news_id",
-    "newsId",
-)
-_CANONICAL_ARTICLE_KEYS = (
-    "article",
-    "articleInfo",
-    "article_info",
-    "articleData",
-    "article_data",
-    "articleDetail",
-    "article_detail",
-    "detail",
-    "videoInfo",
-    "video_info",
-    "videoData",
-    "video_data",
-)
-_TITLE_KEYS = (
-    "title",
-    "articleTitle",
-    "article_title",
-    "newsTitle",
-    "news_title",
-    "videoTitle",
-    "video_title",
-)
-_CONTENT_KEYS = (
-    "content",
-    "article_content",
-    "articleContent",
-    "content_html",
-    "contentHtml",
-    "body",
-    "description",
-    "abstract",
-    "desc",
-    "videoDesc",
-    "video_desc",
-)
-_SPACE = re.compile(r"\s+")
 
 
 class BaijiahaoExtractor:
@@ -174,6 +129,7 @@ class BaijiahaoExtractor:
         definition: PlatformDefinition,
     ) -> PageData | None:
         wanted_id, wanted_title = _url_target(document.url)
+        strict_video_target = is_video_landing_url(document.url)
         data = PageData(final_url=document.url)
         applied = 0
 
@@ -189,27 +145,47 @@ class BaijiahaoExtractor:
             (payload, ExtractionSource.NETWORK_JSON)
             for payload in document.network_payloads
         )
+        exact_hit: tuple[Mapping[str, Any], ExtractionSource] | None = None
+        canonical_hits: list[tuple[Mapping[str, Any], ExtractionSource]] = []
+        seen_canonical: set[tuple[str, tuple[str, ...]]] = set()
+        relaxed_hit: tuple[Mapping[str, Any], ExtractionSource] | None = None
         for payload, source in payloads:
-            node = _article_node(
+            node, match_kind = _article_node(
                 payload,
                 wanted_id=wanted_id,
                 wanted_title=wanted_title,
+                require_video_shape=strict_video_target,
             )
             if node is None:
                 continue
-            applied += _apply_article(data, node, document.url, source)
-            if found_any(data, "content_text", "title"):
+            if match_kind == "exact":
+                exact_hit = (node, source)
                 break
+            if match_kind == "canonical":
+                signature = _article_signature(node)
+                if signature not in seen_canonical:
+                    seen_canonical.add(signature)
+                    canonical_hits.append((node, source))
+            elif relaxed_hit is None:
+                relaxed_hit = (node, source)
+        # 仲裁：exact 全局优先；canonical 例外只在跨全部载荷全局唯一时生效，
+        # 避免首个载荷里的推荐文章冒充目标（证据一致性铁律）。
+        chosen = exact_hit or (
+            canonical_hits[0] if len(canonical_hits) == 1 else None
+        ) or relaxed_hit
+        if chosen is not None:
+            applied += _apply_article(data, chosen[0], document.url, chosen[1])
 
-        if (
+        if not strict_video_target and (
             not data.title
             or not data.content_text
             or not data.author_name
             or not data.published_at
         ):
             applied += await _from_dom(data, page, document.url)
-        applied += _from_meta(data, document)
-        if not data.title and wanted_title:
+        if not strict_video_target:
+            applied += _from_meta(data, document)
+        if not strict_video_target and not data.title and wanted_title:
             applied += apply_json_fields(
                 data,
                 {"title": wanted_title},
@@ -235,8 +211,8 @@ def _apply_article(
     return apply_json_fields(
         data,
         {
-            "title": text_at(node, _TITLE_KEYS),
-            "content_text": _content_of(node),
+            "title": _target_text(text_at(node, _TITLE_KEYS)),
+            "content_text": _target_text(_content_of(node)),
             "author_name": text_at(
                 author,
                 (
@@ -326,120 +302,6 @@ def _from_meta(data: PageData, document: RenderedDocument) -> int:
     )
 
 
-def _article_node(
-    payload: Any,
-    *,
-    wanted_id: str | None = None,
-    wanted_title: str | None = None,
-) -> Mapping[str, Any] | None:
-    exact: list[Mapping[str, Any]] = []
-    canonical: list[Mapping[str, Any]] = []
-    generic: list[Mapping[str, Any]] = []
-    seen: set[int] = set()
-
-    for mapping in iter_mappings(payload):
-        candidates: list[tuple[Mapping[str, Any], bool]] = []
-        for key in _CANONICAL_ARTICLE_KEYS:
-            nested = mapping.get(key)
-            if isinstance(nested, Mapping):
-                candidates.append((nested, True))
-        candidates.append((mapping, False))
-        for candidate, is_canonical in candidates:
-            marker = id(candidate)
-            if marker in seen or not _looks_like_article(candidate):
-                continue
-            seen.add(marker)
-            if _matches_target(candidate, wanted_id, wanted_title):
-                exact.append(candidate)
-            elif is_canonical:
-                canonical.append(candidate)
-            else:
-                generic.append(candidate)
-
-    if exact:
-        return exact[0]
-    if wanted_id or wanted_title:
-        # A single canonical SSR article may omit its own ID. Never make the
-        # same exception for anonymous recommendation/feed cards.
-        return canonical[0] if len(canonical) == 1 else None
-    return (canonical or generic or [None])[0]
-
-
-def _looks_like_article(node: Mapping[str, Any]) -> bool:
-    return bool(text_at(node, _TITLE_KEYS)) and (
-        bool(text_at(node, _CONTENT_KEYS))
-        or any(key in node for key in _TIME_KEYS)
-        or any(
-            key in node
-            for key in (
-                "author",
-                "authorInfo",
-                "author_info",
-                "mediaInfo",
-                "media_info",
-                "publisher",
-                "source",
-            )
-        )
-    )
-
-
-def _matches_target(
-    node: Mapping[str, Any],
-    wanted_id: str | None,
-    wanted_title: str | None,
-) -> bool:
-    if wanted_id and _article_id_matches(node, wanted_id):
-        return True
-    if wanted_title:
-        candidate = text_at(node, _TITLE_KEYS)
-        return _normalize_title(candidate) == _normalize_title(wanted_title)
-    return not wanted_id
-
-
-def _article_id_matches(node: Mapping[str, Any], wanted: str) -> bool:
-    for key in _ID_KEYS:
-        value = node.get(key)
-        if value is not None and str(value).strip() == wanted:
-            return True
-    for key in (
-        "url",
-        "article_url",
-        "articleUrl",
-        "share_url",
-        "shareUrl",
-    ):
-        value = node.get(key)
-        if value is not None and wanted in str(value):
-            return True
-    return False
-
-
-def _author_mapping(node: Mapping[str, Any]) -> Mapping[str, Any]:
-    for key in (
-        "author",
-        "authorInfo",
-        "author_info",
-        "account",
-        "accountInfo",
-        "account_info",
-        "mediaInfo",
-        "media_info",
-        "publisher",
-    ):
-        value = node.get(key)
-        if isinstance(value, Mapping):
-            return value
-    return {}
-
-
-def _content_of(node: Mapping[str, Any]) -> str | None:
-    raw = text_at(node, _CONTENT_KEYS)
-    if not raw:
-        return None
-    return strip_html(raw) if "<" in raw and ">" in raw else raw
-
-
 def _url_target(url: str) -> tuple[str | None, str | None]:
     query = parse_qs(urlsplit(url).query, keep_blank_values=False)
     article_id = _clean((query.get("id") or query.get("nid") or [None])[0])
@@ -447,15 +309,17 @@ def _url_target(url: str) -> tuple[str | None, str | None]:
     return article_id, title
 
 
-def _normalize_title(value: str | None) -> str:
-    return _SPACE.sub("", value or "").casefold()
+def is_video_landing_url(url: str | None) -> bool:
+    """True for MBD video share pages whose ``nid`` must match exactly."""
 
-
-def _clean(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
+    if not url:
+        return False
+    parsed = urlsplit(url)
+    return (
+        parsed.hostname == "mbd.baidu.com"
+        and parsed.path.casefold() in _VIDEO_LANDING_PATHS
+        and bool(parse_qs(parsed.query).get("nid"))
+    )
 
 
 register(BaijiahaoExtractor())

@@ -24,7 +24,7 @@ import os
 import re
 from collections.abc import Iterator, Mapping
 from typing import Any
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -180,10 +180,21 @@ def _share_payloads(text: str) -> Iterator[Any]:
 
 
 def douyin_aweme_id(url: str) -> str | None:
-    """Extract the numeric aweme id from a douyin video/note URL."""
+    """Extract the numeric aweme id from a douyin video/note URL.
+
+    Profile-modal share links (``/user/{sec_uid}?...&modal_id={aweme_id}``)
+    carry the target video id in the ``modal_id`` query parameter instead of
+    the path; that id is the authoritative lock for evidence matching.
+    """
 
     match = re.search(r"/(?:video|note)/(\d{6,})", url)
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+    query = parse_qs(urlsplit(url).query)
+    modal_id = (query.get("modal_id") or [""])[0].strip()
+    if re.fullmatch(r"\d{6,}", modal_id):
+        return modal_id
+    return None
 
 
 async def douyin_aweme_detail(page: Any, aweme_id: str) -> Mapping[str, Any] | None:

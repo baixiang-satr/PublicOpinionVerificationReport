@@ -142,10 +142,15 @@ _NOTE_DOM_PROBE = r"""
     content: pick(["#detail-desc", ".note-content .desc"]),
     author: pick([
       ".author-container .username",
+      ".author-container .info .username",
       ".author-wrapper .name",
+      ".author-wrapper .info .name",
       "span.username",
+      ".info .username",
       ".user .name",
-      ".author .name"
+      ".author .name",
+      "[class*='author'] [class*='name']",
+      ".note-content .username"
     ]),
     authorUrl: anchor ? anchor.href : '',
     published: pick([".note-content .date", ".date", ".publish-time"])
@@ -223,6 +228,18 @@ class XiaohongshuExtractor:
             or not data.author_url
         ):
             applied += await self._from_dom(data, page)
+        # OG meta 是笔记页最稳定的最末兜底（仅补标题/正文，作者不编造）。
+        if not data.title or not data.content_text:
+            applied += apply_json_fields(
+                data,
+                {
+                    "title": _meta(document, "og:title", "twitter:title"),
+                    "content_text": _meta(
+                        document, "og:description", "twitter:description", "description"
+                    ),
+                },
+                source=ExtractionSource.META,
+            )
         return data if applied and found_any(data, "content_text", "title") else None
 
     async def _from_dom(self, data: PageData, page: Any) -> int:
@@ -411,6 +428,15 @@ def _note_image_urls(note: Mapping[str, Any]) -> list[str]:
         if selected and selected.startswith(("http://", "https://", "//")):
             urls.append(f"https:{selected}" if selected.startswith("//") else selected)
     return list(dict.fromkeys(urls))
+
+
+def _meta(document: RenderedDocument, *keys: str) -> str | None:
+    """Return the first non-empty meta value among *keys*."""
+
+    return next(
+        (document.meta[key].strip() for key in keys if document.meta.get(key, "").strip()),
+        None,
+    )
 
 
 register(XiaohongshuExtractor())

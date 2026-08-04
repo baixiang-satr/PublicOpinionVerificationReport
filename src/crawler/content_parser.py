@@ -12,6 +12,7 @@ from src.crawler.extractors.generic import GenericExtractor
 from src.crawler.field_resolver import merge_page_data
 from src.crawler.platform_catalog import ExtractorFamily, PlatformDefinition
 from src.crawler.platforms.registry import dedicated_extractor_for
+from src.crawler.platforms.baijiahao import is_video_landing_url
 from src.domain.models import ExtractionSource, PageData
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,8 @@ class ContentParser:
             self._finalize_netease_article(merged, dedicated_snapshot)
         if definition.key == "sohu_video" and dedicated_snapshot is not None:
             self._finalize_sohu_video(merged, dedicated_snapshot)
+        if definition.key == "baijiahao" and is_video_landing_url(document.url):
+            self._finalize_baijiahao_video(merged, dedicated_snapshot)
         return merged
 
     @staticmethod
@@ -294,6 +297,43 @@ class ContentParser:
         self._restore_dedicated_fields(merged, dedicated)
         # Player covers and related cards are not body images or transcripts.
         merged.image_urls = []
+        self._generic.finalize(merged)
+        self._restore_dedicated_time(merged, dedicated)
+
+    def _finalize_baijiahao_video(
+        self,
+        merged: PageData,
+        dedicated: PageData | None,
+    ) -> None:
+        """Never merge Baidu download chrome into an ``nid`` video record."""
+
+        protected_fields = (
+            "title",
+            "content_text",
+            "content_summary",
+            "author_name",
+            "author_id",
+            "author_url",
+            "published_at",
+            "published_at_raw",
+        )
+        for field in protected_fields:
+            setattr(merged, field, None)
+            merged.field_sources.pop(field, None)
+            merged.field_confidences.pop(field, None)
+        merged.image_urls = []
+        merged.summary_truncated = False
+        merged.original_content_chars = 0
+        merged.exported_content_chars = 0
+        merged.author_id_is_fallback = False
+        if dedicated is None:
+            merged.field_rejection_notes.append(
+                "MBD video nid was not matched by a target-scoped video payload; "
+                "page chrome and recommendations were discarded."
+            )
+            return
+        self._restore_dedicated_fields(merged, dedicated)
+        merged.image_urls = list(dedicated.image_urls)
         self._generic.finalize(merged)
         self._restore_dedicated_time(merged, dedicated)
 

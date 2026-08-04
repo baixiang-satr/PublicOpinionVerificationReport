@@ -234,7 +234,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
             r"/s(?:/|$|\?)",
             r"id=",
             r"/builder/na/hot/detail",
-            r"/newspage/data/(?:videolanding|landingshare)",
+            r"/newspage/data/(?:videolanding|landingshare|landingsuper)",
         ),
     ),
     PlatformDefinition(
@@ -405,7 +405,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
             author_url=("[class*='author'] a", ".source a", "a[href*='/c/']"),
             published_at=("time", "[class*='time']", "[class*='date']"),
         ),
-        include_patterns=(r"/article/",),
+        include_patterns=(r"/article/", r"/w/", r"/is/"),
     ),
     PlatformDefinition(
         "netease_news",

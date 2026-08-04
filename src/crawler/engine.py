@@ -1,6 +1,5 @@
 """Bounded, cancellable browser crawl engine producing runtime RecordResult objects."""
 from __future__ import annotations
-
 import asyncio
 from collections.abc import Callable
 from datetime import datetime
@@ -8,10 +7,10 @@ import logging
 from pathlib import Path
 import random
 from typing import Any
-
 from src.auth.store import AuthProfileStore
+from src.crawler.authenticated_access import guest_ui_error
 from src.config.settings import TaskConfig
-from src.crawler.auth_preflight import preflight_or_empty, try_heal_auth
+from src.crawler.auth_preflight import preflight_or_empty
 from src.crawler.author_extractor import AuthorExtractor
 from src.crawler.content_parser import ContentParser
 from src.crawler.crawl_navigation import CrawlFailure, navigate_with_fallback
@@ -21,6 +20,7 @@ from src.crawler.optional_assets import collect_optional_assets
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.platform_scheduler import PlatformTaskScheduler
 from src.crawler.rate_limiter import HostRateLimiter, wait_with_cancellation
+from src.crawler.relogin import ReloginHandler, heal_or_relogin, relogin_after_auth_failure
 from src.domain.models import (
     PageData,
     RecordResult,
@@ -49,8 +49,10 @@ class CrawlEngine:
         asset_collector: AssetCollector | None = None,
         ocr_pipeline: OcrPipeline | None = None,
         auth_store: AuthProfileStore | None = None,
+        relogin_handler: ReloginHandler | None = None,
     ) -> None:
         self._config = config
+        self._relogin_handler = relogin_handler
         self._auth_store = auth_store
         if self._auth_store is None and config.auth_store_dir is not None:
             self._auth_store = AuthProfileStore(config.auth_store_dir)
@@ -132,21 +134,15 @@ class CrawlEngine:
         results: list[RecordResult] = []
         known_block = self._scheduler.known_auth_block(tasks[0])
         if known_block is not None:
-            # A stored EXPIRED marker may be stale (false positive from a
-            # dead probe page, or cookies refreshed by another session).
-            # Give the preserved state one probe inside the crawl browser
-            # before pausing the whole platform.
+            # A stored EXPIRED marker may be stale; give the preserved state
+            # one probe, then offer an interactive re-login before pausing.
             blocked_platform = self._scheduler.blocked_auth_platform(tasks[0])
-            preflight_result = auth_preflight.get(blocked_platform) if blocked_platform else None
-            if blocked_platform is not None and (
-                preflight_result is True
-                or (
-                    blocked_platform not in auth_preflight
-                    and await try_heal_auth(self._browser_pool, blocked_platform)
-                )
+            if blocked_platform is not None and await heal_or_relogin(
+                self._relogin_handler, self._browser_pool, blocked_platform,
+                auth_preflight, cancel_event,
             ):
                 logger.info(
-                    "Auth profile for %s self-healed before crawl; platform not paused.",
+                    "Auth profile for %s restored before crawl; platform not paused.",
                     blocked_platform,
                 )
                 known_block = None
@@ -191,6 +187,10 @@ class CrawlEngine:
                     on_result,
                     cancel_event,
                 )
+                if await relogin_after_auth_failure(
+                    self._relogin_handler, task, result, cancel_event
+                ):
+                    result = await self._process(task, output_dir, on_event, on_result, cancel_event)
                 if self._scheduler.should_pause_after(result):
                     paused_by = result
             results.append(result)
@@ -319,6 +319,11 @@ class CrawlEngine:
                     status_code=status_code,
                     redirect_chain=redirect_chain,
                 )
+                auth_error = await guest_ui_error(
+                    page, self._browser_pool, result.task.normalized_url
+                )
+                if auth_error is not None:
+                    raise CrawlFailure(auth_error, RecordStatus.NEEDS_REVIEW)
                 self._browser_pool.mark_access_valid(
                     page,
                     result.task.normalized_url,
