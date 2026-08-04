@@ -11,6 +11,12 @@ const store = useJobStore()
 async function pickFile() {
   const info = await bridge.pickInputFile()
   if (!info) return
+  // 许可证守卫拦截：后端返回 {ok:false, code:'LICENSE_REQUIRED', message}
+  const blocked = info as { ok?: boolean; message?: string }
+  if (blocked.ok === false) {
+    ElMessage.warning(blocked.message || '软件未激活，请先完成授权激活。')
+    return
+  }
   store.inputPath = info.path
   store.urlCount = info.url_count
   if ((info as { error?: string }).error) {

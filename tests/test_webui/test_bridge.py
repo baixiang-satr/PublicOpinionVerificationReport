@@ -15,9 +15,28 @@ from src.domain.models import (
     RouteDecision,
     UrlTask,
 )
+from src.license.models import LicenseInfo, LicenseStatus
 from src.services.checkpoint_store import CheckpointStore
+import src.webui.bridge as bridge_module
 from src.webui.bridge import WebUIBridge
 from src.webui.runner import EventSink
+
+
+class _AlwaysValidLicense:
+    """测试替身：永远视为已激活（本模块不测试许可证逻辑本身）。"""
+
+    def status(self) -> LicenseInfo:
+        return LicenseInfo(
+            activated=True,
+            status=LicenseStatus.VALID,
+            message="",
+            machine_code="TEST",
+        )
+
+
+@pytest.fixture(autouse=True)
+def _always_licensed(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(bridge_module, "default_license_manager", _AlwaysValidLicense)
 
 
 def _record(eid: int, url: str, sheet: str, status: RecordStatus) -> RecordResult:
@@ -166,7 +185,7 @@ def test_list_screenshots_empty_without_session_or_files(tmp_path: Path) -> None
     assert bridge.list_screenshots(999) == {"content": None, "author": None}
 
 
-def test_crawled_author_screenshot_is_visible_and_listed_in_other_files(
+def test_crawled_author_screenshot_is_visible_and_listed_in_primary_column(
     tmp_path: Path,
 ) -> None:
     record = _paged_record(
@@ -187,11 +206,14 @@ def test_crawled_author_screenshot_is_visible_and_listed_in_other_files(
     previews = bridge.list_screenshots(1)
     assert previews["content"] is not None
     assert previews["author"] is not None
+    assert previews["content"]["name"] == "001.jpg"
     assert previews["author"]["name"] == "001主页.jpg"
 
     payload = bridge.get_sheet_payload()
     video = next(sheet for sheet in payload if sheet["name"] == "图文视频")
-    assert video["rows"][0]["cells"]["I"] == "001主页.jpg"
+    # 对调表：账号截图列(H)交付个人主页截图，内容页截图进其他文件名(I)
+    assert video["rows"][0]["cells"]["H"] == "001主页.jpg"
+    assert video["rows"][0]["cells"]["I"] == "001.jpg"
 
 
 def test_start_region_capture_guards(tmp_path: Path) -> None:
@@ -265,6 +287,8 @@ def test_start_region_capture_author_target_opens_profile_url_directly(
             author_url=None,
         ),
     ]
+    records[0].page.author_name = "目标主页作者"
+    records[0].page.author_id = "target-7788"
     job_dir = _make_job(tmp_path, records)
     bridge = WebUIBridge(_config(tmp_path), EventSink())
     ok, _message = bridge.jobs.open_session(job_dir)
@@ -281,6 +305,10 @@ def test_start_region_capture_author_target_opens_profile_url_directly(
     assert result["ok"] is True
     assert capture.calls[-1]["url"] == "https://www.douyin.com/user/secABC123"
     assert capture.calls[-1]["platform_key"] == "douyin"
+    assert capture.calls[-1]["focus_texts"] == (
+        "目标主页作者",
+        "target-7788",
+    )
 
     # 无 author_url 时回落到内容页
     result = bridge.start_region_capture(2, "author")
@@ -344,6 +372,44 @@ def test_auth_login_all_is_disabled_to_prevent_window_churn(
         "message": "批量弹出登录页已停用，请逐个平台点击“登录 / 更新”。",
     }
     assert calls == []
+
+
+def test_auth_probe_relevant_delegates_to_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_start(action: str, platform_key: str | None = None):
+        calls.append((action, platform_key))
+        return True, ""
+
+    monkeypatch.setattr(bridge.auth, "start", fake_start)
+
+    assert bridge.auth_probe_relevant() == {"ok": True, "message": ""}
+    assert calls == [("probe_relevant", None)]
+
+
+def test_auth_resume_login_requires_running_job(tmp_path: Path) -> None:
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    result = bridge.auth_resume_login("weibo", "skip")
+    assert result["ok"] is False
+
+
+def test_auth_resume_login_forwards_decision(tmp_path: Path) -> None:
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    decisions: list[tuple[str, str]] = []
+
+    class _Coordinator:
+        def resume(self, platform_key: str, action: str):
+            decisions.append((platform_key, action))
+            return True, ""
+
+    bridge.jobs.relogin = _Coordinator()  # type: ignore[assignment]
+    bridge.jobs.is_running = lambda: True  # type: ignore[method-assign]
+    assert bridge.auth_resume_login("weibo", "retry") == {"ok": True, "message": ""}
+    assert decisions == [("weibo", "retry")]
 
 
 def test_event_sink_without_window_is_silent() -> None:

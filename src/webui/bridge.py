@@ -20,13 +20,17 @@ from src.auth.registry import auth_policy_for_url
 from src.config.settings import AppConfig, TaskConfig
 from src.crawler.author_profile_urls import is_author_profile_url
 from src.input.reader import InputReadError, read_url_input
+from src.license.manager import LicenseManager
 from src.services.checkpoint_store import CheckpointStore
 from src.services.models import JobRequest
 from src.services.review_session import ReviewSession
 from src.services.zip_import import TemplateZipImportError, TemplateZipImporter
 from src.utils.file_utils import require_safe_file_name
-from src.webui.runner import AuthRunner, CaptureRunner, EventSink, JobRunner
+from src.webui.auth_api import AuthApiMixin
+from src.webui.auth_runner import AuthRunner
+from src.webui.runner import CaptureRunner, EventSink, JobRunner
 from src.webui.auth_ui import build_auth_list, missing_auth_platforms
+from src.webui.license_gate import LicenseApiMixin, apply_license_guard, default_license_manager
 from src.webui.serialize import (
     row_delta,
     session_overview,
@@ -37,22 +41,26 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 _SCREENSHOT_SLOTS = {"primary": "content", "author": "author"}
 
 
-class WebUIBridge:
+class WebUIBridge(LicenseApiMixin, AuthApiMixin):
     def __init__(
         self,
         base_config: AppConfig,
         sink: EventSink | None = None,
         *,
         window_provider=None,
+        license_manager: LicenseManager | None = None,
     ) -> None:
         self._base_config = base_config
         self._task_config: TaskConfig = base_config.task
         self._sink = sink or EventSink()
         self._window_provider = window_provider
-        self.jobs = JobRunner(self._current_config, self._sink)
-        self.auth = AuthRunner(lambda: self._task_config, self._sink)
-        self.capture = CaptureRunner(lambda: self._task_config, self._sink)
+        self.license = license_manager if license_manager is not None else default_license_manager()
         self._input_platform_keys: set[str] = set()
+        self.auth = AuthRunner(
+            lambda: self._task_config, self._sink, relevant_keys_getter=lambda: self._input_platform_keys
+        )
+        self.jobs = JobRunner(self._current_config, self._sink, auth_runner=self.auth)
+        self.capture = CaptureRunner(lambda: self._task_config, self._sink)
         self.jobs.refresh_latest_checkpoint(base_config.template.output_dir)
 
     # ── 基础 ──
@@ -73,6 +81,7 @@ class WebUIBridge:
             },
             "has_checkpoint": self.jobs.last_checkpoint is not None,
             "session": session_overview(self._session()),
+            "license": self.license_status(),
         }
 
     def set_options(self, options: dict) -> dict:
@@ -310,7 +319,7 @@ class WebUIBridge:
         except KeyError:
             return {"content": None, "author": None}
         return {
-            "content": self._image_payload(session.primary_screenshot_path(record)),
+            "content": self._image_payload(session.content_screenshot_path(record)),
             "author": self._image_payload(session.author_screenshot_path(record)),
         }
 
@@ -375,6 +384,18 @@ class WebUIBridge:
             storage_state=storage_state,
             assets_dir=assets_dir,
             on_saved=_on_saved,
+            focus_texts=(
+                tuple(
+                    value
+                    for value in (
+                        record.page.author_name,
+                        record.page.author_id,
+                    )
+                    if value
+                )
+                if target == "author"
+                else ()
+            ),
         )
         return {"ok": ok, "message": message}
 
@@ -418,14 +439,10 @@ class WebUIBridge:
         return build_auth_list(self.auth.store(), self._input_platform_keys)
 
     def auth_probe_all(self) -> dict:
-        ok, _message = self.auth.start("probe_all")
-        return {"ok": ok}
+        return {"ok": self.auth.start("probe_all")[0]}
 
     def auth_login_all(self) -> dict:
-        return {
-            "ok": False,
-            "message": "批量弹出登录页已停用，请逐个平台点击“登录 / 更新”。",
-        }
+        return {"ok": False, "message": "批量弹出登录页已停用，请逐个平台点击“登录 / 更新”。"}
 
     def auth_probe(self, platform_key: str) -> dict:
         ok, message = self.auth.start("probe", str(platform_key))
@@ -446,6 +463,10 @@ class WebUIBridge:
     def auth_logout(self, platform_key: str) -> dict:
         self.auth.store().delete_state(str(platform_key))
         return {"ok": True}
+
+
+apply_license_guard(WebUIBridge)  # 未激活时拦截业务入口，见 license_gate.py
+
 
 def _screenshot_asset_name(
     assets_dir: Path,

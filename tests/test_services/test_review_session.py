@@ -253,3 +253,64 @@ def test_stage_manual_assets_keeps_existing_staged_files(tmp_path: Path) -> None
 
     assert record.assets.page_screenshot == existing
     assert staged == 0
+
+
+def _video_record(evidence_id: int) -> RecordResult:
+    """图文视频对调表记录（账号截图列=个人主页截图）。"""
+
+    task = UrlTask(
+        evidence_id,
+        f"https://v.douyin.com/p/{evidence_id}",
+        f"https://v.douyin.com/p/{evidence_id}",
+    )
+    return RecordResult(
+        task,
+        RecordStatus.NEEDS_REVIEW,
+        page=PageData(title="标题", content_text="正文", author_name="昵称", author_id="账号1"),
+        route=RouteDecision("图文视频", "字节跳动_抖音_图文视频", "正文"),
+        assets=AssetSet(),
+    )
+
+
+def test_swapped_sheet_missing_labels_track_homepage_then_content(tmp_path: Path) -> None:
+    record = _video_record(1)  # 两张截图都没有
+    session = _session(tmp_path, [record])
+
+    missing = session.missing_labels(record, None)
+    assert "主页截图" in missing  # 账号截图列（主截图列）必须交付个人主页截图
+    assert "内容页截图" in missing  # 内容页截图经其他文件名列交付
+    assert "截图" not in missing
+
+    # 只有个人主页截图时：主截图列满足，仍缺内容页截图
+    record.assets.author_screenshot = Path("001主页.jpg")
+    missing = session.missing_labels(record, None)
+    assert "主页截图" not in missing
+    assert "内容页截图" in missing
+
+    # 两张齐全后无缺失
+    record.assets.page_screenshot = Path("001.jpg")
+    assert session.missing_labels(record, None) == ()
+
+
+def test_swapped_sheet_content_slot_satisfied_by_manual_primary(tmp_path: Path) -> None:
+    record = _video_record(1)
+    record.assets.author_screenshot = Path("001主页.jpg")
+    session = _session(tmp_path, [record])
+    session.set_primary_screenshot(1, "001_content_manual.png")
+
+    missing = session.missing_labels(record, session.get_override(1))
+    assert "内容页截图" not in missing
+    assert missing == ()
+
+
+def test_swapped_sheet_primary_name_and_path_come_from_homepage_slot(tmp_path: Path) -> None:
+    record = _video_record(1)
+    record.assets.page_screenshot = Path("001.jpg")
+    session = _session(tmp_path, [record])
+
+    # 主截图列跟随个人主页槽位
+    assert session.primary_screenshot_name(record) is None
+    session.set_author_screenshot(1, "001_author_manual.png")
+    assert session.primary_screenshot_name(record) == "001_author_manual.png"
+    # 内容页槽位不受人工主页影响
+    assert session.content_screenshot_name(record) == "001.jpg"

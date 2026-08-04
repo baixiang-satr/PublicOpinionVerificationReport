@@ -2,10 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import AuthManagerDialog from '@/components/AuthManagerDialog.vue'
+import ReloginDialog from '@/components/ReloginDialog.vue'
 import SheetDialog from '@/components/SheetDialog.vue'
 import StepSidebar from '@/components/StepSidebar.vue'
 import { STEPS, useJobStore } from '@/stores/job'
 
+import ActivationView from '@/views/ActivationView.vue'
 import CrawlView from '@/views/CrawlView.vue'
 import ExportView from '@/views/ExportView.vue'
 import InputView from '@/views/InputView.vue'
@@ -26,7 +28,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 </script>
 
 <template>
-  <div class="shell">
+  <!-- 未激活：整页激活界面，隐藏步骤向导 -->
+  <main v-if="store.license && !store.license.activated" class="shell-main activation-main">
+    <ActivationView />
+  </main>
+  <div v-else class="shell">
     <StepSidebar
       class="shell-sidebar"
       :steps="STEPS"
@@ -53,6 +59,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
       </footer>
     </main>
     <AuthManagerDialog v-model="store.authDialogOpen" />
+    <ReloginDialog />
     <SheetDialog v-model="store.sheetDialogOpen" :mode="store.sheetDialogMode" />
   </div>
 </template>
@@ -62,6 +69,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
   display: flex;
   height: 100%;
   overflow: hidden;
+}
+
+.activation-main {
+  height: 100%;
+  overflow-y: auto;
+  padding: 20px 22px 12px;
 }
 
 .shell-main {

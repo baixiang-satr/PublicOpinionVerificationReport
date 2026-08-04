@@ -42,8 +42,8 @@ class TemplateRowMapper:
                 f"Record status {result.status.value!r} is not complete enough for export."
             )
         layout = get_sheet_layout(result.route.sheet_name)
-        screenshot_name = self._page_screenshot_name(result)
-        attachments = tuple(self._attachment_names(result, screenshot_name))
+        screenshot_name = self._primary_screenshot_name(result, layout)
+        attachments = tuple(self._attachment_names(result, layout, screenshot_name))
         fields = self._field_values(result)
         fields["platform"] = result.route.platform_value
         fields["text_type"] = result.route.text_type
@@ -108,20 +108,41 @@ class TemplateRowMapper:
         )
 
     @staticmethod
-    def _page_screenshot_name(result: RecordResult) -> str | None:
-        if result.assets.page_screenshot is None:
+    def _primary_screenshot_name(
+        result: RecordResult,
+        layout: SheetLayout,
+    ) -> str | None:
+        """Name written into the primary screenshot column.
+
+        对调表（图文视频/浏览器，``homepage_screenshot_primary``）的主截图列
+        是“账号截图”，按合同交付作者个人主页截图；内容页截图改由附件列交付。
+        """
+
+        asset = (
+            result.assets.author_screenshot
+            if layout.homepage_screenshot_primary
+            else result.assets.page_screenshot
+        )
+        if asset is None:
             return None
-        return require_safe_file_name(result.assets.page_screenshot.name)
+        return require_safe_file_name(asset.name)
 
     @staticmethod
     def _attachment_names(
         result: RecordResult,
-        page_screenshot_name: str | None,
+        layout: SheetLayout,
+        primary_screenshot_name: str | None,
     ) -> list[str]:
         names: list[str] = []
-        for path in result.assets.attachment_paths():
+        if layout.homepage_screenshot_primary:
+            # 对调表：内容页截图取代个人主页截图成为附件列第一槽位。
+            page = result.assets.page_screenshot
+            candidates = [page, *result.assets.extra_attachments] if page else list(result.assets.extra_attachments)
+        else:
+            candidates = result.assets.attachment_paths()
+        for path in candidates:
             name = require_safe_file_name(path.name)
-            if name != page_screenshot_name and name not in names:
+            if name != primary_screenshot_name and name not in names:
                 names.append(name)
         return names
 

@@ -21,10 +21,31 @@ export interface SessionOverview {
   sheets: SheetStat[]
 }
 
+export type LicenseStatus =
+  | 'valid'
+  | 'not_activated'
+  | 'malformed'
+  | 'bad_signature'
+  | 'machine_mismatch'
+  | 'expired'
+  | 'fingerprint_error'
+
+export interface LicenseInfo {
+  activated: boolean
+  status: LicenseStatus
+  message: string
+  machine_code: string
+  licensee: string | null
+  license_id: string | null
+  expires_at: string | null
+  ok: boolean
+}
+
 export interface Bootstrap {
   options: TaskOptions
   has_checkpoint: boolean
   session: SessionOverview | null
+  license: LicenseInfo
 }
 
 export interface ProgressPayload {
@@ -138,7 +159,15 @@ export type BridgeEventType =
   | 'finished'
   | 'failed'
   | 'auth'
+  | 'auth_relogin'
   | 'capture'
+
+export interface AuthReloginPayload {
+  key: string
+  name: string
+  phase: 'waiting' | 'failed' | 'done'
+  message: string
+}
 
 export interface BridgeEvent {
   type: BridgeEventType

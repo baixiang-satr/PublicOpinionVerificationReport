@@ -43,9 +43,9 @@ def audit_staged_author_assets(
     Every ``NNN主页.<image>`` file must have a persisted
     :class:`AuthorEvidenceDecision` sidecar with ``accepted=True``.  Orphaned,
     identity-mismatched or overlay-blocked screenshots are deleted from the
-    staging copy, their names are stripped from the workbook attachment
-    references, and an audit entry is returned for the pending-manual-entry
-    report.  The source template is never touched.
+    staging copy, their names are stripped from the workbook screenshot and
+    attachment references, and an audit entry is returned for the
+    pending-manual-entry report.  The source template is never touched.
     """
 
     updated_rows = list(rows)
@@ -68,7 +68,7 @@ def audit_staged_author_assets(
             logger.warning("Unable to remove rejected author asset %s: %s", path, error)
             continue
         updated_rows = [
-            _strip_attachment_reference(row, path.name) for row in updated_rows
+            _strip_asset_reference(row, path.name) for row in updated_rows
         ]
         entries.append(
             {
@@ -86,10 +86,15 @@ def audit_staged_author_assets(
     return updated_rows, entries
 
 
-def _strip_attachment_reference(row: TemplateRow, asset_name: str) -> TemplateRow:
-    if asset_name not in row.attachment_names:
-        return row
+def _strip_asset_reference(row: TemplateRow, asset_name: str) -> TemplateRow:
+    # 对调表（homepage_screenshot_primary）把个人主页截图写在主截图列，
+    # 因此主截图槽位与附件槽位都要剥离。
+    primary = row.primary_screenshot_name
+    if primary == asset_name:
+        primary = None
     remaining = tuple(name for name in row.attachment_names if name != asset_name)
+    if primary == row.primary_screenshot_name and remaining == tuple(row.attachment_names):
+        return row
     for column, value in list(row.values_by_column.items()):
         if not isinstance(value, str) or asset_name not in value:
             continue
@@ -98,4 +103,4 @@ def _strip_attachment_reference(row: TemplateRow, asset_name: str) -> TemplateRo
             row.values_by_column[column] = ",".join(kept)
         else:
             del row.values_by_column[column]
-    return replace(row, attachment_names=remaining)
+    return replace(row, primary_screenshot_name=primary, attachment_names=remaining)

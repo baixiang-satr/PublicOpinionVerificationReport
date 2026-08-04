@@ -123,11 +123,33 @@ class TemplateZipImporter:
         if primary_name:
             candidate = template_dir / primary_name
             if candidate.is_file():
-                assets.page_screenshot = candidate
+                if layout.homepage_screenshot_primary:
+                    # 对调表：主截图列（账号截图名）交付的是个人主页截图。
+                    assets.author_screenshot = candidate
+                else:
+                    assets.page_screenshot = candidate
+        attachment_paths: list[Path] = []
         for name in (part.strip() for part in attachment_text.split(",") if part.strip()):
             candidate = template_dir / name
             if candidate.is_file() and name != primary_name:
-                assets.extra_attachments.append(candidate)
+                attachment_paths.append(candidate)
+        # Export writes the verified second-slot screenshot first and any
+        # operator-added extras after it.  Reconstruct the same slots on
+        # import so "查看截图" can preview both images instead of
+        # incorrectly reporting one missing while completion counts say done.
+        # 常规表第二槽位=个人主页截图；对调表第二槽位=内容页截图。
+        if url and attachment_paths:
+            if layout.homepage_screenshot_primary:
+                if assets.page_screenshot is None:
+                    assets.page_screenshot = attachment_paths[0]
+                    assets.extra_attachments.extend(attachment_paths[1:])
+                else:
+                    assets.extra_attachments.extend(attachment_paths)
+            else:
+                assets.author_screenshot = attachment_paths[0]
+                assets.extra_attachments.extend(attachment_paths[1:])
+        else:
+            assets.extra_attachments.extend(attachment_paths)
 
         status = (
             RecordStatus.NEEDS_REVIEW
@@ -164,7 +186,13 @@ class TemplateZipImporter:
     ) -> bool:
         for column in layout.required_columns:
             if column == layout.primary_screenshot_column:
-                if assets.page_screenshot is None:
+                # 对调表主截图列=个人主页截图；其余表=内容页截图。
+                primary_asset = (
+                    assets.author_screenshot
+                    if layout.homepage_screenshot_primary
+                    else assets.page_screenshot
+                )
+                if primary_asset is None:
                     return True
             elif not _text(values.get(column)):
                 return True

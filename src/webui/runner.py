@@ -10,24 +10,21 @@ import asyncio
 import json
 from pathlib import Path
 from threading import Event, Lock, Thread
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
-from src.auth.models import AuthStatus
-from src.auth.registry import AUTH_POLICIES
-from src.auth.service import AuthManagerService
 from src.auth.store import AuthProfileStore
 from src.config.settings import AppConfig, TaskConfig, default_auth_store_dir
+from src.crawler.engine import CrawlEngine
 from src.screenshot.capture_session import CaptureSession
 from src.screenshot.region_capture import RegionCaptureResult, RegionCaptureService
 from src.services.models import JobRequest, JobResult, RunnerCallbacks
 from src.services.review_session import ReviewSession
 from src.services.task_runner import TaskRunner, TaskRunnerError
-from src.webui.serialize import (
-    auth_platform_payload,
-    finished_payload,
-    log_payload,
-    progress_payload,
-)
+from src.webui.relogin_coordinator import CrawlReloginCoordinator
+from src.webui.serialize import finished_payload, log_payload, progress_payload
+
+if TYPE_CHECKING:
+    from src.webui.auth_runner import AuthRunner
 
 
 class EventSink:
@@ -54,7 +51,7 @@ class EventSink:
             pass
 
 
-class _AsyncThreadJob:
+class AsyncThreadJob:
     """Base: run one coroutine on a dedicated daemon thread.
 
     Two cancel channels are offered because the consumers differ:
@@ -67,8 +64,10 @@ class _AsyncThreadJob:
         self._lock = Lock()
         self._thread: Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task | None = None
         self._asyncio_cancel: asyncio.Event | None = None
         self._thread_cancel: Event | None = None
+        self._cancel_requested = False
 
     def is_running(self) -> bool:
         with self._lock:
@@ -77,14 +76,30 @@ class _AsyncThreadJob:
     def cancel(self) -> None:
         with self._lock:
             loop = self._loop
+            task = self._task
             asyncio_event = self._asyncio_cancel
             thread_event = self._thread_cancel
         if loop is not None and asyncio_event is not None:
             loop.call_soon_threadsafe(asyncio_event.set)
         if thread_event is not None:
             thread_event.set()
+        with self._lock:
+            # 线程尚未注册 loop/task 时也能记住本次取消请求。
+            self._cancel_requested = True
+        if loop is not None and task is not None:
+            # 立即中断卡住的 Playwright 调用（仅 AuthRunner 记录 _task）。
+            loop.call_soon_threadsafe(task.cancel)
+
+    def _consume_cancel_request(self) -> bool:
+        with self._lock:
+            requested = self._cancel_requested
+            self._cancel_requested = False
+        return requested
 
     def _spawn(self, coroutine: Coroutine) -> None:
+        with self._lock:
+            self._cancel_requested = False
+
         def runner() -> None:
             try:
                 asyncio.run(coroutine)
@@ -95,6 +110,7 @@ class _AsyncThreadJob:
             finally:
                 with self._lock:
                     self._loop = None
+                    self._task = None
                     self._asyncio_cancel = None
                     self._thread_cancel = None
 
@@ -102,12 +118,14 @@ class _AsyncThreadJob:
         self._thread.start()
 
 
-class JobRunner(_AsyncThreadJob):
+class JobRunner(AsyncThreadJob):
     """Runs TaskRunner requests; keeps the latest result + review session."""
 
-    def __init__(self, config_getter, sink: EventSink) -> None:
+    def __init__(self, config_getter, sink: EventSink, auth_runner: "AuthRunner | None" = None) -> None:
         super().__init__(sink)
         self._config_getter = config_getter
+        self._auth_runner = auth_runner
+        self.relogin: CrawlReloginCoordinator | None = None
         self.result: JobResult | None = None
         self.session: ReviewSession | None = None
         self.last_checkpoint: str | None = None
@@ -134,6 +152,15 @@ class JobRunner(_AsyncThreadJob):
         )
         self.last_checkpoint = str(candidates[0]) if candidates else None
 
+    def _engine_factory(self) -> Callable[[TaskConfig], CrawlEngine] | None:
+        """Build a crawl-engine factory wired to the re-login coordinator."""
+
+        if self._auth_runner is None:
+            return None
+        self.relogin = CrawlReloginCoordinator(self._sink, self._auth_runner)
+        handler = self.relogin.relogin
+        return lambda cfg: CrawlEngine(cfg, relogin_handler=handler)
+
     async def _run_async(self, request: JobRequest) -> None:
         config: AppConfig = self._config_getter()
         callbacks = RunnerCallbacks(
@@ -149,7 +176,7 @@ class JobRunner(_AsyncThreadJob):
             progress=lambda snapshot: self._sink.emit("progress", progress_payload(snapshot)),
             log=lambda event: self._sink.emit("log", log_payload(event)),
         )
-        runner = TaskRunner(config)
+        runner = TaskRunner(config, engine_factory=self._engine_factory())
         cancel_event = asyncio.Event()
         with self._lock:
             self._loop = asyncio.get_running_loop()
@@ -167,108 +194,6 @@ class JobRunner(_AsyncThreadJob):
         except Exception:
             self.session = None
         self._sink.emit("finished", finished_payload(result))
-
-
-class AuthRunner(_AsyncThreadJob):
-    """Saved-state validation and interactive login orchestration."""
-
-    def __init__(self, task_config_getter, sink: EventSink) -> None:
-        super().__init__(sink)
-        self._task_config_getter = task_config_getter
-        self._login_confirmation: Event | None = None
-        self._active_login_platform: str | None = None
-
-    def store(self) -> AuthProfileStore:
-        config: TaskConfig = self._task_config_getter()
-        return AuthProfileStore(config.auth_store_dir or default_auth_store_dir())
-
-    def _service(self) -> AuthManagerService:
-        config: TaskConfig = self._task_config_getter()
-        return AuthManagerService(
-            config,
-            self.store(),
-            legacy_state_path=config.storage_state_path,
-        )
-
-    def start(self, action: str, platform_key: str | None = None) -> tuple[bool, str]:
-        if self.is_running():
-            return False, "登录态操作正在进行中，请稍候。"
-        if action == "login":
-            with self._lock:
-                self._login_confirmation = Event()
-                self._active_login_platform = platform_key
-        self._spawn(self._run_action(action, platform_key))
-        return True, ""
-
-    def confirm_login(self, platform_key: str) -> tuple[bool, str]:
-        with self._lock:
-            confirmation = self._login_confirmation
-            active_platform = self._active_login_platform
-        if confirmation is None or active_platform != platform_key or not self.is_running():
-            return False, "该平台当前没有等待确认的登录窗口。"
-        confirmation.set()
-        return True, "正在检查登录结果，成功后会保存并关闭登录窗口。"
-
-    def cancel_login(self, platform_key: str) -> tuple[bool, str]:
-        with self._lock:
-            active_platform = self._active_login_platform
-        if active_platform != platform_key or not self.is_running():
-            return False, "该平台当前没有正在进行的登录。"
-        self.cancel()
-        message = "已取消本次登录；原有登录态不会被覆盖。"
-        self._emit(platform_key, self.store().profile_for(platform_key).status, message)
-        return True, message
-
-    async def _run_action(self, action: str, platform_key: str | None) -> None:
-        cancel_event = Event()
-        with self._lock:
-            self._thread_cancel = cancel_event
-        service = self._service()
-        if action == "probe_all":
-            results = await service.probe_all_saved(
-                cancel_event=cancel_event,
-                on_progress=self._emit,
-            )
-            for result in results:
-                self._emit(result.platform_key, result.status, result.message)
-            return
-        if action == "login_all":
-            results = await service.login_all_missing(
-                cancel_event=cancel_event,
-                on_progress=self._emit,
-            )
-            for result in results:
-                self._emit(result.platform_key, result.status, result.message)
-            return
-        if platform_key is None:
-            raise ValueError("必须选择一个平台。")
-        try:
-            result = await service.probe(
-                platform_key,
-                use_saved_state=action != "probe_guest",
-                interactive=action == "login",
-                cancel_event=cancel_event,
-                login_confirmation_event=(
-                    self._login_confirmation if action == "login" else None
-                ),
-                on_progress=self._emit,
-            )
-            self._emit(result.platform_key, result.status, result.message)
-        finally:
-            if action == "login":
-                with self._lock:
-                    self._login_confirmation = None
-                    self._active_login_platform = None
-
-    def _emit(self, platform_key: str, status: AuthStatus, message: str) -> None:
-        display_name = next(
-            (p.display_name for p in AUTH_POLICIES if p.platform_key == platform_key),
-            platform_key,
-        )
-        self._sink.emit(
-            "auth",
-            auth_platform_payload(platform_key, display_name, status, message),
-        )
 
 
 class CaptureRunner:
@@ -312,6 +237,7 @@ class CaptureRunner:
         storage_state: dict[str, Any] | None,
         assets_dir: Path,
         on_saved: Callable[[str], None],
+        focus_texts: tuple[str, ...] = (),
     ) -> tuple[bool, str]:
         with self._lock:
             if self._busy:
@@ -332,6 +258,7 @@ class CaptureRunner:
                 storage_state=storage_state,
                 assets_dir=assets_dir,
                 on_saved=on_saved,
+                focus_texts=focus_texts,
             ),
             loop,
         )
@@ -395,6 +322,7 @@ class CaptureRunner:
         storage_state: dict[str, Any] | None,
         assets_dir: Path,
         on_saved: Callable[[str], None],
+        focus_texts: tuple[str, ...],
     ) -> None:
         cancel_event = asyncio.Event()
         with self._lock:
@@ -413,6 +341,7 @@ class CaptureRunner:
                 storage_state=storage_state,
                 assets_dir=assets_dir,
                 cancel_event=cancel_event,
+                focus_texts=focus_texts,
             )
         except asyncio.CancelledError:
             result = RegionCaptureResult(status="cancelled")

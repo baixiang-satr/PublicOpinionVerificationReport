@@ -5,6 +5,7 @@ import type {
   Bootstrap,
   BridgeEvent,
   InputFileInfo,
+  LicenseInfo,
   ScreenshotPair,
   SheetPayload,
   TaskOptions,
@@ -12,6 +13,9 @@ import type {
 
 interface PyWebviewApi {
   get_bootstrap(): Promise<Bootstrap>
+  license_status(): Promise<LicenseInfo>
+  license_activate(code: string): Promise<LicenseInfo>
+  license_deactivate(): Promise<LicenseInfo>
   pick_input_file(): Promise<InputFileInfo | null>
   pick_zip_file(): Promise<{ ok: boolean; message: string }>
   set_options(options: TaskOptions): Promise<{ ok: boolean }>
@@ -31,11 +35,13 @@ interface PyWebviewApi {
   export_zip(): Promise<{ ok: boolean; message: string }>
   auth_list(): Promise<AuthPlatform[]>
   auth_probe_all(): Promise<{ ok: boolean }>
+  auth_probe_relevant(): Promise<{ ok: boolean; message: string }>
   auth_login_all(): Promise<{ ok: boolean; message: string }>
   auth_probe(key: string): Promise<{ ok: boolean; message: string }>
   auth_login(key: string): Promise<{ ok: boolean; message: string }>
   auth_confirm(key: string): Promise<{ ok: boolean; message: string }>
   auth_cancel(key: string): Promise<{ ok: boolean; message: string }>
+  auth_resume_login(key: string, action: string): Promise<{ ok: boolean; message: string }>
   auth_logout(key: string): Promise<{ ok: boolean }>
 }
 
@@ -51,14 +57,31 @@ export function hasBridge(): boolean {
 }
 
 async function call<T>(method: keyof PyWebviewApi, ...args: unknown[]): Promise<T> {
-  if (hasBridge()) {
-    const api = window.pywebview!.api as unknown as Record<string, (...a: unknown[]) => Promise<T>>
-    return api[method](...args)
+  const result = hasBridge()
+    ? await (window.pywebview!.api as unknown as Record<string, (...a: unknown[]) => Promise<T>>)[method](
+        ...args,
+      )
+    : await mockCall<T>(method as string, ...args)
+  // 业务方法被许可证守卫拦截时广播事件，由 store 刷新授权状态并切到激活页
+  if (result && typeof result === 'object' && (result as { code?: string }).code === 'LICENSE_REQUIRED') {
+    window.dispatchEvent(new CustomEvent('poir-license-required'))
   }
-  return mockCall<T>(method as string, ...args)
+  return result
 }
 
 // ── 浏览器 dev mock ────────────────────────────────────────────────────────
+// dev 环境默认已激活，避免挡住 UI 开发；联调激活页可将其改为未激活。
+const mockLicense: LicenseInfo = {
+  activated: true,
+  status: 'valid',
+  message: '已授权给 演示客户，有效期至 2099-12-31。',
+  machine_code: 'AAAA-AAAA-AAAA-AAAA-AAAA-AAAA',
+  licensee: '演示客户',
+  license_id: 'POIR-DEV-MOCK',
+  expires_at: '2099-12-31',
+  ok: true,
+}
+
 const mockLogs = [
   { time: '10:00:01', level: 'INFO', message: '已读取 3 条有效 URL，开始准备任务目录。', evidence_id: null },
   { time: '10:00:03', level: 'INFO', message: '模板副本准备完成，开始抓取。', evidence_id: null },
@@ -178,7 +201,26 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
             { name: '群聊', done: 0, total: 1 },
           ],
         },
+        license: { ...mockLicense },
       })
+    case 'license_status':
+      return respond({ ...mockLicense })
+    case 'license_activate':
+      Object.assign(mockLicense, {
+        activated: true,
+        status: 'valid',
+        message: '已授权给 演示客户，有效期至 2099-12-31。',
+        ok: true,
+      })
+      return respond({ ...mockLicense })
+    case 'license_deactivate':
+      Object.assign(mockLicense, {
+        activated: false,
+        status: 'not_activated',
+        message: '尚未激活，请输入授权码完成激活。',
+        ok: false,
+      })
+      return respond({ ...mockLicense })
     case 'pick_input_file':
       return respond({ path: 'D:/demo/urls.txt', url_count: 3, rejected_count: 0 })
     case 'get_sheet_payload':
@@ -248,6 +290,10 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
       }
       return respond({ ok: true, message: '' })
     }
+    case 'auth_probe_relevant':
+      return respond({ ok: true, message: '' })
+    case 'auth_resume_login':
+      return respond({ ok: true, message: '' })
     case 'list_screenshots':
       return respond({ content: null, author: null })
     case 'start_region_capture':
@@ -298,6 +344,9 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
 
 export const bridge = {
   getBootstrap: () => call<Bootstrap>('get_bootstrap'),
+  licenseStatus: () => call<LicenseInfo>('license_status'),
+  licenseActivate: (code: string) => call<LicenseInfo>('license_activate', code),
+  licenseDeactivate: () => call<LicenseInfo>('license_deactivate'),
   pickInputFile: () => call<InputFileInfo | null>('pick_input_file'),
   pickZipFile: () => call<{ ok: boolean; message: string }>('pick_zip_file'),
   setOptions: (o: TaskOptions) => call<{ ok: boolean }>('set_options', o),
@@ -321,11 +370,14 @@ export const bridge = {
   exportZip: () => call<{ ok: boolean; message: string }>('export_zip'),
   authList: () => call<AuthPlatform[]>('auth_list'),
   authProbeAll: () => call<{ ok: boolean }>('auth_probe_all'),
+  authProbeRelevant: () => call<{ ok: boolean; message: string }>('auth_probe_relevant'),
   authLoginAll: () => call<{ ok: boolean; message: string }>('auth_login_all'),
   authProbe: (key: string) => call<{ ok: boolean; message: string }>('auth_probe', key),
   authLogin: (key: string) => call<{ ok: boolean; message: string }>('auth_login', key),
   authConfirm: (key: string) => call<{ ok: boolean; message: string }>('auth_confirm', key),
   authCancel: (key: string) => call<{ ok: boolean; message: string }>('auth_cancel', key),
+  authResumeLogin: (key: string, action: 'skip' | 'retry') =>
+    call<{ ok: boolean; message: string }>('auth_resume_login', key, action),
   authLogout: (key: string) => call<{ ok: boolean }>('auth_logout', key),
 }
 

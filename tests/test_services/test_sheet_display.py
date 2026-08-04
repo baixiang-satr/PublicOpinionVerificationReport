@@ -86,3 +86,49 @@ def test_row_values_attachment_column_matches_slot_merge(tmp_path: Path) -> None
     attachment_column = layout.attachment_column
     assert attachment_column is not None
     assert values[attachment_column] == "001_author.png,001_extra_a.png,001_extra_b.png"
+
+
+def _video_record(evidence_id: int) -> RecordResult:
+    task = UrlTask(
+        evidence_id,
+        f"https://v.douyin.com/p/{evidence_id}",
+        f"https://v.douyin.com/p/{evidence_id}",
+    )
+    return RecordResult(
+        task,
+        RecordStatus.NEEDS_REVIEW,
+        page=PageData(title="标题", content_text="正文", author_name="昵称", author_id="账号1"),
+        route=RouteDecision("图文视频", "字节跳动_抖音_图文视频", "正文"),
+        assets=AssetSet(),
+    )
+
+
+def test_swapped_sheet_primary_column_shows_homepage_and_attachment_shows_content(
+    tmp_path: Path,
+) -> None:
+    """图文视频对调表：H 列=个人主页截图，I 列=内容页截图+额外附件。"""
+
+    record = _video_record(1)
+    record.assets.page_screenshot = Path("001.jpg")
+    record.assets.author_screenshot = Path("001主页.jpg")
+    record.assets.extra_attachments = [Path("001_extra.png")]
+    session = _session(tmp_path, [record])
+    layout = SHEET_LAYOUTS["图文视频"]
+
+    assert attachment_names(session, record) == ["001.jpg", "001_extra.png"]
+
+    values = row_values(session, record, layout)
+    assert values["H"] == "001主页.jpg"
+    assert values["I"] == "001.jpg,001_extra.png"
+
+
+def test_swapped_sheet_content_slot_prefers_manual_capture(tmp_path: Path) -> None:
+    record = _video_record(1)
+    record.assets.page_screenshot = Path("001.jpg")
+    record.assets.author_screenshot = Path("001主页.jpg")
+    session = _session(tmp_path, [record])
+    session.set_primary_screenshot(1, "001_content_manual.png")
+
+    # 内容页槽位人工优先；主截图列仍是个人主页截图
+    assert attachment_names(session, record) == ["001_content_manual.png"]
+    assert session.primary_screenshot_name(record) == "001主页.jpg"

@@ -21,4 +21,14 @@ window.open = (url?: string | URL) => {
   return null
 }
 
-void useJobStore().bootstrap()
+// 启动引导：pywebview 的 js api 由 api.js 在 navigation completed 后才注入，
+// 页面脚本执行时 window.pywebview 尚不存在；直接 bootstrap 会落入 mock
+// （mock 许可证=已激活，导致激活页不显示）。WebView2 宿主特征
+// window.chrome.webview 在页面加载前即存在，可同步区分宿主与纯浏览器。
+const start = () => void useJobStore().bootstrap()
+const host = (window as unknown as { chrome?: { webview?: unknown } }).chrome?.webview
+if (host) {
+  window.addEventListener('pywebviewready', start, { once: true })
+} else {
+  start() // 纯浏览器 dev：无宿主，直接启动（bridge.ts 走 mock）
+}

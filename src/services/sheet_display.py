@@ -43,16 +43,23 @@ def row_values(
 def attachment_names(session: ReviewSession, record: RecordResult) -> list[str]:
     """Slot-wise merge so the display matches the export row exactly.
 
-    The author-home (个人页) screenshot slot and the extra-attachment slot each
-    prefer manual override names over crawled asset names, mirroring how
-    ``apply_override`` rewrites :class:`AssetSet` before row mapping.
+    附件列第一槽位与额外附件槽位各自遵循“人工优先于抓取”，与
+    ``apply_override`` 重写 :class:`AssetSet` 后再行映射的方式一致。
+    常规表第一槽位是个人主页截图；对调表（``homepage_screenshot_primary``）
+    第一槽位是内容页截图（个人主页截图已入主截图列）。
     """
 
+    layout = session.layout_for(record)
+    swapped = layout is not None and layout.homepage_screenshot_primary
     override = session.get_override(record.task.evidence_id)
     names: list[str] = []
-    author_name = session.author_screenshot_name(record)
-    if author_name:
-        names.append(author_name)
+    first_slot = (
+        session.content_screenshot_name(record)
+        if swapped
+        else session.author_screenshot_name(record)
+    )
+    if first_slot:
+        names.append(first_slot)
     if override is not None and override.attachment_names:
         names.extend(override.attachment_names)
     else:

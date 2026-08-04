@@ -33,7 +33,7 @@ def _build_template_zip(target: Path) -> Path:
         "2026-07-01 12:00:00",
         "完整内容",
         "shot_001.png",
-        "",
+        "author_001.png,extra_001.png",
     ])
     weibo.append([
         "https://example.test/post/2",
@@ -52,6 +52,8 @@ def _build_template_zip(target: Path) -> Path:
     (staging / "template").mkdir(parents=True)
     workbook.save(staging / "template" / "template.xlsx")
     (staging / "template" / "shot_001.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    (staging / "template" / "author_001.png").write_bytes(b"\x89PNG\r\n\x1a\nauthor")
+    (staging / "template" / "extra_001.png").write_bytes(b"\x89PNG\r\n\x1a\nextra")
     (staging / "template" / "chat.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
 
     zip_path = target / "template.zip"
@@ -85,6 +87,9 @@ def test_import_reconstructs_records_checkpoint_and_assets(tmp_path: Path) -> No
     assert second.page.published_at is not None
     assert second.assets.page_screenshot is not None
     assert second.assets.page_screenshot.name == "shot_001.png"
+    assert second.assets.author_screenshot is not None
+    assert second.assets.author_screenshot.name == "author_001.png"
+    assert [path.name for path in second.assets.extra_attachments] == ["extra_001.png"]
     # 完整行 → 已导出；缺失行 → 待补录
     assert second.status.value == "exported"
     assert third.status.value == "needs_review"
@@ -111,3 +116,58 @@ def test_import_rejects_non_zip_and_missing_workbook(tmp_path: Path) -> None:
         archive.writestr("readme.txt", "hello")
     with pytest.raises(TemplateZipImportError):
         importer.import_zip(empty)
+
+
+def test_import_swapped_sheet_restores_homepage_to_author_slot(tmp_path: Path) -> None:
+    """图文视频对调表：H 列还原为个人主页截图资产，I 列首项还原为内容页截图。"""
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for name in SHEET_ORDER:
+        layout = SHEET_LAYOUTS[name]
+        sheet = workbook.create_sheet(name)
+        sheet.append(list(layout.headers))
+        sheet.append(["示例"] * layout.column_count)
+    video = workbook["图文视频"]
+    video.append([
+        "https://v.douyin.com/abc/",
+        "85741182891",
+        "昵称甲",
+        "字节跳动_抖音_图文视频",
+        "正文",
+        "2026-07-01 12:00:00",
+        "完整内容",
+        "001主页.jpg",
+        "001.jpg,001_extra.png",
+    ])
+
+    staging = tmp_path / "build"
+    (staging / "template").mkdir(parents=True)
+    workbook.save(staging / "template" / "template.xlsx")
+    for name in ("001.jpg", "001主页.jpg", "001_extra.png"):
+        (staging / "template" / name).write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    zip_path = tmp_path / "template.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for path in (staging / "template").iterdir():
+            archive.write(path, f"template/{path.name}")
+
+    importer = TemplateZipImporter(tmp_path / "output")
+    job_dir = importer.import_zip(zip_path)
+
+    snapshot = CheckpointStore.load(job_dir / "job_checkpoint.json")
+    assert len(snapshot.records) == 1
+    record = snapshot.records[0]
+    assert record.route is not None and record.route.sheet_name == "图文视频"
+    assert record.assets.author_screenshot is not None
+    assert record.assets.author_screenshot.name == "001主页.jpg"
+    assert record.assets.page_screenshot is not None
+    assert record.assets.page_screenshot.name == "001.jpg"
+    assert [path.name for path in record.assets.extra_attachments] == ["001_extra.png"]
+    # 主截图列（个人主页截图）已满足 → 不判缺失
+    assert record.status.value == "exported"
+
+    session = ReviewSession.from_job_dir(job_dir)
+    assert session.primary_screenshot_name(record) == "001主页.jpg"
+    assert session.content_screenshot_name(record) == "001.jpg"

@@ -172,6 +172,7 @@ class ReviewSession:
         override: ManualOverride | None,
     ) -> tuple[str, ...]:
         layout = self.layout_for(record)
+        swapped = layout is not None and layout.homepage_screenshot_primary
         missing: list[str] = []
         for field in self._fields_for_layout(layout):
             if not self._is_required(layout, field):
@@ -180,36 +181,39 @@ class ReviewSession:
             if not value.strip():
                 missing.append(self._label_for(layout, field))
         if self._screenshot_required(layout) and not self.primary_screenshot_name(record):
-            missing.append("截图")
-        if self._homepage_screenshot_missing(record, override, layout):
-            missing.append("主页截图")
+            missing.append("主页截图" if swapped else "截图")
+        if self._secondary_screenshot_missing(record, override, layout):
+            missing.append("内容页截图" if swapped else "主页截图")
         return tuple(missing)
 
-    def _homepage_screenshot_missing(
+    def _secondary_screenshot_missing(
         self,
         record: RecordResult,
         override: ManualOverride | None,
         layout: SheetLayout | None,
     ) -> bool:
-        """带链接的记录必须有两张截图：主截图 + 作者主页截图。
+        """带链接的记录必须有两张截图；无 URL 的手工行不强制。
 
-        主页截图经"其他附件"列交付，因此该列的有效附件名（抓取的主页截图、
-        人工区域截图的个人页槽位或人工添加的附件）为空即视为缺失。判定口径
-        与 ``sheet_display.attachment_names`` 保持一致（内联实现以避免循环
-        导入）；无 URL 的手工行没有可截的作者主页，不强制。
+        常规表第二张=个人主页截图（经附件列交付，有效附件为空即缺失）；对调表
+        第二张=内容页截图（内容页槽位为空即缺失）。
         """
 
         if layout is None or layout.attachment_column is None:
             return False
         if not record.task.original_url.strip():
             return False
+        if layout.homepage_screenshot_primary:
+            if override is not None and override.primary_screenshot_name:
+                return False
+            return record.assets.page_screenshot is None
         if override is not None and override.author_screenshot_name:
             return False
         if override is not None and override.attachment_names:
             return False
         return not record.assets.attachment_paths()
 
-    def primary_screenshot_name(self, record: RecordResult) -> str | None:
+    def content_screenshot_name(self, record: RecordResult) -> str | None:
+        """Effective content-page (内容页) screenshot name; manual wins."""
         override = self.store.get(record.task.evidence_id)
         if override is not None and override.primary_screenshot_name:
             return override.primary_screenshot_name
@@ -217,9 +221,15 @@ class ReviewSession:
             return record.assets.page_screenshot.name
         return None
 
+    def primary_screenshot_name(self, record: RecordResult) -> str | None:
+        """写入主截图列的截图名：对调表为个人主页截图，其余为内容页截图。"""
+        layout = self.layout_for(record)
+        if layout is not None and layout.homepage_screenshot_primary:
+            return self.author_screenshot_name(record)
+        return self.content_screenshot_name(record)
+
     def author_screenshot_name(self, record: RecordResult) -> str | None:
         """Effective author-home (个人页) screenshot name; manual wins."""
-
         override = self.store.get(record.task.evidence_id)
         if override is not None and override.author_screenshot_name:
             return override.author_screenshot_name
@@ -227,33 +237,31 @@ class ReviewSession:
             return record.assets.author_screenshot.name
         return None
 
-    def primary_screenshot_path(self, record: RecordResult) -> Path | None:
-        """Best-effort existing file for thumbnail preview."""
-
+    def content_screenshot_path(self, record: RecordResult) -> Path | None:
+        """Best-effort existing file for the content-page thumbnail preview."""
         override = self.store.get(record.task.evidence_id)
-        if override is not None and override.primary_screenshot_name:
-            candidate = self.manual_assets_dir() / override.primary_screenshot_name
-            if candidate.exists():
-                return candidate
-            return None
-        path = record.assets.page_screenshot
-        if path is not None and Path(path).exists():
-            return Path(path)
-        return None
+        name = override.primary_screenshot_name if override is not None else None
+        return self._slot_path(name, record.assets.page_screenshot)
+
+    def primary_screenshot_path(self, record: RecordResult) -> Path | None:
+        """主截图列对应文件的预览路径；对调表为个人主页截图。"""
+        layout = self.layout_for(record)
+        if layout is not None and layout.homepage_screenshot_primary:
+            return self.author_screenshot_path(record)
+        return self.content_screenshot_path(record)
 
     def author_screenshot_path(self, record: RecordResult) -> Path | None:
         """Best-effort existing file for the author-home screenshot preview."""
-
         override = self.store.get(record.task.evidence_id)
-        if override is not None and override.author_screenshot_name:
-            candidate = self.manual_assets_dir() / override.author_screenshot_name
-            if candidate.exists():
-                return candidate
-            return None
-        path = record.assets.author_screenshot
-        if path is not None and Path(path).exists():
-            return Path(path)
-        return None
+        name = override.author_screenshot_name if override is not None else None
+        return self._slot_path(name, record.assets.author_screenshot)
+
+    def _slot_path(self, override_name: str | None, crawled: Path | None) -> Path | None:
+        """Resolve one screenshot slot: manual-assets name wins over the crawled file."""
+        if override_name:
+            candidate = self.manual_assets_dir() / override_name
+            return candidate if candidate.exists() else None
+        return Path(crawled) if crawled is not None and Path(crawled).exists() else None
 
     def completion_counts(self) -> tuple[int, int]:
         summaries = self.summaries()

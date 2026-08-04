@@ -17,6 +17,9 @@ class SheetLayout:
     validation_values: Mapping[str, tuple[str, ...]]
     formatted_last_row: int
     data_start_row: int = 3
+    # True 时主截图列（如"账号截图名(必填)"）交付作者个人主页截图，
+    # 内容页截图改经附件列交付（两张截图位置对调）。
+    homepage_screenshot_primary: bool = False
 
     @property
     def max_rows(self) -> int:
@@ -43,6 +46,7 @@ def _layout(
     attachment_column: str | None,
     validation_values: Mapping[str, tuple[str, ...]],
     formatted_last_row: int = 201,
+    homepage_screenshot_primary: bool = False,
 ) -> SheetLayout:
     return SheetLayout(
         name=name,
@@ -53,6 +57,7 @@ def _layout(
         attachment_column=attachment_column,
         validation_values=validation_values,
         formatted_last_row=formatted_last_row,
+        homepage_screenshot_primary=homepage_screenshot_primary,
     )
 
 
@@ -105,6 +110,7 @@ SHEET_LAYOUTS: dict[str, SheetLayout] = {
         "H",
         "I",
         {"D": ("快手科技_快手_图文视频", "行吟科技_小红书_图文视频", "字节跳动_抖音_图文视频", "幻电科技_哔哩哔哩_图文视频", "腾讯_微信_图文视频", "搜狐_搜狐视频_图文视频", "阿里巴巴_土豆_图文视频", "阿里巴巴_优酷_图文视频", "字节跳动_西瓜视频_图文视频", "爱奇艺_爱奇艺_图文视频"), "E": TEXT_TYPES},
+        homepage_screenshot_primary=True,
     ),
     "微博博客": _layout(
         "微博博客",
@@ -132,6 +138,7 @@ SHEET_LAYOUTS: dict[str, SheetLayout] = {
         "H",
         "I",
         {"D": ("阿里巴巴_UC浏览器_浏览器", "360_360浏览器_浏览器", "华为_华为浏览器_浏览器", "腾讯_QQ浏览器_浏览器"), "E": TEXT_TYPES},
+        homepage_screenshot_primary=True,
     ),
 }
 

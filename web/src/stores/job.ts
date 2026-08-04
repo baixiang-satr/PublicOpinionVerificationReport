@@ -3,10 +3,12 @@ import { defineStore } from 'pinia'
 import { bridge } from '@/api/bridge'
 import type {
   AuthPlatform,
+  AuthReloginPayload,
   BridgeEvent,
   CaptureEventPayload,
   JobFinishedPayload,
   JobStartedPayload,
+  LicenseInfo,
   LogPayload,
   ProgressPayload,
   SessionOverview,
@@ -38,6 +40,7 @@ interface JobState {
   step: number
   furthest: number
   options: TaskOptions | null
+  license: LicenseInfo | null
   inputPath: string
   urlCount: number
   running: boolean
@@ -50,6 +53,7 @@ interface JobState {
   statusText: string
   authDialogOpen: boolean
   authPlatforms: AuthPlatform[]
+  relogin: AuthReloginPayload | null
   sheetDialogOpen: boolean
   sheetDialogMode: 'preview' | 'edit'
   lastCapture: CaptureEventPayload | null
@@ -60,6 +64,7 @@ export const useJobStore = defineStore('job', {
     step: 0,
     furthest: 0,
     options: null,
+    license: null,
     inputPath: '',
     urlCount: 0,
     running: false,
@@ -72,6 +77,7 @@ export const useJobStore = defineStore('job', {
     statusText: '系统就绪',
     authDialogOpen: false,
     authPlatforms: [],
+    relogin: null,
     sheetDialogOpen: false,
     sheetDialogMode: 'preview',
     lastCapture: null,
@@ -105,7 +111,22 @@ export const useJobStore = defineStore('job', {
       const data = await bridge.getBootstrap()
       this.options = data.options
       this.session = data.session
+      this.license = data.license
       window.__poir_event = (event: BridgeEvent) => this.handleEvent(event)
+      window.addEventListener('poir-license-required', () => {
+        void this.refreshLicense()
+      })
+    },
+    async activateLicense(code: string): Promise<LicenseInfo> {
+      this.license = await bridge.licenseActivate(code)
+      return this.license
+    },
+    async deactivateLicense(): Promise<void> {
+      this.license = await bridge.licenseDeactivate()
+    },
+    async refreshLicense(): Promise<void> {
+      // 被守卫拦截（LICENSE_REQUIRED）后刷新授权状态；未激活时 App 自动切激活页
+      this.license = await bridge.licenseStatus()
     },
     handleEvent(event: BridgeEvent) {
       const payload = event.payload as Record<string, unknown>
@@ -130,10 +151,14 @@ export const useJobStore = defineStore('job', {
           break
         case 'failed':
           this.running = false
+          this.relogin = null
           this.statusText = `任务失败：${payload.message ?? ''}`
           break
         case 'auth':
           this.onAuthEvent(payload as unknown as AuthPlatform)
+          break
+        case 'auth_relogin':
+          this.onAuthRelogin(payload as unknown as AuthReloginPayload)
           break
         case 'capture':
           this.onCaptureEvent(payload as unknown as CaptureEventPayload)
@@ -142,6 +167,7 @@ export const useJobStore = defineStore('job', {
     },
     onFinished(result: JobFinishedPayload) {
       this.running = false
+      this.relogin = null
       this.retryable = result.retryable
       this.lastArchive = result.archive_path ?? this.lastArchive
       this.statusText = result.cancelled ? '任务已取消' : '任务完成'
@@ -159,6 +185,11 @@ export const useJobStore = defineStore('job', {
         platform.relevant = false
         this.authPlatforms.push(platform)
       }
+    },
+    onAuthRelogin(payload: AuthReloginPayload) {
+      // 抓取中发现登录态失效：done 表示本次重登流程结束（成功/跳过/取消）
+      this.statusText = payload.message
+      this.relogin = payload.phase === 'done' ? null : payload
     },
     onCaptureEvent(capture: CaptureEventPayload) {
       this.lastCapture = capture
