@@ -159,7 +159,9 @@ def test_row_mapper_marks_only_the_excel_safety_truncation() -> None:
     ]
 
 
-def test_douyin_row_writes_profile_to_other_files_and_second_precision_time() -> None:
+def test_douyin_row_writes_profile_to_primary_column_and_second_precision_time() -> None:
+    """图文视频是对调表：账号截图列(H)交付个人主页截图，内容页截图进其他文件名(I)。"""
+
     result = RecordResult(
         task=UrlTask(
             7,
@@ -190,5 +192,49 @@ def test_douyin_row_writes_profile_to_other_files_and_second_precision_time() ->
 
     assert row.values_by_column["F"] == datetime(2026, 7, 29, 17, 56, 0)
     assert row.values_by_column["G"] == "道路千万条，安全第一条。"
-    assert row.values_by_column["H"] == "007.jpg"
-    assert row.values_by_column["I"] == "007主页.jpg"
+    assert row.values_by_column["H"] == "007主页.jpg"
+    assert row.values_by_column["I"] == "007.jpg"
+    assert row.primary_screenshot_name == "007主页.jpg"
+    assert row.attachment_names == ("007.jpg",)
+
+
+def test_browser_sheet_swaps_homepage_into_primary_column() -> None:
+    result = RecordResult(
+        task=UrlTask(8, "https://example.uc.cn/page", "https://example.uc.cn/page"),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=RouteDecision("浏览器", "阿里巴巴_UC浏览器_浏览器", "正文"),
+        page=PageData(
+            final_url="https://example.uc.cn/page",
+            content_text="正文摘要",
+            author_id="uc-user-1",
+            author_name="作者甲",
+        ),
+        assets=AssetSet(
+            page_screenshot=Path("008.jpg"),
+            author_screenshot=Path("008主页.jpg"),
+        ),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["H"] == "008主页.jpg"
+    assert row.values_by_column["I"] == "008.jpg"
+
+
+def test_swapped_sheet_without_homepage_screenshot_leaves_primary_blank() -> None:
+    """对调表缺个人主页截图时主截图列留空（不得拿内容页截图伪造）。"""
+
+    result = RecordResult(
+        task=UrlTask(9, "https://v.douyin.com/abc/", "https://v.douyin.com/abc/"),
+        status=RecordStatus.NEEDS_REVIEW,
+        route=RouteDecision("图文视频", "字节跳动_抖音_图文视频", "正文"),
+        page=PageData(content_text="正文"),
+        assets=AssetSet(page_screenshot=Path("009.jpg")),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert "H" not in row.values_by_column
+    assert row.primary_screenshot_name is None
+    assert row.values_by_column["I"] == "009.jpg"
+    assert row.attachment_names == ("009.jpg",)
