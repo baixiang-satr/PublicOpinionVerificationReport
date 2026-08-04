@@ -22,6 +22,7 @@ from src.screenshot.author_evidence import (
     normalize_identity,
     write_decision,
 )
+from src.screenshot.author_identity import signals_contain_expected
 from src.screenshot.page_shooter import (
     PageShooter,
     PageScreenshotError,
@@ -178,7 +179,13 @@ class AuthorShooter:
                 )
 
             signals = await _page_signals(author_page)
-            if not _signals_have_identity(signals):
+            if (
+                not _signals_have_identity(signals)
+                or not signals_contain_expected(
+                    signals,
+                    decision.expected_name,
+                )
+            ):
                 # SPA profile shells often paint the navigation and content
                 # grid before the account header arrives.  Treating that
                 # intermediate frame as a mismatch both drops valid evidence
@@ -195,6 +202,14 @@ class AuthorShooter:
                     output_dir,
                     cancel_event,
                     focus_selectors=PROFILE_SELECTORS,
+                    focus_texts=tuple(
+                        value
+                        for value in (
+                            decision.expected_name,
+                            decision.expected_id,
+                        )
+                        if value
+                    ),
                 )
                 decision.capture_region = "profile_container"
                 decision.accepted = True
@@ -288,6 +303,14 @@ class AuthorShooter:
                 output_dir,
                 cancel_event,
                 focus_selectors=PROFILE_SELECTORS,
+                focus_texts=tuple(
+                    value
+                    for value in (
+                        decision.expected_name,
+                        decision.expected_id,
+                    )
+                    if value
+                ),
             )
             decision.capture_region = "profile_container"
             decision.accepted = True
@@ -448,6 +471,17 @@ def _best_header_name(
                 expected_key in candidate_key or candidate_key in expected_key
             ):
                 return candidate
+        # Toutiao and similar desktop profile pages can expose the signed-in
+        # viewer's city/name in the global navigation under a broad
+        # ``user-name`` class while the actual profile identity is rendered
+        # without a stable selector.  The page title is still scoped to the
+        # candidate URL (for example "作者名的头条主页").  Accept the already
+        # extracted author only when that full identity is present in title;
+        # the later identity gate still checks the body and page URL.
+        title_key = normalize_identity(str(signals.get("title") or ""))
+        body_key = normalize_identity(str(signals.get("body") or ""))
+        if title_key and expected_key in title_key and expected_key in body_key:
+            return expected_name.strip() if expected_name else None
     return candidates[0] if candidates else None
 
 

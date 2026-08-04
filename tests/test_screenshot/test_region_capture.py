@@ -19,6 +19,7 @@ from src.screenshot.region_capture import (
     _save_region,
     _selection_html,
 )
+from src.screenshot.region_capture_helpers import wait_for_capture_result
 
 
 class FakePage:
@@ -144,15 +145,26 @@ def test_save_region_crops_frozen_image(tmp_path: Path) -> None:
 # ── 常驻会话模式 ──
 
 
-def test_overlay_js_self_heals_after_spa_navigation() -> None:
-    """工具条必须有自愈钩子：SPA 跳转/框架重渲染清 DOM 后自动重建。"""
+class FakeToolbar:
+    def __init__(self, _loop, on_action, **_options: object) -> None:
+        self.on_action = on_action
+        self.started = False
+        self.hidden = False
+        self.closed = False
+        self.messages: list[str | None] = []
 
-    from src.screenshot.region_capture_scripts import OVERLAY_JS
+    def start(self) -> None:
+        self.started = True
 
-    assert "setInterval" in OVERLAY_JS
-    assert "__poir-shot-host" in OVERLAY_JS
-    assert "location.href" in OVERLAY_JS
-    assert "popstate" in OVERLAY_JS
+    def hide(self) -> None:
+        self.hidden = True
+
+    def show(self, message: str | None = None) -> None:
+        self.hidden = False
+        self.messages.append(message)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeNavPage(FakePage):
@@ -228,7 +240,18 @@ async def test_session_capture_registers_and_clears_binding_handler(
     context = FakeSessionContext()
     page = FakeNavPage()
     session = FakeSession(context, page)
-    service = RegionCaptureService(TaskConfig(), session=session)
+    toolbars: list[FakeToolbar] = []
+
+    def toolbar_factory(*args: object, **kwargs: object) -> FakeToolbar:
+        toolbar = FakeToolbar(*args, **kwargs)
+        toolbars.append(toolbar)
+        return toolbar
+
+    service = RegionCaptureService(
+        TaskConfig(),
+        session=session,
+        toolbar_factory=toolbar_factory,
+    )
 
     task = asyncio.create_task(
         service.capture(
@@ -244,7 +267,9 @@ async def test_session_capture_registers_and_clears_binding_handler(
         await asyncio.sleep(0)
     assert session.handler is not None
 
-    await session.handler({"page": page}, json.dumps({"action": "cancel"}))
+    assert toolbars[0].started is True
+    # The command originates outside the page and remains tied to this record.
+    toolbars[0].on_action({"action": "cancel"})
     result = await task
 
     assert result.status == "cancelled"
@@ -254,6 +279,7 @@ async def test_session_capture_registers_and_clears_binding_handler(
     assert page.navigated == ["https://www.douyin.com/video/123"]
     assert context.listeners.get("page") == []  # 监听不累积
     assert page.listeners.get("close") == []
+    assert toolbars[0].closed is True
 
 
 def test_selection_html_embeds_frozen_image() -> None:
@@ -303,8 +329,23 @@ async def test_arm_grabs_screen_and_opens_selection_tab(
     assert state.select_page.content is not None
     assert "data:image/jpeg;base64," in state.select_page.content
     assert events == ["ready", "grab"]
-    # 截屏前先隐藏浏览页工具条
-    assert any("__poirRegionCaptureHide" in script for script in state.browse_page.scripts())
+
+
+@pytest.mark.asyncio
+async def test_arm_hides_page_independent_toolbar_before_grab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(region_capture, "_ARM_DELAY_SECONDS", 0)
+    context = FakeContext()
+    state = _state(context)
+    toolbar = FakeToolbar(asyncio.get_running_loop(), lambda _payload: None)
+    toolbar.start()
+    state.toolbar = toolbar
+
+    await _service(_striped_image)._arm(state, lambda _result: None)
+
+    assert toolbar.hidden is True
+    assert state.image is not None
 
 
 @pytest.mark.asyncio
@@ -338,17 +379,17 @@ async def test_arm_grabber_failure_recovers_to_browse(
         raise RuntimeError("no display")
 
     state = _state()
+    toolbar = FakeToolbar(asyncio.get_running_loop(), lambda _payload: None)
+    toolbar.start()
+    state.toolbar = toolbar
     await _service(broken)._handle_action(
         state.browse_page, json.dumps({"action": "arm"}), evidence_id=1,
         target="content", assets_dir=tmp_path, state=state, finish=lambda _r: None,
     )
     assert state.image is None
     assert state.select_page is None
-    resets = [
-        args for script, args in state.browse_page.evaluated
-        if "__poirRegionCaptureReset" in script
-    ]
-    assert resets and "无法截取屏幕" in str(resets[-1][0])
+    assert toolbar.hidden is False
+    assert toolbar.messages and "无法截取屏幕" in str(toolbar.messages[-1])
 
 
 @pytest.mark.asyncio
@@ -412,6 +453,9 @@ async def test_abort_closes_selection_and_restores_browse(tmp_path: Path) -> Non
     browse_page = FakePage()
     context.pages.append(browse_page)  # 真实 Playwright 中浏览页在 context.pages 内
     state = _CaptureState(context=context, browse_page=browse_page, image=_striped_image())
+    toolbar = FakeToolbar(asyncio.get_running_loop(), lambda _payload: None)
+    toolbar.start()
+    state.toolbar = toolbar
     state.select_page = FakePage()
     results: list[RegionCaptureResult] = []
     await _service()._handle_action(
@@ -421,7 +465,8 @@ async def test_abort_closes_selection_and_restores_browse(tmp_path: Path) -> Non
     assert results == []
     assert state.select_page is None
     assert state.image is None
-    assert any("__poirRegionCaptureReset" in script for script in state.browse_page.scripts())
+    assert toolbar.hidden is False
+    assert toolbar.messages == [None]
 
 
 @pytest.mark.asyncio
@@ -461,9 +506,21 @@ async def test_wait_for_result_honours_cancel_event() -> None:
 
     done: asyncio.Future[RegionCaptureResult] = loop.create_future()
     done.set_result(RegionCaptureResult(status="saved", name="x.jpg"))
-    assert (await service._wait_for_result(done, None)).status == "saved"
+    assert (
+        await wait_for_capture_result(
+            done,
+            None,
+            lambda: RegionCaptureResult(status="cancelled"),
+        )
+    ).status == "saved"
 
     pending: asyncio.Future[RegionCaptureResult] = loop.create_future()
     cancel_event = asyncio.Event()
     cancel_event.set()
-    assert (await service._wait_for_result(pending, cancel_event)).status == "cancelled"
+    assert (
+        await wait_for_capture_result(
+            pending,
+            cancel_event,
+            lambda: RegionCaptureResult(status="cancelled"),
+        )
+    ).status == "cancelled"

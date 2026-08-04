@@ -426,3 +426,26 @@ def test_audit_keeps_accepted_and_removes_rejected_and_orphaned(
     assert updated_rows[1].attachment_names == ()
     assert updated_rows[2].attachment_names == ()
     assert "附件" not in updated_rows[1].values_by_column
+
+
+def test_audit_strips_rejected_homepage_from_primary_slot(tmp_path: Path) -> None:
+    """对调表把个人主页截图写在主截图列；审计拒绝时该槽位也要清空。"""
+
+    (tmp_path / "026主页.jpg").write_bytes(b"img")
+    write_decision(_decision(26, False, "AUTHOR_OVERLAY_BLOCKED"), tmp_path)
+    row = TemplateRow(
+        "图文视频",
+        26,
+        {"H": "026主页.jpg", "I": "026.jpg"},
+        "026主页.jpg",
+        ("026.jpg",),
+    )
+
+    updated_rows, entries = audit_staged_author_assets(tmp_path, [row])
+
+    assert not (tmp_path / "026主页.jpg").exists()
+    assert [entry["file"] for entry in entries] == ["026主页.jpg"]
+    assert updated_rows[0].primary_screenshot_name is None
+    assert updated_rows[0].attachment_names == ("026.jpg",)
+    assert "H" not in updated_rows[0].values_by_column
+    assert updated_rows[0].values_by_column["I"] == "026.jpg"

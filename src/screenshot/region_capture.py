@@ -1,14 +1,4 @@
-"""Interactive full-screen region screenshots for the review workspace.
-
-Opens a maximized, headed Chromium window at the record's target URL (with
-the platform's saved login state when available) plus a small floating
-toolbar.  When the user clicks 「开始框选」 the *whole screen* — browser
-chrome and address bar included — is frozen into an OS-level screenshot and
-shown in a selection tab; the user drags a rubber band over the frozen image
-and the chosen region is saved into the job's manual assets directory with a
-standardized name.  Because pixels come from the screen itself rather than
-from the page, capturing never scrolls or shifts the page.
-"""
+"""Page-independent full-screen capture tied to the selected review record."""
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.config.settings import TaskConfig
-from src.crawler.navigation import navigate_page, stabilize_rendered_page
 from src.screenshot.browser_options import STEALTH_SCRIPT_PATH, browser_context_options, browser_launch_options
 from src.screenshot.capture_session import GUEST_KEY, CaptureSession
 from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
@@ -31,17 +20,22 @@ from src.screenshot.region_capture_helpers import (
     _CaptureState,
     _clip_from_payload,
     _grab_full_screen,
-    _hide_overlay,
     _live_pages,
-    _reset_overlay,
     _reset_selection,
     _save_region,
     _selection_html,
+    navigate_and_stabilize,
+    uses_desktop_profile_context,
+    wait_for_capture_result,
 )
 from src.screenshot.region_page_tracker import (
     track_active_browse_page as _track_active_browse_page,
 )
-from src.screenshot.region_capture_scripts import BINDING_NAME, OVERLAY_JS
+from src.screenshot.region_capture_scripts import BINDING_NAME
+from src.screenshot.region_capture_toolbar import (
+    NativeCaptureToolbar,
+    open_capture_toolbar,
+)
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -64,43 +58,6 @@ CAPTURE_TARGETS = ("content", "author")
 _ARM_DELAY_SECONDS = 0.35
 
 
-def _uses_desktop_profile_context(
-    platform_key: str | None,
-    target: str,
-) -> bool:
-    """Keep Kuaishou profile capture off its mobile share-page context."""
-
-    return platform_key == "kuaishou" and target == "author"
-
-
-async def _navigate_and_stabilize(
-    page: Any,
-    url: str,
-    config: TaskConfig,
-    cancel_event: asyncio.Event | None,
-) -> None:
-    """Navigate the browse window; a failed trip is never fatal."""
-
-    try:
-        await navigate_page(
-            page,
-            url,
-            config.page_timeout_seconds * 1000,
-            cancel_event,
-        )
-        await stabilize_rendered_page(
-            page,
-            config.page_stabilize_milliseconds,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as error:
-        # 导航失败不致命：窗口保持打开，用户可自行跳转/登录后再框选。
-        logger.warning(
-            "Region capture navigation failed, window left open: %s", error
-        )
-
-
 @dataclass(frozen=True)
 class RegionCaptureResult:
     status: str  # "saved" | "cancelled" | "error"
@@ -116,10 +73,12 @@ class RegionCaptureService:
         config: TaskConfig,
         screen_grabber: Callable[[], Image.Image] | None = None,
         session: CaptureSession | None = None,
+        toolbar_factory: Callable[..., Any] | None = None,
     ) -> None:
         self._config = config
         self._grabber = screen_grabber or _grab_full_screen
         self._session = session
+        self._toolbar_factory = toolbar_factory or NativeCaptureToolbar
 
     async def capture(
         self,
@@ -131,6 +90,7 @@ class RegionCaptureService:
         assets_dir: Path,
         cancel_event: asyncio.Event | None = None,
         platform_key: str | None = None,
+        focus_texts: tuple[str, ...] = (),
     ) -> RegionCaptureResult:
         if self._session is not None:
             capture = self._capture_in_session
@@ -144,6 +104,7 @@ class RegionCaptureService:
             storage_state=storage_state,
             assets_dir=assets_dir,
             cancel_event=cancel_event,
+            focus_texts=focus_texts,
         )
 
     async def _capture_in_session(
@@ -156,6 +117,7 @@ class RegionCaptureService:
         storage_state: dict[str, Any] | None,
         assets_dir: Path,
         cancel_event: asyncio.Event | None,
+        focus_texts: tuple[str, ...],
     ) -> RegionCaptureResult:
         """Run the capture and persist its login state before closing."""
 
@@ -165,17 +127,34 @@ class RegionCaptureService:
         context = await session.context_for(
             key,
             storage_state,
-            force_desktop=_uses_desktop_profile_context(platform_key, target),
+            force_desktop=uses_desktop_profile_context(platform_key, target),
         )
         page = await session.browse_page_for(key, context)
 
-        state = _CaptureState(context=context, browse_page=page)
+        state = _CaptureState(
+            context=context,
+            browse_page=page,
+            focus_texts=focus_texts,
+        )
         loop = asyncio.get_running_loop()
         done: asyncio.Future[RegionCaptureResult] = loop.create_future()
 
         def _finish(result: RegionCaptureResult) -> None:
             if not done.done():
                 done.set_result(result)
+
+        def _on_toolbar_action(payload: dict[str, str]) -> None:
+            asyncio.create_task(
+                self._handle_action(
+                    state.browse_page,
+                    payload,
+                    evidence_id=evidence_id,
+                    target=target,
+                    assets_dir=Path(assets_dir),
+                    state=state,
+                    finish=_finish,
+                )
+            )
 
         async def _on_binding(source: dict[str, Any], payload: Any) -> None:
             if done.done():
@@ -216,9 +195,22 @@ class RegionCaptureService:
             name=f"capture-active-page-{evidence_id}",
         )
         try:
-            await _navigate_and_stabilize(page, url, self._config, cancel_event)
-            return await self._wait_for_result(done, cancel_event)
+            state.toolbar = open_capture_toolbar(
+                self._toolbar_factory,
+                loop,
+                _on_toolbar_action,
+                evidence_id=evidence_id,
+                target=target,
+            )
+            await navigate_and_stabilize(page, url, self._config, cancel_event)
+            return await wait_for_capture_result(
+                done,
+                cancel_event,
+                lambda: RegionCaptureResult(status="cancelled"),
+            )
         finally:
+            if state.toolbar is not None:
+                state.toolbar.close()
             active_page_tracker.cancel()
             await asyncio.gather(active_page_tracker, return_exceptions=True)
             try:
@@ -243,6 +235,7 @@ class RegionCaptureService:
         storage_state: dict[str, Any] | None,
         assets_dir: Path,
         cancel_event: asyncio.Event | None,
+        focus_texts: tuple[str, ...],
     ) -> RegionCaptureResult:
         from playwright.async_api import async_playwright
 
@@ -256,7 +249,7 @@ class RegionCaptureService:
         context_options = browser_context_options(
             config, storage_state,
             platform_key=(
-                None if _uses_desktop_profile_context(platform_key, target)
+                None if uses_desktop_profile_context(platform_key, target)
                 else platform_key
             ),
         )
@@ -272,15 +265,26 @@ class RegionCaptureService:
             context = await browser.new_context(**context_options)
             if config.enable_stealth and STEALTH_SCRIPT_PATH.is_file():
                 await context.add_init_script(path=str(STEALTH_SCRIPT_PATH))
-            await context.add_init_script(script=OVERLAY_JS)
-
-            state = _CaptureState(context=context)
+            state = _CaptureState(context=context, focus_texts=focus_texts)
             loop = asyncio.get_running_loop()
             done: asyncio.Future[RegionCaptureResult] = loop.create_future()
 
             def _finish(result: RegionCaptureResult) -> None:
                 if not done.done():
                     done.set_result(result)
+
+            def _on_toolbar_action(payload: dict[str, str]) -> None:
+                asyncio.create_task(
+                    self._handle_action(
+                        state.browse_page,
+                        payload,
+                        evidence_id=evidence_id,
+                        target=target,
+                        assets_dir=Path(assets_dir),
+                        state=state,
+                        finish=_finish,
+                    )
+                )
 
             async def _on_binding(source: dict[str, Any], payload: Any) -> None:
                 if done.done():
@@ -321,9 +325,22 @@ class RegionCaptureService:
                 name=f"capture-active-page-{evidence_id}",
             )
             try:
-                await _navigate_and_stabilize(page, url, config, cancel_event)
-                return await self._wait_for_result(done, cancel_event)
+                state.toolbar = open_capture_toolbar(
+                    self._toolbar_factory,
+                    loop,
+                    _on_toolbar_action,
+                    evidence_id=evidence_id,
+                    target=target,
+                )
+                await navigate_and_stabilize(page, url, config, cancel_event)
+                return await wait_for_capture_result(
+                    done,
+                    cancel_event,
+                    lambda: RegionCaptureResult(status="cancelled"),
+                )
             finally:
+                if state.toolbar is not None:
+                    state.toolbar.close()
                 active_page_tracker.cancel()
                 await asyncio.gather(active_page_tracker, return_exceptions=True)
         finally:
@@ -333,26 +350,6 @@ class RegionCaptureService:
                 except Exception:  # noqa: BLE001 — 关闭阶段尽力而为
                     pass
             await playwright.stop()
-
-    async def _wait_for_result(
-        self,
-        done: asyncio.Future[RegionCaptureResult],
-        cancel_event: asyncio.Event | None,
-    ) -> RegionCaptureResult:
-        if cancel_event is None:
-            return await done
-        cancel_waiter = asyncio.ensure_future(cancel_event.wait())
-        try:
-            await asyncio.wait(
-                {asyncio.ensure_future(done), cancel_waiter},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if done.done():
-                return done.result()
-            return RegionCaptureResult(status="cancelled")
-        finally:
-            cancel_waiter.cancel()
-            await asyncio.gather(cancel_waiter, return_exceptions=True)
 
     async def _handle_action(
         self,
@@ -430,18 +427,21 @@ class RegionCaptureService:
         # render the real article/profile mostly beyond the right edge. Align
         # the live page immediately before the frozen OS screenshot so this
         # cross-site layout defect cannot leak into manual evidence captures.
-        await align_page_for_capture(state.browse_page)
-        await _hide_overlay(state.browse_page)
+        await align_page_for_capture(
+            state.browse_page,
+            focus_texts=state.focus_texts,
+        )
+        if state.toolbar is not None:
+            state.toolbar.hide()
         await asyncio.sleep(_ARM_DELAY_SECONDS)
         loop = asyncio.get_running_loop()
         try:
             image = await loop.run_in_executor(None, self._grabber)
         except Exception as error:  # noqa: BLE001 — 截屏失败允许重试
             logger.warning("Full-screen grab failed: %s", error)
-            await _reset_overlay(
-                state.browse_page,
-                f"无法截取屏幕：{type(error).__name__}，请点「开始框选」重试。",
-            )
+            message = f"无法截取屏幕：{type(error).__name__}，请点「开始框选」重试。"
+            if state.toolbar is not None:
+                state.toolbar.show(message)
             return
         state.image = image
         select_page = None
@@ -466,10 +466,9 @@ class RegionCaptureService:
                     await select_page.close()
                 except Exception:  # noqa: BLE001 — 页面可能已关闭
                     pass
-            await _reset_overlay(
-                state.browse_page,
-                f"无法打开框选页面：{type(error).__name__}，请点「开始框选」重试。",
-            )
+            message = f"无法打开框选页面：{type(error).__name__}，请点「开始框选」重试。"
+            if state.toolbar is not None:
+                state.toolbar.show(message)
 
     async def _abort_selection(
         self,
@@ -494,6 +493,7 @@ class RegionCaptureService:
             if finish is not None:
                 finish(RegionCaptureResult(status="cancelled"))
             return
-        await _reset_overlay(state.browse_page, None)
+        if state.toolbar is not None:
+            state.toolbar.show()
 
 

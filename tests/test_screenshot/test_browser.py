@@ -155,6 +155,110 @@ async def test_interactive_capture_alignment_moves_profile_into_view() -> None:
         await pool.close()
 
 
+async def test_wide_placeholder_does_not_reject_visible_left_edge_profile() -> None:
+    config = TaskConfig(
+        max_concurrency=1,
+        page_timeout_seconds=10,
+        min_host_interval_seconds=0,
+        page_stabilize_milliseconds=0,
+    )
+    pool = BrowserPool(config)
+    try:
+        await pool.start()
+    except BrowserUnavailableError as error:
+        pytest.skip(str(error))
+    try:
+        async with pool.page() as page:
+            await page.set_content(
+                """
+                <style>
+                  html, body { margin: 0; }
+                  .overflow-placeholder { width: 4000px; height: 1px; }
+                  .profile-header {
+                    width: 600px; height: 300px;
+                    background: #2458a6; color: white;
+                  }
+                </style>
+                <div class="overflow-placeholder"></div>
+                <section class="profile-header">
+                  <h1>作者主页</h1><p>账号资料与作品列表</p>
+                </section>
+                """
+            )
+
+            aligned = await align_page_for_capture(
+                page,
+                focus_selectors=(".profile-header",),
+            )
+            geometry = await page.evaluate(
+                """() => {
+                    const rect = document.querySelector('.profile-header')
+                      .getBoundingClientRect();
+                    return { left: rect.left, right: rect.right, width: innerWidth };
+                }"""
+            )
+
+            assert aligned is True
+            assert geometry["left"] >= -1
+            assert geometry["right"] <= geometry["width"]
+    finally:
+        await pool.close()
+
+
+async def test_profile_identity_anchor_beats_visible_navigation_shell() -> None:
+    config = TaskConfig(
+        max_concurrency=1,
+        page_timeout_seconds=10,
+        min_host_interval_seconds=0,
+        page_stabilize_milliseconds=0,
+    )
+    pool = BrowserPool(config)
+    try:
+        await pool.start()
+    except BrowserUnavailableError as error:
+        pytest.skip(str(error))
+    try:
+        async with pool.page() as page:
+            await page.set_content(
+                """
+                <style>
+                  html, body { margin: 0; }
+                  .profile-navigation-shell {
+                    width: 4000px; height: 64px; background: #eee;
+                  }
+                  .profile-header {
+                    position: absolute; left: 1700px; top: 90px;
+                    width: 680px; height: 260px;
+                    background: #d93025; color: white;
+                  }
+                </style>
+                <nav class="profile-navigation-shell">今日头条 导航栏</nav>
+                <section class="profile-header">
+                  <h1>目标主页作者</h1><p>头条号：target-7788</p>
+                </section>
+                """
+            )
+
+            aligned = await align_page_for_capture(
+                page,
+                focus_selectors=("[class*='profile']",),
+                focus_texts=("目标主页作者", "target-7788"),
+            )
+            geometry = await page.evaluate(
+                """() => {
+                    const rect = document.querySelector('.profile-header')
+                      .getBoundingClientRect();
+                    return {left: rect.left, right: rect.right, width: innerWidth};
+                }"""
+            )
+
+            assert aligned is True
+            assert 190 <= geometry["left"] <= 380
+            assert geometry["right"] <= geometry["width"]
+    finally:
+        await pool.close()
+
+
 async def test_pages_share_login_state_and_it_is_reused_by_next_run(tmp_path: Path) -> None:
     state_path = tmp_path / "login-state.json"
     config = TaskConfig(

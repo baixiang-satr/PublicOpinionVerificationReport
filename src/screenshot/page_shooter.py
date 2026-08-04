@@ -59,6 +59,7 @@ class PageShooter:
         *,
         definition: Any = None,
         focus_selectors: tuple[str, ...] = (),
+        focus_texts: tuple[str, ...] = (),
     ) -> Path:
         _raise_if_cancelled(cancel_event)
         extension = "jpg" if self._config.screenshot_format == "jpeg" else "png"
@@ -80,7 +81,7 @@ class PageShooter:
             page,
             definition,
             cancel_event,
-            strict_platform_content=not bool(focus_selectors),
+            strict_platform_content=not bool(focus_selectors or focus_texts),
         )
         try:
             await require_authenticated_capture(page, definition)
@@ -104,6 +105,7 @@ class PageShooter:
                 page,
                 definition,
                 (*focus_selectors, "video", "[class*='player']"),
+                focus_texts,
             )
             if (
                 dimensions is not None
@@ -117,6 +119,7 @@ class PageShooter:
                         "video",
                         "[class*='player']",
                     ),
+                    focus_texts=focus_texts,
                 )
                 if not aligned:
                     raise PageScreenshotError(
@@ -128,6 +131,7 @@ class PageShooter:
                 page,
                 definition,
                 focus_selectors,
+                focus_texts,
             )
             if dimensions is not None:
                 is_long_page = (
@@ -149,16 +153,18 @@ class PageShooter:
                 or has_horizontal_overflow
                 or needs_horizontal_alignment
                 or bool(focus_selectors)
+                or bool(focus_texts)
             ):
                 aligned = True
-                if has_horizontal_overflow or needs_horizontal_alignment:
+                if has_horizontal_overflow or needs_horizontal_alignment or focus_selectors or focus_texts:
                     aligned = await align_page_for_capture(
                         page,
                         definition=definition,
                         focus_selectors=focus_selectors,
+                        focus_texts=focus_texts,
                     )
                 options["full_page"] = False
-                if not aligned and (needs_horizontal_alignment or focus_selectors):
+                if not aligned and (needs_horizontal_alignment or focus_selectors or focus_texts):
                     raise PageScreenshotError(
                         "Target content could not be framed completely in the viewport."
                     )
@@ -166,7 +172,12 @@ class PageShooter:
                 # different coordinate spaces on several Chromium builds.
                 # Let the browser capture the current viewport after verified
                 # alignment.  Only an unshifted long document uses a clip.
-                if not (has_horizontal_overflow or needs_horizontal_alignment or focus_selectors):
+                if not (
+                    has_horizontal_overflow
+                    or needs_horizontal_alignment
+                    or focus_selectors
+                    or focus_texts
+                ):
                     options["clip"] = {
                         "x": 0,
                         "y": 0,

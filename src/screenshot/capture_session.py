@@ -27,7 +27,7 @@ from src.screenshot.browser_options import (
     launch_headed_with_fallback,
 )
 from src.screenshot.browser_runtime import close_quietly
-from src.screenshot.region_capture_scripts import BINDING_NAME, OVERLAY_JS
+from src.screenshot.region_capture_scripts import BINDING_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,6 @@ class CaptureSession:
         context = await self._browser.new_context(**options)
         if config.enable_stealth and STEALTH_SCRIPT_PATH.is_file():
             await context.add_init_script(path=str(STEALTH_SCRIPT_PATH))
-        await context.add_init_script(script=OVERLAY_JS)
         await context.expose_binding(BINDING_NAME, self._dispatch_binding)
         self._contexts[key] = context
         return context

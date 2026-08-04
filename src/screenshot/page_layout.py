@@ -11,6 +11,7 @@ async def align_page_for_capture(
     *,
     definition: Any = None,
     focus_selectors: tuple[str, ...] = (),
+    focus_texts: tuple[str, ...] = (),
 ) -> bool:
     """Bring horizontally displaced substantive content into the viewport.
 
@@ -24,12 +25,24 @@ async def align_page_for_capture(
     requests alignment when the page remains at its default left edge.
     """
 
-    dimensions = await page_dimensions(page, definition, focus_selectors)
-    if (
-        dimensions is None
-        or not dimensions["needs_horizontal_alignment"]
-        or not hasattr(page, "evaluate")
-    ):
+    await _reset_browser_zoom(page)
+    dimensions = await page_dimensions(
+        page,
+        definition,
+        focus_selectors,
+        focus_texts,
+    )
+    if dimensions is None:
+        return False
+    if (focus_selectors or focus_texts) and not dimensions["focus_found"]:
+        return False
+    # A wide document can be caused by an irrelevant off-screen placeholder
+    # while the selected evidence surface is already fully visible.  Callers
+    # ask this helper whenever overflow exists, so "nothing to move" is a
+    # successful alignment result rather than a capture failure.
+    if not dimensions["needs_horizontal_alignment"]:
+        return True
+    if not hasattr(page, "evaluate"):
         return False
     try:
         original_scroll_x = dimensions["scroll_x"]
@@ -64,11 +77,22 @@ async def align_page_for_capture(
             )
         if hasattr(page, "wait_for_timeout"):
             await page.wait_for_timeout(120)
-        repaired = await page_dimensions(page, definition, focus_selectors)
+        repaired = await page_dimensions(
+            page,
+            definition,
+            focus_selectors,
+            focus_texts,
+        )
         if repaired is not None:
+            if (focus_selectors or focus_texts) and not repaired["focus_found"]:
+                return False
             if not repaired["focus_geometry_measured"]:
                 return True
-            minimum_left = max(48, repaired["desired_left"] - 16)
+            minimum_left = (
+                -16
+                if repaired["focus_x"] <= 4
+                else max(48, repaired["desired_left"] - 16)
+            )
             well_framed = (
                 repaired["focus_visible_ratio"] >= 0.75
                 and repaired["focus_left"] >= minimum_left
@@ -93,46 +117,54 @@ async def page_dimensions(
     page: Any,
     definition: Any = None,
     focus_selectors: tuple[str, ...] = (),
+    focus_texts: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """Measure document bounds and select a stable horizontal content frame."""
 
     if not hasattr(page, "evaluate"):
         return None
     selectors = [*focus_selectors]
-    selectors.extend(
-        [
-            selector
-            for field in ("content_text", "title")
-            for selector in (
-                definition.selectors.get(field, ()) if definition else ()
-            )
-        ]
-    )
+    if not focus_selectors:
+        selectors.extend(
+            [
+                selector
+                for field in ("content_text", "title")
+                for selector in (
+                    definition.selectors.get(field, ()) if definition else ()
+                )
+            ]
+        )
     # Cross-site defaults are also used by interactive capture, where no
     # router definition is available after the reviewer navigates manually.
-    selectors.extend(
-        (
-            "[class*='profile-header']",
-            "[class*='user-info']",
-            "[class*='author-info']",
-            "[class*='article-content']",
-            "[class*='note-content']",
-            "article",
-            "main h1",
-            "main h2",
-            "main",
-            "[role='main']",
-            "h1",
+    if not focus_selectors:
+        selectors.extend(
+            (
+                "[class*='profile-header']",
+                "[class*='user-info']",
+                "[class*='author-info']",
+                "[class*='article-content']",
+                "[class*='note-content']",
+                "article",
+                "main h1",
+                "main h2",
+                "main",
+                "[role='main']",
+                "h1",
+            )
         )
-    )
     selector_json = json.dumps(
         list(dict.fromkeys(selectors)),
+        ensure_ascii=False,
+    )
+    focus_text_json = json.dumps(
+        [text.strip() for text in focus_texts if text and text.strip()],
         ensure_ascii=False,
     )
     try:
         raw = await page.evaluate(
             f"""() => {{
                 const selectors = {selector_json};
+                const wantedTexts = {focus_text_json};
                 const root = document.documentElement;
                 const body = document.body;
                 const viewportWidth = Math.max(
@@ -160,6 +192,7 @@ async def page_dimensions(
                 let needsHorizontalAlignment = false;
                 let focusSelector = '';
                 let focusIndex = 0;
+                let focusFound = false;
                 const leftGutter = Math.min(
                   280,
                   Math.max(96, viewportWidth * 0.16)
@@ -173,15 +206,31 @@ async def page_dimensions(
                 // Profile shells often have a generic 4000px-wide container.
                 // Anchor on the compact account header carrying a public ID,
                 // rather than the first unrelated navigation "profile" node.
-                const accountMarker = Array.from(document.querySelectorAll('body *'))
+                const normalize = value => (value || '')
+                  .toLocaleLowerCase()
+                  .replace(/[\\s·•_\\-—:：|]+/g, '');
+                const wantedKeys = wantedTexts.map(normalize).filter(Boolean);
+                const identityMarker = wantedKeys.length
+                  ? Array.from(document.querySelectorAll('body *')).find(element => {{
+                      if (element.children.length > 4) return false;
+                      const text = (element.innerText || element.textContent || '').trim();
+                      if (!text || text.length > 300) return false;
+                      const key = normalize(text);
+                      return wantedKeys.some(wanted =>
+                        key.includes(wanted) || wanted.includes(key)
+                      );
+                    }})
+                  : null;
+                const accountMarker = identityMarker || Array.from(document.querySelectorAll('body *'))
                   .find(element => {{
                     if (element.children.length > 2) return false;
                     const text = (element.innerText || element.textContent || '').trim();
                     if (!text || text.length > 240) return false;
-                    return /(?:抖音号|小红书号|账号|UID)[:：]/i.test(text);
+                    return /(?:抖音号|快手号|头条号|小红书号|账号|UID)[:：]/i.test(text);
                   }});
                 if (accountMarker) {{
-                  let container = accountMarker;
+                  const marker = accountMarker;
+                  let container = marker;
                   while (container && container !== body) {{
                     const rect = container.getBoundingClientRect();
                     if (
@@ -192,7 +241,19 @@ async def page_dimensions(
                     ) break;
                     container = container.parentElement;
                   }}
-                  if (container && container !== body) {{
+                  if (!container || container === body || container === root) {{
+                    // Minimal but valid profile pages may contain only an h1.
+                    // Keep the identity-bearing node instead of falling back
+                    // to an unrelated navigation element.
+                    container = marker;
+                  }}
+                  const markerRect = container?.getBoundingClientRect?.();
+                  if (
+                    container
+                    && markerRect
+                    && markerRect.width >= 80
+                    && markerRect.height >= 18
+                  ) {{
                     container.setAttribute('data-por-capture-focus', '1');
                     selectors.unshift('[data-por-capture-focus]');
                   }}
@@ -209,10 +270,12 @@ async def page_dimensions(
                     const text = (element.innerText || element.textContent || '').trim();
                     const mediaSurface = element.matches?.('video')
                       || Boolean(element.querySelector?.('video'));
+                    const oversized = rect.width > viewportWidth * 1.75;
                     const eligible = style.display !== 'none'
                       && style.visibility !== 'hidden'
                       && rect.width >= 120
                       && rect.height >= 20
+                      && (!oversized || selector === '[data-por-capture-focus]')
                       && (
                         text.length >= 2
                         || (mediaSurface && rect.width >= 240 && rect.height >= 180)
@@ -254,9 +317,13 @@ async def page_dimensions(
                     focusLeft = rect.left;
                     focusSelector = selector;
                     focusIndex = candidateIndex;
+                    focusFound = true;
                     const needsSidebarGutter = documentWidth > viewportWidth + 32;
+                    const minimumLeft = focusX <= 4
+                      ? -16
+                      : (needsSidebarGutter ? targetLeftGutter - 16 : -32);
                     const wellFramed = visibleRatio >= 0.75
-                      && rect.left >= (needsSidebarGutter ? targetLeftGutter - 16 : -32)
+                      && rect.left >= minimumLeft
                       && (
                         !needsSidebarGutter
                         || rect.left <= viewportWidth * 0.45
@@ -289,6 +356,7 @@ async def page_dimensions(
                   needsHorizontalAlignment,
                   focusSelector,
                   focusIndex,
+                  focusFound,
                   desiredLeft,
                   focusVisibleRatio,
                   focusLeft
@@ -315,6 +383,12 @@ async def page_dimensions(
             ),
             "focus_selector": str(raw.get("focusSelector") or ""),
             "focus_index": max(0, int(raw.get("focusIndex") or 0)),
+            "focus_found": bool(
+                raw.get(
+                    "focusFound",
+                    raw.get("focusSelector") or raw.get("focusX"),
+                )
+            ),
             "desired_left": max(0, int(raw.get("desiredLeft") or 0)),
             "focus_visible_ratio": max(
                 0.0,
@@ -327,3 +401,24 @@ async def page_dimensions(
         }
     except Exception:  # noqa: BLE001 - geometry probing is best-effort
         return None
+
+
+async def _reset_browser_zoom(page: Any) -> None:
+    """Reset per-origin browser zoom before evidence framing.
+
+    Chromium remembers zoom for an origin inside a live browser session.  A
+    reviewer zooming a content page could therefore make the subsequently
+    opened Douyin/Kuaishou profile appear massively enlarged.  ``Ctrl+0`` is
+    the browser-native reset and does not rewrite the site's transforms/CSS.
+    """
+
+    keyboard = getattr(page, "keyboard", None)
+    press = getattr(keyboard, "press", None)
+    if not callable(press):
+        return
+    try:
+        await press("Control+0")
+        if hasattr(page, "wait_for_timeout"):
+            await page.wait_for_timeout(80)
+    except Exception:  # noqa: BLE001 - zoom normalization is best-effort
+        pass

@@ -13,6 +13,7 @@ from typing import Any
 
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.login_evidence import state_has_authenticated_session
+from src.auth.runtime_state import expire_guest_ui_profile
 from src.auth.registry import auth_policy_for_key, auth_policy_for_url
 from src.auth.store import AuthProfileStore, AuthStateStoreError
 from src.config.settings import TaskConfig
@@ -311,19 +312,18 @@ class BrowserPool:
         slot = self._context_ids.get(id(page.context))
         if slot is None or slot.platform_key is None:
             return
-        if barrier_code not in {"LOGIN_REQUIRED", "HTTP_401"}:
-            # A dead URL, empty page, HTTP 403, captcha, API response or
-            # parser problem is page-specific risk control; it does not
-            # prove anything about the saved login state.
+        if barrier_code == "LOGIN_UI_VISIBLE":
+            if self._auth_store is not None:
+                expire_guest_ui_profile(
+                    self._auth_store, slot.platform_key, original_url, message
+                )
+            self._invalidate_auth_context(slot)
             return
-        # A single content URL's login wall must not downgrade the persisted
-        # authentication profile: the barrier may be URL-specific, and
-        # wiping the profile forced users to log in again after every
-        # transient failure.  Only the auth manager's fresh-context probe
-        # against the platform probe URL may mark a profile EXPIRED.  Here we
-        # just evict the in-memory context so later URLs do not reuse the
-        # session that hit the wall; the per-record error still reports the
-        # barrier for the quality report.
+        if barrier_code not in {"LOGIN_REQUIRED", "HTTP_401"}:
+            # Page-specific failures do not prove the saved login expired.
+            return
+        # A URL-specific wall only evicts this context. The auth manager's
+        # fresh probe is responsible for downgrading the persisted profile.
         logger.warning(
             "Login barrier %s on %s for platform %s; kept saved login state, "
             "re-validate from the auth manager if it persists.",

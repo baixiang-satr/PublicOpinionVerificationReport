@@ -8,13 +8,16 @@ re-exports the public surface used by the test-suite.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+from collections.abc import Callable
 from dataclasses import dataclass
 import io
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.config.settings import TaskConfig
+from src.crawler.navigation import navigate_page, stabilize_rendered_page
 from src.screenshot.region_capture_scripts import SELECTION_HTML
 from src.utils.file_utils import require_safe_file_name
 
@@ -31,8 +34,60 @@ class _CaptureState:
     context: Any = None
     browse_page: Any = None
     select_page: Any = None
+    toolbar: Any = None
+    focus_texts: tuple[str, ...] = ()
     image: Any = None  # PIL.Image of the frozen full screen
     select_pending: bool = False  # selection tab is being created
+
+
+def uses_desktop_profile_context(
+    platform_key: str | None,
+    target: str,
+) -> bool:
+    """Keep Kuaishou profile capture off its mobile share-page context."""
+
+    return platform_key == "kuaishou" and target == "author"
+
+
+async def navigate_and_stabilize(
+    page: Any,
+    url: str,
+    config: TaskConfig,
+    cancel_event: asyncio.Event | None,
+) -> None:
+    """Navigate the browse window; a failed trip leaves it open for repair."""
+
+    try:
+        await navigate_page(
+            page,
+            url,
+            config.page_timeout_seconds * 1000,
+            cancel_event,
+        )
+        await stabilize_rendered_page(page, config.page_stabilize_milliseconds)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
+
+
+async def wait_for_capture_result(
+    done: asyncio.Future[Any],
+    cancel_event: asyncio.Event | None,
+    cancelled_factory: Callable[[], Any],
+) -> Any:
+    if cancel_event is None:
+        return await done
+    cancel_waiter = asyncio.ensure_future(cancel_event.wait())
+    try:
+        await asyncio.wait(
+            {asyncio.ensure_future(done), cancel_waiter},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        return done.result() if done.done() else cancelled_factory()
+    finally:
+        cancel_waiter.cancel()
+        await asyncio.gather(cancel_waiter, return_exceptions=True)
 
 
 def page_is_closed(page: Any) -> bool:
@@ -54,29 +109,6 @@ def _live_pages(context: Any, *excluded: Any) -> list[Any]:
         if all(candidate is not item for item in excluded)
         and not page_is_closed(candidate)
     ]
-
-
-async def _hide_overlay(page: Any) -> None:
-    if page is None:
-        return
-    try:
-        await page.evaluate(
-            "() => window.__poirRegionCaptureHide && window.__poirRegionCaptureHide()"
-        )
-    except Exception:  # noqa: BLE001 — 页面可能已关闭
-        pass
-
-
-async def _reset_overlay(page: Any, message: str | None) -> None:
-    if page is None:
-        return
-    try:
-        await page.evaluate(
-            "(msg) => window.__poirRegionCaptureReset && window.__poirRegionCaptureReset(msg)",
-            message or "",
-        )
-    except Exception:  # noqa: BLE001 — 页面可能已关闭
-        pass
 
 
 async def _reset_selection(state: _CaptureState, message: str) -> None:
