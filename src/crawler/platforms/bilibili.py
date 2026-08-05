@@ -54,6 +54,13 @@ def _url_video_ids(url: str) -> tuple[str | None, str | None]:
     )
 
 
+def bilibili_video_id(url: str) -> str | None:
+    """Return the bvid (or aid) carried by a bilibili video URL, if any."""
+
+    bvid, aid = _url_video_ids(url)
+    return bvid or aid
+
+
 def _video_data(
     payload: Any,
     *,

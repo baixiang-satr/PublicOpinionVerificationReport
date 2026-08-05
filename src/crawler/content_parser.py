@@ -9,14 +9,32 @@ from typing import Any
 
 from src.crawler.extractors.catalog import CatalogPlatformExtractor
 from src.crawler.extractors.generic import GenericExtractor
+from src.crawler.dedicated_restore import (
+    restore_dedicated_fields,
+    restore_dedicated_time,
+)
 from src.crawler.field_resolver import merge_page_data
+from src.crawler.api_assist import douyin_aweme_id
 from src.crawler.platform_catalog import ExtractorFamily, PlatformDefinition
+from src.crawler.platforms.bilibili import bilibili_video_id
 from src.crawler.platforms.registry import dedicated_extractor_for
 from src.crawler.platforms.baijiahao import is_video_landing_url
+from src.crawler.platforms.tieba import sanitize_tieba_content
 from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import parse_web_published_at
 
 logger = logging.getLogger(__name__)
+
+#: 专用提取器未命中时不再可信的载荷来源（配置/推荐节点混居其中）。
+_UNTRUSTED_PAYLOAD_SOURCES = frozenset(
+    {ExtractionSource.NETWORK_JSON, ExtractionSource.EMBEDDED_JSON}
+)
+
+#: 未命中守卫会剥离的字段。
+_PAYLOAD_FIELD_NAMES = (
+    "title", "content_text", "author_name", "author_id",
+    "author_url", "published_at", "published_at_raw",
+)
 
 
 class ContentParser:
@@ -67,6 +85,14 @@ class ContentParser:
         self._generic.finalize(merged)
         if definition.key == "douyin" and dedicated_snapshot is not None:
             self._finalize_douyin_video(merged, dedicated_snapshot)
+        if definition.key == "douyin" and dedicated_snapshot is None:
+            self._strip_untrusted_payload_fields(
+                merged, document, douyin_aweme_id(document.url), strip_images=True
+            )
+        if definition.key == "bilibili" and dedicated_snapshot is None:
+            self._strip_untrusted_payload_fields(
+                merged, document, bilibili_video_id(document.url)
+            )
         if definition.key == "xiaohongshu" and dedicated_snapshot is not None:
             self._finalize_xiaohongshu_note(merged, dedicated_snapshot)
         if definition.key == "kuaishou" and dedicated_snapshot is not None:
@@ -79,6 +105,8 @@ class ContentParser:
             self._finalize_sohu_video(merged, dedicated_snapshot)
         if definition.key == "baijiahao" and is_video_landing_url(document.url):
             self._finalize_baijiahao_video(merged, dedicated_snapshot)
+        if definition.key == "tieba":
+            self._finalize_tieba_post(merged)
         return merged
 
     @staticmethod
@@ -140,19 +168,75 @@ class ContentParser:
         else:
             # 专用节点已锁定目标但未产出时间时，通用侧来自网络载荷的裸数字
             # （如直播回放异常的 245000）不是可展示时间，宁可留空待补录。
-            raw = (merged.published_at_raw or "").strip()
-            implausible = (
-                merged.published_at is None or merged.published_at.year < 2000
-            )
-            if raw.isdigit() and parse_web_published_at(raw) is None and implausible:
-                merged.published_at_raw = None
-                merged.published_at = None
-                merged.field_sources.pop("published_at_raw", None)
-                merged.field_sources.pop("published_at", None)
+            _drop_implausible_published_at(merged)
         if "/video/" in (merged.final_url or ""):
             # Video-page thumbnails belong to recommendations/player chrome,
             # not body images.  OCRing them appended unrelated text to 信息内容.
             merged.image_urls = []
+
+    def _strip_untrusted_payload_fields(
+        self,
+        merged: PageData,
+        document: Any,
+        url_content_id: str | None,
+        *,
+        strip_images: bool = False,
+    ) -> None:
+        """专用提取器未命中但 URL 携带内容 id：剥离载荷来源字段，回到 DOM 兜底。
+
+        抖音/B站页面同时携带配置、直播与推荐节点（「厂牌排名规则」教训）；
+        专用提取器按 URL id 匹配失败时，通用侧从网络/内嵌载荷抓到的字段
+        不是目标内容的证据。剥离后用页面可见文本/DOM 标题回填，仍为空则
+        留空待补录——宁可留空，不给错误内容。
+        """
+
+        if not url_content_id:
+            return
+        stripped = False
+        for field in _PAYLOAD_FIELD_NAMES:
+            if merged.field_sources.get(field) not in _UNTRUSTED_PAYLOAD_SOURCES:
+                continue
+            if getattr(merged, field) is not None:
+                setattr(merged, field, None)
+                stripped = True
+            merged.field_sources.pop(field, None)
+            merged.field_confidences.pop(field, None)
+        _drop_implausible_published_at(merged)
+        if strip_images:
+            merged.image_urls = []
+        if not stripped:
+            return
+        if merged.content_text is None:
+            dom_content = document.dom_values.get("content_text") or document.visible_text
+            if dom_content:
+                merged.content_text = dom_content
+                merged.field_sources["content_text"] = ExtractionSource.VISIBLE_TEXT
+                merged.field_confidences["content_text"] = 0.5
+        if merged.title is None and document.title:
+            merged.title = document.title
+            merged.field_sources["title"] = ExtractionSource.GENERIC_DOM
+            merged.field_confidences["title"] = 0.5
+        self._generic.finalize(merged)  # 重算摘要/长度/内容类型
+
+    def _finalize_tieba_post(self, merged: PageData) -> None:
+        """贴吧正文守卫：兜底来源的整页文本一律净化，不可信则留空。
+
+        专用探针失败时通用侧会把整页可见文本（导航/吧列表/版权尾）填进
+        正文；宁可留空待补录，也不交付与真实内容不符的文本。
+        """
+
+        if not merged.content_text:
+            return
+        if merged.field_sources.get("content_text") is ExtractionSource.EMBEDDED_JSON:
+            return  # 专用提取器内部已净化
+        cleaned = sanitize_tieba_content(merged.content_text, merged.title)
+        if cleaned == merged.content_text.strip():
+            return
+        merged.content_text = cleaned
+        if cleaned is None:
+            merged.field_sources.pop("content_text", None)
+            merged.field_confidences.pop("content_text", None)
+        self._generic.finalize(merged)
 
     def _finalize_xiaohongshu_note(
         self,
@@ -316,12 +400,12 @@ class ContentParser:
     ) -> None:
         """Keep the article body/source above comments and platform metadata."""
 
-        self._restore_dedicated_fields(merged, dedicated)
+        restore_dedicated_fields(merged, dedicated)
         # Only images beneath the selected article body may enter OCR.  The
         # generic page collector also sees recommendation cards and avatars.
         merged.image_urls = list(dedicated.image_urls)
         self._generic.finalize(merged)
-        self._restore_dedicated_time(merged, dedicated)
+        restore_dedicated_time(merged, dedicated)
 
     def _finalize_sohu_video(
         self,
@@ -330,11 +414,11 @@ class ContentParser:
     ) -> None:
         """Keep ID-matched player globals above navigation/player chrome."""
 
-        self._restore_dedicated_fields(merged, dedicated)
+        restore_dedicated_fields(merged, dedicated)
         # Player covers and related cards are not body images or transcripts.
         merged.image_urls = []
         self._generic.finalize(merged)
-        self._restore_dedicated_time(merged, dedicated)
+        restore_dedicated_time(merged, dedicated)
 
     def _finalize_baijiahao_video(
         self,
@@ -368,48 +452,21 @@ class ContentParser:
                 "page chrome and recommendations were discarded."
             )
             return
-        self._restore_dedicated_fields(merged, dedicated)
+        restore_dedicated_fields(merged, dedicated)
         merged.image_urls = list(dedicated.image_urls)
         self._generic.finalize(merged)
-        self._restore_dedicated_time(merged, dedicated)
+        restore_dedicated_time(merged, dedicated)
 
-    @staticmethod
-    def _restore_dedicated_fields(
-        merged: PageData,
-        dedicated: PageData,
-    ) -> None:
-        for field in (
-            "title",
-            "content_text",
-            "author_name",
-            "author_id",
-            "author_url",
-        ):
-            value = getattr(dedicated, field)
-            if value is None:
-                continue
-            setattr(merged, field, value)
-            source = dedicated.field_sources.get(field)
-            if source is not None:
-                merged.field_sources[field] = source
-                merged.field_confidences[field] = (
-                    dedicated.field_confidences.get(field, 0.9)
-                )
 
-    @staticmethod
-    def _restore_dedicated_time(
-        merged: PageData,
-        dedicated: PageData,
-    ) -> None:
-        if dedicated.published_at is None:
-            return
-        merged.published_at = dedicated.published_at
-        merged.published_at_raw = dedicated.published_at_raw
-        for field in ("published_at", "published_at_raw"):
-            source = dedicated.field_sources.get(field)
-            if source is None:
-                continue
-            merged.field_sources[field] = source
-            merged.field_confidences[field] = (
-                dedicated.field_confidences.get(field, 0.9)
-            )
+def _drop_implausible_published_at(data: PageData) -> None:
+    """裸数字且不可解析的「时间」（如直播回放异常的 245000）宁可留空。"""
+
+    raw = (data.published_at_raw or "").strip()
+    implausible = data.published_at is None or data.published_at.year < 2000
+    if raw.isdigit() and parse_web_published_at(raw) is None and implausible:
+        data.published_at_raw = None
+        data.published_at = None
+        data.field_sources.pop("published_at_raw", None)
+        data.field_sources.pop("published_at", None)
+        data.field_confidences.pop("published_at_raw", None)
+        data.field_confidences.pop("published_at", None)

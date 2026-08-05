@@ -13,8 +13,8 @@ from src.domain.models import (
 from src.ocr.models import OcrBatchResult
 
 
-IMAGE_ONLY_NO_TEXT_MARKER = "【纯图片内容：图片中未识别到文字】"
-IMAGE_TEXT_HEADING = "【图片文字】"
+IMAGE_ONLY_NO_TEXT_MARKER = "纯图片暂无文字内容"
+IMAGE_TEXT_HEADING = "以下为图片中识别文字，内容为："
 
 
 def apply_image_ocr(
@@ -36,7 +36,7 @@ def apply_image_ocr(
         if existing:
             if image_text:
                 page.content_text = (
-                    f"{existing}\n{IMAGE_TEXT_HEADING}\n{image_text}"
+                    f"{existing}\n{IMAGE_TEXT_HEADING}{image_text}"
                 )
                 page.content_kind = ContentKind.MIXED_TEXT_AND_IMAGE
                 page.field_sources["image_text"] = ExtractionSource.OCR
@@ -44,7 +44,7 @@ def apply_image_ocr(
                 page.content_text = existing
                 page.content_kind = ContentKind.TEXT
         else:
-            page.content_text = result.text.strip()
+            page.content_text = f"{IMAGE_TEXT_HEADING}{result.text.strip()}"
             page.content_kind = ContentKind.IMAGE_WITH_TEXT
             page.field_sources["content_text"] = ExtractionSource.OCR
     elif result.status == OcrStatus.NO_TEXT:
