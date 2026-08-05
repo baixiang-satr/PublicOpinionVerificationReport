@@ -21,6 +21,7 @@ from src.domain.models import (
     TaskError,
     UrlTask,
 )
+from src.services import recovery_mirror
 from src.utils.file_utils import atomic_replace
 
 
@@ -51,6 +52,7 @@ class CheckpointStore:
     def update(self, record: RecordResult) -> None:
         self._records[record.task.evidence_id] = record
         self.save()
+        recovery_mirror.mirror_record_assets(self._job_id, self.path.parent, record)
 
     def update_many(self, records: list[RecordResult]) -> None:
         self._records.update(
@@ -58,6 +60,8 @@ class CheckpointStore:
             for record in records
         )
         self.save()
+        for record in records:
+            recovery_mirror.mirror_record_assets(self._job_id, self.path.parent, record)
 
     def save(self) -> None:
         payload = {
@@ -80,6 +84,7 @@ class CheckpointStore:
             encoding="utf-8",
         )
         atomic_replace(temporary, self.path)
+        recovery_mirror.mirror_file(self._job_id, self.path)
 
     @classmethod
     def load(

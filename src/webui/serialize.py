@@ -73,7 +73,7 @@ def log_payload(event: LogEvent) -> dict:
     }
 
 
-def finished_payload(result: JobResult) -> dict:
+def finished_payload(result: JobResult, final_copy: Path | None = None) -> dict:
     counts = {status: 0 for status in ("exported", "needs_review", "failed", "cancelled")}
     for record in result.records:
         counts[record.status.value] = counts.get(record.status.value, 0) + 1
@@ -81,6 +81,7 @@ def finished_payload(result: JobResult) -> dict:
         "job_id": result.job_id,
         "label": result.label,
         "archive_path": str(result.archive_path) if result.archive_path else None,
+        "final_copy_path": str(final_copy) if final_copy else None,
         "cancelled": result.cancelled,
         "ready": counts.get("exported", 0),
         "needs_review": counts.get("needs_review", 0),

@@ -8,6 +8,7 @@ import shutil
 
 from src.domain.models import RecordResult, RecordStatus
 from src.domain.models import UrlTask
+from src.services import recovery_mirror
 from src.services.checkpoint_store import CheckpointStore
 from src.services.models import JobRequest
 from src.screenshot.author_evidence import decision_sidecar_name
@@ -128,12 +129,25 @@ def _copy_asset(source: Path | None, template_dir: Path) -> Path | None:
         return None
     source = Path(source)
     if not source.is_file():
-        raise RetainedRecordError(f"重试所需的历史附件不存在：{source.name}")
+        # 任务目录可能被外部清理；恢复镜像里的同名附件可救回。
+        mirrored = _mirror_fallback(source)
+        if mirrored is not None:
+            source = mirrored
+        else:
+            raise RetainedRecordError(f"重试所需的历史附件不存在：{source.name}")
     destination = template_dir / require_safe_file_name(source.name)
     if destination.exists():
         raise RetainedRecordError(f"重试附件文件名冲突：{destination.name}")
     shutil.copy2(source, destination)
     return destination
+
+
+def _mirror_fallback(source: Path) -> Path | None:
+    """按 staging 布局（<job>/staging/template/<file>）推断 job_id 查镜像。"""
+
+    if len(source.parents) < 3:
+        return None
+    return recovery_mirror.mirrored_asset(source.parents[2].name, source.name)
 
 
 def _copy_author_decision(source_record: RecordResult, template_dir: Path) -> None:

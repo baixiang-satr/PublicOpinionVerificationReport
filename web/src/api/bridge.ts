@@ -324,6 +324,7 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
             job_id: 'demo-0001',
             label: '批量抓取',
             archive_path: null,
+            final_copy_path: null,
             cancelled: false,
             ready: 1,
             needs_review: 2,

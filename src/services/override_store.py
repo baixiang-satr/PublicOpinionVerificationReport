@@ -9,9 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 import json
 from pathlib import Path
+import shutil
 from typing import Any
 
 from src.domain.overrides import OVERRIDEABLE_FIELDS, ManualOverride
+from src.services import recovery_mirror
 from src.utils.file_utils import atomic_replace, require_safe_file_name
 from src.utils.time_utils import DEFAULT_TIMEZONE
 
@@ -26,6 +28,8 @@ class ManualOverrideStore:
 
     def load(self) -> "ManualOverrideStore":
         self._overrides = {}
+        if not self.path.exists():
+            self._restore_from_mirror()
         if not self.path.exists():
             return self
         payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -56,6 +60,16 @@ class ManualOverrideStore:
             encoding="utf-8",
         )
         atomic_replace(temporary, self.path)
+        recovery_mirror.mirror_file(self.path.parent.name, self.path)
+
+    def _restore_from_mirror(self) -> None:
+        mirrored = recovery_mirror.mirrored_json(self.path.parent.name, OVERRIDES_FILE_NAME)
+        if mirrored is None:
+            return
+        try:
+            shutil.copy2(mirrored, self.path)
+        except OSError:
+            pass
 
     def get(self, evidence_id: int) -> ManualOverride | None:
         return self._overrides.get(evidence_id)

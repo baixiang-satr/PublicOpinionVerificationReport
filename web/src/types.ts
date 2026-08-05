@@ -78,6 +78,7 @@ export interface JobFinishedPayload {
   job_id: string
   label: string
   archive_path: string | null
+  final_copy_path: string | null
   cancelled: boolean
   ready: number
   needs_review: number

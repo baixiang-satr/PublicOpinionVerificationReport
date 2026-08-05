@@ -13,11 +13,34 @@ to crawled jobs.
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 from src.domain.models import RecordResult
+from src.services import recovery_mirror
 from src.services.checkpoint_store import CHECKPOINT_SCHEMA_VERSION, CheckpointStore
 
 CHECKPOINT_FILE_NAME = "job_checkpoint.json"
+
+
+def ensure_checkpoint(job_dir: Path, records: list[RecordResult]) -> Path:
+    """保证断点文件存在：优先从恢复镜像还原，否则用内存记录重建。
+
+    output/ 任务目录可能被外部清理，闪退也会留下缺失断点的目录；
+    导出前调用本函数兜底，不再向用户报「找不到任务断点文件」。
+    """
+
+    job_dir = Path(job_dir)
+    path = job_dir / CHECKPOINT_FILE_NAME
+    if path.is_file():
+        return path
+    mirrored = recovery_mirror.mirrored_json(job_dir.name, CHECKPOINT_FILE_NAME)
+    if mirrored is not None:
+        try:
+            shutil.copy2(mirrored, path)
+            return path
+        except OSError:
+            pass
+    return write_checkpoint(job_dir, job_dir.name, list(records))
 
 
 def write_checkpoint(

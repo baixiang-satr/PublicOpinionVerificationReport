@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import shutil
 from threading import Event, Lock, Thread
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
@@ -20,6 +21,7 @@ from src.screenshot.region_capture import RegionCaptureResult, RegionCaptureServ
 from src.services.models import JobRequest, JobResult, RunnerCallbacks
 from src.services.review_session import ReviewSession
 from src.services.task_runner import TaskRunner, TaskRunnerError
+from src.utils import crash_log
 from src.webui.relogin_coordinator import CrawlReloginCoordinator
 from src.webui.serialize import finished_payload, log_payload, progress_payload
 
@@ -118,6 +120,23 @@ class AsyncThreadJob:
         self._thread.start()
 
 
+FINAL_ARCHIVE_NAME = "template_final.zip"
+
+
+def _copy_final_archive(result: JobResult, target_dir: Path | None) -> Path | None:
+    """补录导出成功后，把最终 ZIP 复制回原任务目录（与 init 版并列）。"""
+
+    if result.archive_path is None or target_dir is None:
+        return None
+    try:
+        destination = Path(target_dir) / FINAL_ARCHIVE_NAME
+        if Path(result.archive_path).resolve() != destination.resolve():
+            shutil.copy2(result.archive_path, destination)
+        return destination
+    except OSError:
+        return None
+
+
 class JobRunner(AsyncThreadJob):
     """Runs TaskRunner requests; keeps the latest result + review session."""
 
@@ -129,6 +148,8 @@ class JobRunner(AsyncThreadJob):
         self.result: JobResult | None = None
         self.session: ReviewSession | None = None
         self.last_checkpoint: str | None = None
+        # export_zip 设置：补录导出完成后把最终 ZIP 复制回原任务目录。
+        self.final_copy_dir: Path | None = None
 
     def start(self, request: JobRequest) -> tuple[bool, str]:
         if self.is_running():
@@ -181,19 +202,22 @@ class JobRunner(AsyncThreadJob):
         with self._lock:
             self._loop = asyncio.get_running_loop()
             self._asyncio_cancel = cancel_event
+        self._loop.set_exception_handler(crash_log.loop_exception_handler)
         try:
             result = await runner.run(request, callbacks, cancel_event)
         except TaskRunnerError as error:
             self._sink.emit("failed", {"message": str(error)})
             return
         self.result = result
+        final_copy = _copy_final_archive(result, self.final_copy_dir)
+        self.final_copy_dir = None
         if result.checkpoint_path is not None:
             self.last_checkpoint = str(result.checkpoint_path)
         try:
             self.session = ReviewSession.from_job_dir(result.job_dir)
         except Exception:
             self.session = None
-        self._sink.emit("finished", finished_payload(result))
+        self._sink.emit("finished", finished_payload(result, final_copy))
 
 
 class CaptureRunner:

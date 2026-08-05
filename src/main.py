@@ -20,6 +20,10 @@ def _prepare_frozen_environment() -> None:
 
 def main() -> int:
     _prepare_frozen_environment()
+    # 崩溃日志最先安装：闪退排查需要最后一次现场。
+    from src.utils.crash_log import install as install_crash_logging
+
+    install_crash_logging()
     # Must happen before importing pywebview/WebView2; otherwise Windows may
     # bitmap-scale the 1280px web surface and crop the right/bottom edge on
     # 125%/150% displays.

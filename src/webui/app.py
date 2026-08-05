@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from src.config.settings import AppConfig, PROJECT_ROOT
+from src.services import recovery_mirror
 from src.webui.bridge import WebUIBridge
 from src.webui.runner import EventSink
 
@@ -18,6 +19,9 @@ def run_app() -> int:
         print("缺少 pywebview，请先运行：pip install -r requirements.txt")
         return 2
 
+    # 任务恢复镜像（断点/截图备份到 LOCALAPPDATA），output/ 被清理或
+    # 闪退后仍可导出与预览；默认关闭，仅应用入口启用，测试保持隔离。
+    recovery_mirror.enable()
     config = AppConfig.from_environment()
     sink = EventSink()
     window_box: dict[str, object] = {}

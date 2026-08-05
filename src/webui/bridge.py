@@ -5,11 +5,8 @@
 """
 from __future__ import annotations
 
-import base64
 from dataclasses import replace
 from datetime import datetime
-import json
-import mimetypes
 import os
 from pathlib import Path
 import shutil
@@ -21,6 +18,7 @@ from src.config.settings import AppConfig, TaskConfig
 from src.crawler.author_profile_urls import is_author_profile_url
 from src.input.reader import InputReadError, read_url_input
 from src.license.manager import LicenseManager
+from src.services import job_records, recovery_mirror
 from src.services.checkpoint_store import CheckpointStore
 from src.services.models import JobRequest
 from src.services.review_session import ReviewSession
@@ -28,6 +26,7 @@ from src.services.zip_import import TemplateZipImportError, TemplateZipImporter
 from src.utils.file_utils import require_safe_file_name
 from src.webui.auth_api import AuthApiMixin
 from src.webui.auth_runner import AuthRunner
+from src.webui.image_payload import image_payload
 from src.webui.runner import CaptureRunner, EventSink, JobRunner
 from src.webui.auth_ui import build_auth_list, missing_auth_platforms
 from src.webui.license_gate import LicenseApiMixin, apply_license_guard, default_license_manager
@@ -234,9 +233,9 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
         session = self._session()
         if session is None:
             return {"ok": False, "message": "还没有可导出的内容。"}
-        checkpoint = Path(session.job_dir) / "job_checkpoint.json"
-        if not checkpoint.is_file():
-            return {"ok": False, "message": "找不到任务断点文件。"}
+        # 断点文件可能被外部清理或闪退打断：优先从恢复镜像还原，
+        # 否则用当前会话的内存记录重建，保证补录成果始终可导出。
+        checkpoint = job_records.ensure_checkpoint(session.job_dir, session.records())
         snapshot = CheckpointStore.load(checkpoint)
         tasks = tuple(record.task for record in snapshot.records)
         if not tasks:
@@ -247,6 +246,8 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
             reexport_only=True,
             label="人工补录导出",
         )
+        # 补录导出的最终 ZIP 复制回原任务目录 template_final.zip（双版本）。
+        self.jobs.final_copy_dir = Path(session.job_dir)
         ok, message = self.jobs.start(request)
         return {"ok": ok, "message": message or "导出任务已开始。"}
 
@@ -296,6 +297,11 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
         assets_dir.mkdir(parents=True, exist_ok=True)
         name = _screenshot_asset_name(assets_dir, eid, mode, path.suffix.lower())
         shutil.copy2(path, assets_dir / name)
+        recovery_mirror.mirror_file(
+            session.job_dir.name,
+            assets_dir / name,
+            subdir=recovery_mirror.ASSETS_DIR_NAME,
+        )
         if mode == "primary":
             session.set_primary_screenshot(eid, name)
         elif mode == "author":
@@ -319,17 +325,9 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
         except KeyError:
             return {"content": None, "author": None}
         return {
-            "content": self._image_payload(session.content_screenshot_path(record)),
-            "author": self._image_payload(session.author_screenshot_path(record)),
+            "content": image_payload(session.content_screenshot_path(record)),
+            "author": image_payload(session.author_screenshot_path(record)),
         }
-
-    @staticmethod
-    def _image_payload(path: Path | None) -> dict | None:
-        if path is None:
-            return None
-        mime = mimetypes.guess_type(path.name)[0] or "image/png"
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        return {"data_url": f"data:{mime};base64,{encoded}", "name": path.name}
 
     def start_region_capture(self, evidence_id: int, target: str) -> dict:
         """打开交互式截图窗口（全屏冻结框选，含浏览器地址栏）。"""
@@ -374,6 +372,11 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
                 session.set_primary_screenshot(_eid, name)
             else:
                 session.set_author_screenshot(_eid, name)
+            recovery_mirror.mirror_file(
+                session.job_dir.name,
+                assets_dir / name,
+                subdir=recovery_mirror.ASSETS_DIR_NAME,
+            )
             self._sink.emit("session", {})
 
         ok, message = self.capture.start(
@@ -494,7 +497,3 @@ def _screenshot_asset_name(
         counter += 1
         candidate = require_safe_file_name(f"{stem}_{counter}{suffix}")
     return candidate
-
-
-def dumps_debug(payload) -> str:  # 测试辅助：确认全部载荷可 JSON 序列化
-    return json.dumps(payload, ensure_ascii=False)

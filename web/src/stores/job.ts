@@ -49,6 +49,7 @@ interface JobState {
   logs: LogPayload[]
   session: SessionOverview | null
   lastArchive: string
+  lastFinalArchive: string
   retryable: number
   statusText: string
   authDialogOpen: boolean
@@ -73,6 +74,7 @@ export const useJobStore = defineStore('job', {
     logs: [],
     session: null,
     lastArchive: '',
+    lastFinalArchive: '',
     retryable: 0,
     statusText: '系统就绪',
     authDialogOpen: false,
@@ -170,6 +172,7 @@ export const useJobStore = defineStore('job', {
       this.relogin = null
       this.retryable = result.retryable
       this.lastArchive = result.archive_path ?? this.lastArchive
+      this.lastFinalArchive = result.final_copy_path ?? this.lastFinalArchive
       this.statusText = result.cancelled ? '任务已取消' : '任务完成'
       void this.refreshSession()
       if (!result.cancelled && this.step === 2) {

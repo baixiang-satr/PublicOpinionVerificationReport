@@ -38,7 +38,10 @@ watch(
   async (path) => {
     if (!exporting.value || !path) return
     exporting.value = false
-    await ElMessageBox.alert(`template.zip 已生成。\n\n位置：\n${path}`, '导出完成', {
+    const finalNote = store.lastFinalArchive
+      ? `\n\n补录最终版已保存：\n${store.lastFinalArchive}`
+      : ''
+    await ElMessageBox.alert(`template.zip 已生成。\n\n位置：\n${path}${finalNote}`, '导出完成', {
       confirmButtonText: '知道了',
     })
   },
@@ -89,6 +92,9 @@ watch(
       </div>
       <p v-if="store.lastArchive" class="muted archive-path">
         ✅ 最近导出：{{ store.lastArchive }}
+      </p>
+      <p v-if="store.lastFinalArchive" class="muted archive-path">
+        ✅ 补录最终版（template_final.zip）：{{ store.lastFinalArchive }}
       </p>
     </div>
   </section>
