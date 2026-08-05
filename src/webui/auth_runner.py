@@ -106,6 +106,9 @@ class AuthRunner(AsyncThreadJob):
                     self.store().profile_for(platform_key).status,
                     "已取消本次登录态操作。",
                 )
+            with self._lock:
+                self._active_action = None
+                self._active_platform = None
             return
         service = self._service()
         try:
