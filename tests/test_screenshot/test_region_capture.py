@@ -16,7 +16,7 @@ from src.screenshot.region_capture import (
     _CaptureState,
     _selection_html,
 )
-from src.screenshot.region_capture_helpers import wait_for_capture_result
+from src.screenshot.region_capture_helpers import _scale_clip, wait_for_capture_result
 
 
 class FakePage:
@@ -237,11 +237,24 @@ async def test_session_capture_registers_and_clears_binding_handler(
 
 
 def test_selection_html_embeds_frozen_image() -> None:
-    html = _selection_html(_striped_image((640, 480)))
+    html, scale = _selection_html(_striped_image((640, 480)))
+    assert scale == 1.0
     assert html.startswith("<!doctype html>")
     assert "var IW = 640, IH = 480;" in html
     assert "data:image/jpeg;base64," in html
     assert "__IMG_SRC__" not in html and "__IMG_W__" not in html
+
+
+def test_selection_html_downscales_huge_frozen_image() -> None:
+    html, scale = _selection_html(_striped_image((3840, 2160)))
+    assert scale == 2.0
+    assert "var IW = 1920, IH = 1080;" in html
+
+
+def test_scale_clip_maps_preview_coords_back_to_full_image() -> None:
+    clip = {"x": 10, "y": 20, "width": 300, "height": 200}
+    assert _scale_clip(clip, 2.0) == {"x": 20, "y": 40, "width": 600, "height": 400}
+    assert _scale_clip(clip, 1.0) is clip
 
 
 @pytest.mark.asyncio

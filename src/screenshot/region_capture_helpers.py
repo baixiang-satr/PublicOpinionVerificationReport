@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 
 _MIN_REGION_PX = 8
 
+#: 框选预览图最长边：多屏 4K 冻结图原尺寸内嵌会让 WebView2 内存暴涨。
+_PREVIEW_MAX_EDGE = 1920
+
 
 @dataclass
 class _CaptureState:
@@ -37,6 +40,7 @@ class _CaptureState:
     toolbar: Any = None
     focus_texts: tuple[str, ...] = ()
     image: Any = None  # PIL.Image of the frozen full screen
+    image_scale: float = 1.0  # 原图 / 预览图 比例（≥1，裁剪时回映坐标）
     select_pending: bool = False  # selection tab is being created
 
 
@@ -179,23 +183,55 @@ def _save_region(
         raise ValueError("Selected region falls outside the captured screen.")
     box = (left, top, right, bottom)
     region = image.crop(box)
-    if config.screenshot_format == "jpeg":
-        region.convert("RGB").save(
-            str(output), format="JPEG", quality=config.screenshot_jpeg_quality
-        )
-    else:
-        region.save(str(output), format="PNG")
+    try:
+        if config.screenshot_format == "jpeg":
+            region.convert("RGB").save(
+                str(output), format="JPEG", quality=config.screenshot_jpeg_quality
+            )
+        else:
+            region.save(str(output), format="PNG")
+    finally:
+        region.close()
 
 
-def _selection_html(image: "Image.Image") -> str:
-    """Selection-tab document: frozen screen + rubber band, image-space coords."""
+def _scale_clip(clip: dict[str, int], factor: float) -> dict[str, int]:
+    """把预览图坐标系的选区回映到原图坐标系（预览降采样时 factor>1）。"""
+
+    if factor == 1.0:
+        return clip
+    return {
+        "x": round(clip["x"] * factor),
+        "y": round(clip["y"] * factor),
+        "width": round(clip["width"] * factor),
+        "height": round(clip["height"] * factor),
+    }
+
+
+def _selection_html(image: "Image.Image") -> tuple[str, float]:
+    """Selection-tab document + 原图/预览图比例；预览最长边受限以控制内存。"""
+
+    from PIL import Image
 
     width, height = image.size
+    ratio = max(width, height) / _PREVIEW_MAX_EDGE
+    preview = image
+    if ratio > 1.0:
+        preview = image.resize(
+            (round(width / ratio), round(height / ratio)),
+            Image.Resampling.LANCZOS,
+        )
+    pw, ph = preview.size
     buffer = io.BytesIO()
-    image.convert("RGB").save(buffer, format="JPEG", quality=82)
+    try:
+        preview.convert("RGB").save(buffer, format="JPEG", quality=82)
+    finally:
+        if preview is not image:
+            preview.close()
     data_url = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+    scale = width / pw
     return (
         SELECTION_HTML.replace("__IMG_SRC__", data_url)
-        .replace("__IMG_W__", str(width))
-        .replace("__IMG_H__", str(height))
+        .replace("__IMG_W__", str(pw))
+        .replace("__IMG_H__", str(ph)),
+        scale,
     )

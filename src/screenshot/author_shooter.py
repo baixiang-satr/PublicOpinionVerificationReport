@@ -296,22 +296,36 @@ class AuthorShooter:
                     "评论用户页无法确认就是正文作者，按无截图处理",
                 )
 
-            path = await self._shooter.capture_named(
-                author_page,
-                f"{evidence_id:03d}主页",
-                output_dir,
-                cancel_event,
-                focus_selectors=PROFILE_SELECTORS,
-                focus_texts=tuple(
-                    value
-                    for value in (
-                        decision.expected_name,
-                        decision.expected_id,
-                    )
-                    if value
-                ),
+            focus_texts = tuple(
+                value
+                for value in (
+                    decision.expected_name,
+                    decision.expected_id,
+                )
+                if value
             )
-            decision.capture_region = "profile_container"
+            try:
+                path = await self._shooter.capture_named(
+                    author_page,
+                    f"{evidence_id:03d}主页",
+                    output_dir,
+                    cancel_event,
+                    focus_selectors=PROFILE_SELECTORS,
+                    focus_texts=focus_texts,
+                )
+                decision.capture_region = "profile_container"
+            except PageScreenshotError:
+                # 身份已核验但容器对齐失败（抖音/快手 SPA 离屏占位节点撑宽
+                # 文档导致无法完整取景）：退回当前视口截图——已验证主页的
+                # 可视帧同样可交付，比缺截图转人工更符合交付要求。
+                path = await self._shooter.capture_named(
+                    author_page,
+                    f"{evidence_id:03d}主页",
+                    output_dir,
+                    cancel_event,
+                    require_alignment=False,
+                )
+                decision.capture_region = "viewport_fallback"
             decision.accepted = True
             decision.rejection_code = None
             return path

@@ -61,13 +61,16 @@ class PageShooter:
         focus_selectors: tuple[str, ...] = (),
         focus_texts: tuple[str, ...] = (),
         clip_region: dict[str, int] | None = None,
+        require_alignment: bool = True,
     ) -> Path:
         """Capture with an optional explicit document-coordinate clip.
 
         ``clip_region`` skips geometry alignment and clips the screenshot to
         the given page coordinates (profile-body containers, split-layout
         columns).  All other gates (readiness, authentication, overlay
-        dismissal, blank-image rejection) still apply.
+        dismissal, blank-image rejection) still apply.  ``require_alignment``
+        为 False 时，对齐失败不再报错而直接截取当前视口（仅限身份已核验的
+        作者主页等场景作为兜底）。
         """
         _raise_if_cancelled(cancel_event)
         extension = "jpg" if self._config.screenshot_format == "jpeg" else "png"
@@ -180,9 +183,10 @@ class PageShooter:
                     )
                 options["full_page"] = False
                 if not aligned and (needs_horizontal_alignment or focus_selectors or focus_texts):
-                    raise PageScreenshotError(
-                        "Target content could not be framed completely in the viewport."
-                    )
+                    if require_alignment:
+                        raise PageScreenshotError(
+                            "Target content could not be framed completely in the viewport."
+                        )
                 # A Playwright clip and a horizontally scrolled document use
                 # different coordinate spaces on several Chromium builds.
                 # Let the browser capture the current viewport after verified

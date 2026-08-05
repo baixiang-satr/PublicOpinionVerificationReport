@@ -9,6 +9,7 @@ from src.screenshot.author_shooter import (
     AuthorShooter,
     AuthorScreenshotError,
 )
+from src.screenshot.page_shooter import PageScreenshotError
 
 
 class FakeResponse:
@@ -97,6 +98,72 @@ class StubPageShooter:
         path = output_dir / f"{file_stem}.png"
         path.write_bytes(b"png")
         return path
+
+
+class AlignmentFailingShooter:
+    """聚焦对齐恒失败、仅 require_alignment=False 可拍的桩。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def capture_named(
+        self,
+        _page: object,
+        file_stem: str,
+        output_dir: Path,
+        _cancel_event: object,
+        **options: object,
+    ) -> Path:
+        self.calls.append(options)
+        if options.get("require_alignment", True):
+            raise PageScreenshotError(
+                "Target content could not be framed completely in the viewport."
+            )
+        path = output_dir / f"{file_stem}.png"
+        path.write_bytes(b"png")
+        return path
+
+
+class SignalsAuthorPage(FakeAuthorPage):
+    """提供主页信号的假页面：走身份核验后的正常截图分支。"""
+
+    async def evaluate(self, script: str, *_args: object):
+        if "headerNames" in script or "headerName" in script:
+            return {
+                "headerName": "作者",
+                "headerNames": ["作者"],
+                "headerId": "",
+                "headerIdSource": "",
+                "title": "作者的主页",
+                "body": "作者的主页内容",
+                "hasProfileSurface": True,
+            }
+        return None
+
+
+@pytest.mark.asyncio
+async def test_author_shooter_falls_back_to_viewport_after_alignment_failure(
+    tmp_path: Path,
+) -> None:
+    author_page = SignalsAuthorPage(200)
+    stub = AlignmentFailingShooter()
+    shooter = AuthorShooter(
+        TaskConfig(page_stabilize_milliseconds=0, screenshot_format="png"),
+        shooter=stub,
+    )
+
+    path = await shooter.capture(
+        FakeSourcePage(author_page),
+        "https://example.test/author/42",
+        5,
+        tmp_path,
+        expected_author_name="作者",
+    )
+
+    assert path.name == "005主页.png"
+    assert len(stub.calls) == 2
+    assert stub.calls[0].get("focus_selectors")
+    assert stub.calls[1].get("require_alignment") is False
 
 
 @pytest.mark.asyncio

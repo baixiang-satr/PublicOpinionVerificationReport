@@ -23,6 +23,7 @@ from src.screenshot.region_capture_helpers import (
     _live_pages,
     _reset_selection,
     _save_region,
+    _scale_clip,
     _selection_html,
     navigate_and_stabilize,
     uses_desktop_profile_context,
@@ -382,6 +383,7 @@ class RegionCaptureService:
         if clip is None or state.image is None:
             await _reset_selection(state, "选区太小或无效，请重新框选。")
             return
+        clip = _scale_clip(clip, state.image_scale)
         name = _capture_name(evidence_id, target, self._config.screenshot_format)
         assets_dir.mkdir(parents=True, exist_ok=True)
         output = assets_dir / name
@@ -389,12 +391,7 @@ class RegionCaptureService:
             _save_region(self._config, state.image, clip, output)
         except Exception as error:  # noqa: BLE001 — 统一回吐给 UI
             output.unlink(missing_ok=True)
-            finish(
-                RegionCaptureResult(
-                    status="error",
-                    message=f"截图失败：{type(error).__name__}: {error}",
-                )
-            )
+            finish(RegionCaptureResult(status="error", message=f"截图失败：{type(error).__name__}: {error}"))
             return
         try:
             blank = is_visually_blank(output)
@@ -456,7 +453,8 @@ class RegionCaptureService:
                 "close",
                 lambda *_: asyncio.ensure_future(self._abort_selection(state, finish)),
             )
-            await select_page.set_content(_selection_html(image))
+            html, state.image_scale = _selection_html(image)
+            await select_page.set_content(html)
         except Exception as error:  # noqa: BLE001 — 打开选区页失败回退浏览态
             logger.warning("Open selection page failed: %s", error)
             state.image = None
