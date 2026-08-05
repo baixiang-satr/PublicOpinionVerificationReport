@@ -196,7 +196,7 @@ class TaskRunner:
                     checkpoint.path,
                 )
 
-            if self._config.task.enable_headed_fallback and self._config.task.headless:
+            if self._config.task.enable_headed_fallback:
                 await retry_failed_records_headed(
                     records,
                     task_config=self._config.task,

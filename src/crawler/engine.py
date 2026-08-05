@@ -12,11 +12,16 @@ from src.crawler.authenticated_access import guest_ui_error
 from src.config.settings import TaskConfig
 from src.crawler.auth_preflight import preflight_or_empty
 from src.crawler.author_extractor import AuthorExtractor
+from src.crawler.backoff import backoff
 from src.crawler.content_parser import ContentParser
 from src.crawler.crawl_navigation import CrawlFailure, navigate_with_fallback
+from src.crawler.engine_events import emit_event
 from src.crawler.field_quality import missing_required_fields
 from src.crawler.ocr_pipeline import OcrPipeline
-from src.crawler.optional_assets import collect_optional_assets
+from src.crawler.optional_assets import (
+    author_screenshot_required_unmet,
+    collect_optional_assets,
+)
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.platform_scheduler import PlatformTaskScheduler
 from src.crawler.rate_limiter import HostRateLimiter, wait_with_cancellation
@@ -87,7 +92,7 @@ class CrawlEngine:
         try:
             auth_preflight = await preflight_or_empty(
                 self._config, self._browser_pool, self._auth_store,
-                queues, on_event, self._emit, cancellation,
+                queues, on_event, emit_event, cancellation,
             )
             jobs = [
                 asyncio.create_task(
@@ -205,7 +210,7 @@ class CrawlEngine:
         now = _now()
         result.started_at = now
         result.finished_at = now
-        self._emit(result, "finish", result.status.value, on_event)
+        emit_event(result, "finish", result.status.value, on_event)
         if on_result is not None:
             try:
                 on_result(result)
@@ -235,7 +240,7 @@ class CrawlEngine:
         cancel_event: asyncio.Event,
     ) -> RecordResult:
         result = RecordResult(task=task, status=RecordStatus.RUNNING, started_at=_now())
-        self._emit(result, "start", "开始访问页面", on_event)
+        emit_event(result, "start", "开始访问页面", on_event)
         try:
             for attempt in range(self._config.max_retries + 1):
                 result.attempt_count = attempt + 1
@@ -245,8 +250,12 @@ class CrawlEngine:
                 except CrawlFailure as failure:
                     result.errors.append(failure.error)
                     if failure.error.retryable and attempt < self._config.max_retries:
-                        self._emit(result, "retry", failure.error.message, on_event)
-                        await self._backoff(attempt, cancel_event)
+                        emit_event(result, "retry", failure.error.message, on_event)
+                        await backoff(
+                            self._config.retry_base_delay_seconds,
+                            attempt,
+                            cancel_event,
+                        )
                         continue
                     result.status = failure.status
                     break
@@ -257,7 +266,7 @@ class CrawlEngine:
             result.add_error(TaskError("crawl", "UNEXPECTED", str(error), retryable=False))
         finally:
             result.finished_at = _now()
-            self._emit(result, "finish", result.status.value, on_event)
+            emit_event(result, "finish", result.status.value, on_event)
             if on_result is not None:
                 try:
                     on_result(result)
@@ -389,6 +398,7 @@ class CrawlEngine:
                     result,
                     output_dir,
                     cancel_event,
+                    platform_key=definition.key,
                 )
                 screenshot_ocr_timeout = max(
                     0.05,
@@ -436,7 +446,11 @@ class CrawlEngine:
                             retryable=False,
                         )
                     )
-                result.status = RecordStatus.ASSETS_READY
+                result.status = (
+                    RecordStatus.NEEDS_REVIEW
+                    if author_screenshot_required_unmet(definition.key, result)
+                    else RecordStatus.ASSETS_READY
+                )
         except CrawlFailure:
             raise
         except asyncio.CancelledError:
@@ -455,6 +469,7 @@ class CrawlEngine:
         result: RecordResult,
         output_dir: Path,
         cancel_event: asyncio.Event,
+        platform_key: str | None = None,
     ) -> None:
         await collect_optional_assets(
             config=self._config,
@@ -465,30 +480,8 @@ class CrawlEngine:
             result=result,
             output_dir=output_dir,
             cancel_event=cancel_event,
+            platform_key=platform_key,
         )
-
-    async def _backoff(self, attempt: int, cancel_event: asyncio.Event) -> None:
-        # Exponential backoff with full jitter (AWS-recommended strategy)
-        # 指数退避 + 全抖动，比固定退避更难被风控检测
-        base = self._config.retry_base_delay_seconds * (2**attempt)
-        cap = min(base, 30.0)  # Cap at 30 seconds max
-        sleep = random.uniform(0, cap)
-        logger.info("Backoff attempt %d: sleeping %.1fs (base=%.1f)", attempt + 1, sleep, base)
-        await wait_with_cancellation(sleep, cancel_event)
-
-    @staticmethod
-    def _emit(
-        result: RecordResult,
-        stage: str,
-        message: str,
-        callback: Callable[[TaskEvent], None] | None,
-    ) -> None:
-        if callback is None:
-            return
-        try:
-            callback(TaskEvent(result.task.evidence_id, result.status, stage, message))
-        except Exception:
-            pass
 
 
 def _raise_if_cancelled(cancel_event: asyncio.Event) -> None:

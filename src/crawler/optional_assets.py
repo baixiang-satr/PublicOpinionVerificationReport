@@ -14,6 +14,31 @@ from src.screenshot.author_asset import capture_author_home_asset
 
 logger = logging.getLogger(__name__)
 
+#: 必须交付「已验证作者个人主页截图」的平台；拿不到就标待补录人工补截。
+REQUIRED_AUTHOR_SCREENSHOT_PLATFORMS = frozenset(
+    {
+        "douyin",
+        "toutiao",
+        "kuaishou",
+        "bilibili",
+        "xiaohongshu",
+        "weibo",
+        "wechat_official",
+    }
+)
+
+
+def author_screenshot_required_unmet(
+    platform_key: str | None,
+    result: RecordResult,
+) -> bool:
+    """必需平台的作者主页截图仍未交付（转待补录的依据）。"""
+
+    return (
+        platform_key in REQUIRED_AUTHOR_SCREENSHOT_PLATFORMS
+        and result.assets.author_screenshot is None
+    )
+
 
 async def collect_optional_assets(
     *,
@@ -25,6 +50,7 @@ async def collect_optional_assets(
     result: RecordResult,
     output_dir: Path,
     cancel_event: asyncio.Event,
+    platform_key: str | None = None,
 ) -> None:
     """Collect optional assets; failures never fail the main record."""
 
@@ -61,6 +87,7 @@ async def collect_optional_assets(
         )
 
     if not result.page.author_url:
+        _append_author_required_error(platform_key, result)
         return
     author_timeout = max(
         0.05,
@@ -75,6 +102,23 @@ async def collect_optional_assets(
                 output_dir,
                 cancel_event,
             )
+            if (
+                asset is None
+                and platform_key in REQUIRED_AUTHOR_SCREENSHOT_PLATFORMS
+                and not cancel_event.is_set()
+            ):
+                # 必需平台原地重试一次：首试常败于渲染未完成/验证页抖动。
+                asset, retry_error = await capture_author_home_asset(
+                    author_shooter,
+                    page,
+                    result,
+                    output_dir,
+                    cancel_event,
+                )
+                if asset is not None:
+                    error = None
+                elif retry_error is not None:
+                    error = retry_error
             result.assets.author_screenshot = asset
             if error is not None:
                 result.errors.append(error)
@@ -87,6 +131,26 @@ async def collect_optional_assets(
                 retryable=True,
             )
         )
+    _append_author_required_error(platform_key, result)
+
+
+def _append_author_required_error(
+    platform_key: str | None,
+    result: RecordResult,
+) -> None:
+    if not author_screenshot_required_unmet(platform_key, result):
+        return
+    if any(error.code == "AUTHOR_SCREENSHOT_REQUIRED" for error in result.errors):
+        return
+    result.errors.append(
+        TaskError(
+            "author_screenshot",
+            "AUTHOR_SCREENSHOT_REQUIRED",
+            "该平台必须交付已验证的作者个人主页截图；自动获取失败，"
+            "请在补录阶段选中该行点「截取个人页」人工补截。",
+            retryable=True,
+        )
+    )
 
 
 async def _collect_ocr_assets(

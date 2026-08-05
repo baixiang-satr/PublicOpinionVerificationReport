@@ -32,6 +32,7 @@ ELIGIBLE_CODES = frozenset(
         "CAPTCHA_REQUIRED",
         "ACCESS_CHALLENGE",
         "EMPTY_RENDERED_PAGE",
+        "AUTHOR_SCREENSHOT_REQUIRED",
     }
 )
 
@@ -75,7 +76,7 @@ async def retry_failed_records_headed(
     if log is not None:
         log(
             "INFO",
-            f"{len(candidates)} 条记录无头抓取失败，将打开可见浏览器重试；"
+            f"{len(candidates)} 条记录未完成，将打开可见浏览器重试；"
             f"如遇滑块或登录页，请在 {task_config.manual_intervention_timeout_seconds} 秒内手动完成。",
         )
     headed_config = replace(task_config, headless=False)

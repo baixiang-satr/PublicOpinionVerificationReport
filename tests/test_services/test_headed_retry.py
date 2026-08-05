@@ -36,6 +36,14 @@ def test_eligible_records_filters_navigation_and_access_failures() -> None:
     assert [record.task.evidence_id for record in eligible] == [1, 3]
 
 
+def test_eligible_records_includes_required_author_screenshot() -> None:
+    missing_author = _record(1, RecordStatus.NEEDS_REVIEW, "AUTHOR_SCREENSHOT_REQUIRED")
+
+    eligible = eligible_records([missing_author])
+
+    assert [record.task.evidence_id for record in eligible] == [1]
+
+
 @pytest.mark.asyncio
 async def test_retry_replaces_records_with_headed_results(tmp_path: Path) -> None:
     failed = _record(1, RecordStatus.FAILED, "PAGE_PROCESSING_TIMEOUT")
