@@ -14,6 +14,7 @@ from src.crawler.platform_catalog import ExtractorFamily, PlatformDefinition
 from src.crawler.platforms.registry import dedicated_extractor_for
 from src.crawler.platforms.baijiahao import is_video_landing_url
 from src.domain.models import ExtractionSource, PageData
+from src.utils.time_utils import parse_web_published_at
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,8 @@ class ContentParser:
             self._finalize_xiaohongshu_note(merged, dedicated_snapshot)
         if definition.key == "kuaishou" and dedicated_snapshot is not None:
             self._finalize_kuaishou_video(merged, dedicated_snapshot)
+        if definition.key == "ixigua" and dedicated_snapshot is not None:
+            self._finalize_ixigua_video(merged)
         if definition.key == "netease_news" and dedicated_snapshot is not None:
             self._finalize_netease_article(merged, dedicated_snapshot)
         if definition.key == "sohu_video" and dedicated_snapshot is not None:
@@ -134,6 +137,18 @@ class ContentParser:
                 merged.field_confidences["published_at_raw"] = (
                     dedicated.field_confidences.get("published_at_raw", 0.86)
                 )
+        else:
+            # 专用节点已锁定目标但未产出时间时，通用侧来自网络载荷的裸数字
+            # （如直播回放异常的 245000）不是可展示时间，宁可留空待补录。
+            raw = (merged.published_at_raw or "").strip()
+            implausible = (
+                merged.published_at is None or merged.published_at.year < 2000
+            )
+            if raw.isdigit() and parse_web_published_at(raw) is None and implausible:
+                merged.published_at_raw = None
+                merged.published_at = None
+                merged.field_sources.pop("published_at_raw", None)
+                merged.field_sources.pop("published_at", None)
         if "/video/" in (merged.final_url or ""):
             # Video-page thumbnails belong to recommendations/player chrome,
             # not body images.  OCRing them appended unrelated text to 信息内容.
@@ -272,6 +287,27 @@ class ContentParser:
                             0.94,
                         )
                     )
+
+    def _finalize_ixigua_video(self, merged: PageData) -> None:
+        """Clean ixigua share-page values: title suffix and boilerplate desc.
+
+        The mobile share page's JSON-LD ships ``<title> | 西瓜视频`` and a
+        boilerplate description (「…,于…上线。西瓜视频为您提供…」)。标题以
+        页面 H1 为准；无语义简介时正文即标题（同抖音文案约定）。
+        """
+
+        suffix = " | 西瓜视频"
+        title = (merged.title or "").strip()
+        if title.endswith(suffix):
+            merged.title = title[: -len(suffix)].strip()
+        content = (merged.content_text or "").strip()
+        if content and "西瓜视频为您提供" in content:
+            cleaned = content.split("西瓜视频为您提供", 1)[0]
+            # 「标题,于2026年7月29日上线。」形态再去掉上线尾巴
+            cleaned = cleaned.split(",于20", 1)[0].strip().rstrip(",，。 ")
+            if cleaned.endswith(suffix):
+                cleaned = cleaned[: -len(suffix)].strip()
+            merged.content_text = cleaned or merged.title
 
     def _finalize_netease_article(
         self,

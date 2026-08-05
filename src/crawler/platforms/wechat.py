@@ -237,6 +237,29 @@ class WechatExtractor:
     ) -> PageData | None:
         data = PageData(final_url=document.url)
         applied = 0
+        # finder-preview 接口数据最干净：feedInfo.description + authorInfo
+        # + createtime，优先于一切 DOM/meta 猜测。
+        feed_node, feed_source = _feed_info_candidate(document)
+        if feed_node is not None:
+            feed = feed_node.get("feedInfo")
+            author_info = feed_node.get("authorInfo")
+            feed = feed if isinstance(feed, Mapping) else {}
+            author_info = author_info if isinstance(author_info, Mapping) else {}
+            content = text_at(feed, ("description", "desc"))
+            applied += apply_json_fields(
+                data,
+                {
+                    "title": content,
+                    "content_text": content,
+                    "author_name": text_at(
+                        author_info, ("nickname", "nickName", "name")
+                    ),
+                    "published_at_dt": epoch_to_datetime(
+                        epoch_at(feed, ("createtime", "createTime", "create_time"))
+                    ),
+                },
+                source=feed_source or ExtractionSource.NETWORK_JSON,
+            )
         # 页面全局 hydration 对象（视频号 web 端常见 __feedInfo__ 等）与
         # 网络/内嵌载荷一起参与最佳候选评分。
         globals_payload = await evaluate_json(page, _WECHAT_VIDEO_GLOBALS_SCRIPT)
@@ -325,6 +348,24 @@ def _not_shell(text: str | None) -> str | None:
         return None
     compact = " ".join(text.split()).casefold()
     return None if compact in _SHELL_TEXTS else text
+
+
+def _feed_info_candidate(
+    document: RenderedDocument,
+) -> tuple[Mapping[str, Any] | None, ExtractionSource | None]:
+    """finder-preview ``get_feed_info`` 响应：feedInfo 与 authorInfo 同层。"""
+
+    payloads = (
+        *((payload, ExtractionSource.NETWORK_JSON) for payload in document.network_payloads),
+        *((payload, ExtractionSource.EMBEDDED_JSON) for payload in document.embedded_payloads),
+    )
+    for payload, source in payloads:
+        for mapping in iter_mappings(payload, max_nodes=4_000):
+            feed = mapping.get("feedInfo")
+            author = mapping.get("authorInfo")
+            if isinstance(feed, Mapping) and isinstance(author, Mapping):
+                return mapping, source
+    return None, None
 
 
 def _best_video_candidate(

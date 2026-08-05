@@ -122,6 +122,36 @@ def test_wechat_video_uses_dom_and_open_graph_fallbacks() -> None:
     assert data.field_sources["content_text"] == ExtractionSource.META
 
 
+def test_wechat_video_reads_feed_info_api_payload() -> None:
+    """finder-preview get_feed_info 接口：feedInfo+authorInfo 同层结构。"""
+
+    definition = find_platform(VIDEO_URL)
+    assert definition is not None
+    payload = {
+        "data": {
+            "authorInfo": {"nickname": "戴华明札记", "headImgUrl": "https://wx.qlogo.cn/x"},
+            "feedInfo": {
+                "description": "新宁县税务局在信访答复文末额外增加警示条款……",
+                "createtime": 1_782_257_803,
+            },
+        },
+        "errCode": 0,
+    }
+    document = RenderedDocument(url=VIDEO_URL, network_payloads=(payload,))
+
+    data = _run(
+        WechatExtractor().extract(
+            FakePage({"official": {}, "video": {}}), document, definition
+        )
+    )
+
+    assert data is not None
+    assert data.content_text == "新宁县税务局在信访答复文末额外增加警示条款……"
+    assert data.author_name == "戴华明札记"
+    assert data.published_at is not None
+    assert data.field_sources["content_text"] == ExtractionSource.NETWORK_JSON
+
+
 def test_given_wechat_urls_route_to_implemented_crawlers() -> None:
     official = find_platform(OFFICIAL_URL)
     video = find_platform(VIDEO_URL)

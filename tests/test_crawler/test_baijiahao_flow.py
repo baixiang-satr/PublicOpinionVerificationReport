@@ -41,6 +41,112 @@ def _mbd_video_url() -> str:
     )
 
 
+def test_baijiahao_mbd_video_landing_reads_window_json_data() -> None:
+    """videolanding 页面数据在 window.jsonData：curVideoMeta + 根部 author。"""
+
+    json_data = {
+        "author": {"name": "皮蛋问路", "uk": "hhaSQHKOzVd4jalFqc1ykQ"},
+        "curVideoMeta": {
+            "id": 8871090307327012307,
+            "title": "2026年3月28日：集体菜地何时回归农用",
+            "publish_time": 1_774_688_588,
+            "duration": 16,
+            "playurl": "https://vd3.bdstatic.com/mda-x/sc/play.mp4",
+        },
+        "playCount": 43,
+    }
+
+    class _JsonDataPage:
+        async def evaluate(self, script: str):
+            if "jsonData" in script:
+                import json
+
+                return json.dumps(json_data)
+            return None
+
+    document = RenderedDocument(
+        url=(
+            "https://mbd.baidu.com/newspage/data/videolanding"
+            "?nid=sv_8871090307327012307"
+        )
+    )
+    definition = find_platform(document.url)
+    assert definition is not None
+
+    data = asyncio.run(
+        BaijiahaoExtractor().extract(_JsonDataPage(), document, definition)
+    )
+
+    assert data is not None
+    assert data.title == "2026年3月28日：集体菜地何时回归农用"
+    # 视频页无独立简介：标题兼作正文（同抖音文案约定）
+    assert data.content_text == data.title
+    assert data.author_name == "皮蛋问路"
+    assert data.author_id == "hhaSQHKOzVd4jalFqc1ykQ"
+    assert data.published_at is not None
+
+
+def test_baijiahao_mbd_landingsuper_superlanding_shape() -> None:
+    """landingsuper：bsData.superlanding[0].itemData 完整结构提取。"""
+
+    json_data = {
+        "bsData": {
+            "nid": "8767880893518512259",
+            "title": "夫妻俩生4男5女9个娃",
+            "datetime": "2026-03-22 16:17:43",
+            "superlanding": [
+                {
+                    "itemType": "article",
+                    "itemData": {
+                        "header": "夫妻俩生4男5女9个娃",
+                        "infoBaiJiaHao": {
+                            "name": "十三月魔",
+                            "uk": "BDKEZijVCx4PHgQhR3xe7g",
+                            "author_link": (
+                                "https://author.baidu.com/home?from=bjh_article&app_id=1834959164427827"
+                            ),
+                        },
+                        "sections": [
+                            {"type": "text", "content": "第一段正文。"},
+                            {"type": "img", "link": "https://pics6.baidu.com/x.jpg"},
+                            {"type": "text", "content": "第二段正文。"},
+                        ],
+                    },
+                }
+            ],
+        }
+    }
+
+    class _SuperPage:
+        async def evaluate(self, script: str):
+            if "jsonData" in script:
+                import json
+
+                return json.dumps(json_data)
+            return None
+
+    document = RenderedDocument(
+        url=(
+            "https://mbd.baidu.com/newspage/data/landingsuper"
+            "?nid=news_8767880893518512259"
+        )
+    )
+    definition = find_platform(document.url)
+    assert definition is not None
+
+    data = asyncio.run(
+        BaijiahaoExtractor().extract(_SuperPage(), document, definition)
+    )
+
+    assert data is not None
+    assert data.title == "夫妻俩生4男5女9个娃"
+    assert data.content_text == "第一段正文。\n第二段正文。"
+    assert data.author_name == "十三月魔"
+    assert data.author_id == "BDKEZijVCx4PHgQhR3xe7g"
+    assert data.author_url.startswith("https://author.baidu.com/home")
+    assert data.published_at is not None
+
+
 def test_baijiahao_mbd_landingsuper_article_matches_nid_without_prefix() -> None:
     """landingsuper 图文落地页：URL nid 带 news_ 前缀，节点常是纯数字。"""
 

@@ -50,6 +50,8 @@ _CANONICAL_ARTICLE_KEYS = (
     "video_info",
     "videoData",
     "video_data",
+    "curVideoMeta",
+    "videoMeta",
 )
 _TITLE_KEYS = (
     "title",

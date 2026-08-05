@@ -71,9 +71,10 @@ def test_douyin_video_url_still_yields_aweme_id() -> None:
     assert douyin_aweme_id("https://www.douyin.com/discover") is None
 
 
-def test_mobile_toutiao_and_ixigua_hosts_are_short_links() -> None:
+def test_mobile_toutiao_host_is_short_link_but_ixigua_dx_is_not() -> None:
     assert is_short_link("https://m.toutiao.com/is/Y4Mz_rFLT0s/")
-    assert is_short_link("https://m.ixigua.com/dx/7667766897567536753")
+    # m.ixigua.com/dx/ 是可渲染的内容页（PC 站已关停），不是纯跳转短链。
+    assert not is_short_link("https://m.ixigua.com/dx/7667766897567536753")
 
 
 class _FakeResponse:
@@ -97,21 +98,12 @@ class _FakePage:
         self.context = _Context()
 
 
-def test_ixigua_dx_link_canonicalizes_without_http_redirect() -> None:
+def test_ixigua_dx_link_is_navigated_directly_without_resolution() -> None:
     original = "https://m.ixigua.com/dx/7667766897567536753"
-    page = _FakePage(_FakeResponse(url=original))  # 200 但无重定向
+    page = _FakePage(_FakeResponse(url=original))
+    # 非短链：不做预解析，原样导航（PC 规范化地址已确认跳下载页）。
     resolved = asyncio.run(resolve_share_link(page, original))
-    assert resolved == "https://www.ixigua.com/video/7667766897567536753"
-
-
-def test_ixigua_dx_link_redirecting_to_video_url_canonicalizes() -> None:
-    page = _FakePage(
-        _FakeResponse(url="https://www.ixigua.com/video/7667766897567536753?wid_try=1")
-    )
-    resolved = asyncio.run(
-        resolve_share_link(page, "https://m.ixigua.com/dx/7667766897567536753")
-    )
-    assert resolved == "https://www.ixigua.com/video/7667766897567536753"
+    assert resolved is None
 
 
 def test_toutiao_is_link_uses_redirect_target() -> None:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -133,6 +134,11 @@ def _analyze(records: tuple[RecordResult, ...]) -> list[dict]:
                 "author_name": page.author_name,
                 "author_id": page.author_id,
                 "published_at_raw": page.published_at_raw,
+                "published_at": (
+                    page.published_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if page.published_at
+                    else None
+                ),
                 "content_chars": len(page.content_text or ""),
                 "content_preview": _preview(page.content_text),
                 "field_sources": {k: v.value for k, v in page.field_sources.items()},
@@ -211,7 +217,7 @@ def _write_reports(rows: list[dict], job_dir: Path, label: str) -> tuple[Path, P
         lines.append(f"- URL：{r['url']}")
         lines.append(f"- 标题：{r['title'] or '（空）'}")
         lines.append(f"- 作者：{r['author_name'] or '（空）'}（ID：{r['author_id'] or '-'}）")
-        lines.append(f"- 发布时间：{r['published_at_raw'] or '（空）'}")
+        lines.append(f"- 发布时间：{r['published_at'] or r['published_at_raw'] or '（空）'}")
         lines.append(f"- 正文（{r['content_chars']} 字）：{r['content_preview'] or '（空）'}")
         lines.append(f"- 截图：`{r['screenshot_path'] or '（无）'}`")
         if r["errors"]:
@@ -256,6 +262,9 @@ async def main(input_path: Path, label: str) -> int:
 
 
 if __name__ == "__main__":
+    # 中文 Windows 控制台默认 GBK，帮助文本与 emoji 状态符需 UTF-8 输出，
+    # 必须先于 argparse 解析（--help 会直接打印 docstring 中的 ⇒）。
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--label", default="分享链接验收")

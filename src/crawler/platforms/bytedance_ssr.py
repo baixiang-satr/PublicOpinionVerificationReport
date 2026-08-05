@@ -20,12 +20,13 @@ from src.crawler.platforms.extract_helpers import (
     apply_json_fields,
     epoch_to_datetime,
     evaluate_json,
+    evaluate_value,
     found_any,
     strip_html,
 )
 from src.crawler.platforms.payload_search import epoch_at, iter_mappings, text_at
 from src.crawler.platforms.registry import register
-from src.domain.models import PageData
+from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import parse_web_published_at
 
 _SSR_SCRIPT = """
@@ -98,6 +99,41 @@ def _id_locked(node: Mapping[str, Any], wanted_id: str | None) -> bool:
     if not ids:
         return False
     return wanted_id in ids
+
+
+_XIGUA_MOBILE_PROBE = r"""
+() => {
+  const text = (el) => el ? (el.innerText || el.textContent || '').trim() : '';
+  const title = text(document.querySelector('h1.xigua-feedtitle'))
+    || text(document.querySelector('h1'));
+  let author = '';
+  const authorBlock = document.querySelector('.xigua-author');
+  if (authorBlock) {
+    const named = authorBlock.querySelector(
+      '[class*="name"], [class*="nickname"]'
+    );
+    author = text(named);
+    if (!author) {
+      const pic = authorBlock.querySelector('picture[alt], img[alt]');
+      const alt = pic ? (pic.getAttribute('alt') || '').trim() : '';
+      if (alt && alt.endsWith('头像') && alt.length > 2) {
+        author = alt.slice(0, -2).trim();
+      }
+    }
+  }
+  const tags = Array.from(document.querySelectorAll('.xigua-timetag'));
+  const timeTag = tags.find((el) => /^\d{4}-\d{2}-\d{2}发布$/.test(text(el)));
+  const published = timeTag ? text(timeTag).replace('发布', '').trim() : '';
+  return { title, author, published };
+}
+"""
+
+
+def _clean_probe_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
 
 
 class _SsrPayloadMixin:
@@ -229,7 +265,42 @@ class XiguaExtractor(_SsrPayloadMixin):
             )
             if applied and found_any(data, "content_text", "title"):
                 return data
-        return None
+        return await self._from_mobile_dom(page, document)
+
+    async def _from_mobile_dom(
+        self,
+        page: Any,
+        document: RenderedDocument,
+    ) -> PageData | None:
+        """m.ixigua.com/dx/ 移动分享页（SSR DOM，无 hydration 全局）。
+
+        PC 站已关停跳转 /app/ 下载页；移动页是唯一可用的公开内容面。
+        页面即目标视频本身，字段取自有语义类名，不做跨节点 ID 匹配。
+        """
+
+        probe = await evaluate_value(page, _XIGUA_MOBILE_PROBE)
+        if not isinstance(probe, Mapping):
+            return None
+        title = _clean_probe_text(probe.get("title"))
+        author = _clean_probe_text(probe.get("author"))
+        published_raw = _clean_probe_text(probe.get("published"))
+        if not (title or author):
+            return None
+        data = PageData(final_url=document.url)
+        applied = apply_json_fields(
+            data,
+            {
+                "title": title,
+                "content_text": title,
+                "author_name": author,
+                "published_at_raw": published_raw,
+                "published_at_dt": (
+                    parse_web_published_at(published_raw) if published_raw else None
+                ),
+            },
+            source=ExtractionSource.PLATFORM_DOM,
+        )
+        return data if applied and found_any(data, "title", "author_name") else None
 
 
 def _id_conflict(node: Mapping[str, Any], wanted_id: str | None) -> bool:

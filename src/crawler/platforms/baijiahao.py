@@ -22,6 +22,7 @@ from src.crawler.platforms.baijiahao_nodes import (
     _author_mapping,
     _clean,
     _content_of,
+    _strip_nid_prefix,
     _target_text,
 )
 from src.crawler.platforms.extract_helpers import (
@@ -31,7 +32,7 @@ from src.crawler.platforms.extract_helpers import (
     evaluate_value,
     found_any,
 )
-from src.crawler.platforms.payload_search import epoch_at, text_at
+from src.crawler.platforms.payload_search import epoch_at, iter_mappings, text_at
 from src.crawler.platforms.registry import register
 from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import parse_web_published_at
@@ -44,7 +45,8 @@ _STATE_SCRIPT = """
       || window.__INITIAL_STATE__
       || window.__SSR_DATA__
       || window._SSR_HYDRATED_DATA
-      || window.__NEXT_DATA__;
+      || window.__NEXT_DATA__
+      || window.jsonData;
     return state ? JSON.stringify(state) : null;
   } catch (error) {
     return null;
@@ -145,10 +147,38 @@ class BaijiahaoExtractor:
             (payload, ExtractionSource.NETWORK_JSON)
             for payload in document.network_payloads
         )
-        exact_hit: tuple[Mapping[str, Any], ExtractionSource] | None = None
-        canonical_hits: list[tuple[Mapping[str, Any], ExtractionSource]] = []
+        # landingsuper 图文页：正文与作者在 bsData.superlanding[].itemData。
+        super_hit = _superlanding_item(payloads, wanted_id)
+        if super_hit is not None:
+            item, holder, hit_source = super_hit
+            info = item.get("infoBaiJiaHao")
+            info = info if isinstance(info, Mapping) else {}
+            holder_datetime = text_at(holder, ("datetime",))
+            applied += apply_json_fields(
+                data,
+                {
+                    "title": text_at(item, ("header", "title"))
+                    or text_at(holder, ("title",)),
+                    "content_text": _sections_content(item),
+                    "author_name": text_at(info, ("name",)),
+                    "author_id": text_at(info, ("uk", "third_id", "link")),
+                    "author_url": text_at(info, ("author_link",)),
+                    "published_at_raw": holder_datetime,
+                    "published_at_dt": epoch_to_datetime(
+                        epoch_at(holder, ("displaytime",))
+                    )
+                    or (
+                        parse_web_published_at(holder_datetime)
+                        if holder_datetime
+                        else None
+                    ),
+                },
+                source=hit_source,
+            )
+        exact_hit: tuple[Mapping[str, Any], ExtractionSource, Any] | None = None
+        canonical_hits: list[tuple[Mapping[str, Any], ExtractionSource, Any]] = []
         seen_canonical: set[tuple[str, tuple[str, ...]]] = set()
-        relaxed_hit: tuple[Mapping[str, Any], ExtractionSource] | None = None
+        relaxed_hit: tuple[Mapping[str, Any], ExtractionSource, Any] | None = None
         for payload, source in payloads:
             node, match_kind = _article_node(
                 payload,
@@ -159,22 +189,33 @@ class BaijiahaoExtractor:
             if node is None:
                 continue
             if match_kind == "exact":
-                exact_hit = (node, source)
+                exact_hit = (node, source, payload)
                 break
             if match_kind == "canonical":
                 signature = _article_signature(node)
                 if signature not in seen_canonical:
                     seen_canonical.add(signature)
-                    canonical_hits.append((node, source))
+                    canonical_hits.append((node, source, payload))
             elif relaxed_hit is None:
-                relaxed_hit = (node, source)
+                relaxed_hit = (node, source, payload)
         # 仲裁：exact 全局优先；canonical 例外只在跨全部载荷全局唯一时生效，
         # 避免首个载荷里的推荐文章冒充目标（证据一致性铁律）。
         chosen = exact_hit or (
             canonical_hits[0] if len(canonical_hits) == 1 else None
         ) or relaxed_hit
         if chosen is not None:
-            applied += _apply_article(data, chosen[0], document.url, chosen[1])
+            node, source, payload_root = chosen
+            applied += _apply_article(data, node, document.url, source)
+            # 视频落地页的作者挂在载荷根部（jsonData.author）而非视频节点内。
+            if not data.author_name:
+                applied += _apply_root_author(data, payload_root, source)
+            # 视频页没有独立简介字段时，标题即页面唯一正文（同抖音文案约定）。
+            if strict_video_target and data.title and not data.content_text:
+                applied += apply_json_fields(
+                    data,
+                    {"content_text": data.title},
+                    source=source,
+                )
 
         if not strict_video_target and (
             not data.title
@@ -247,6 +288,86 @@ def _apply_article(
                 parse_web_published_at(published_raw)
                 if published_raw
                 else None
+            ),
+        },
+        source=source,
+    )
+
+
+def _superlanding_item(
+    payloads: list[tuple[Any, ExtractionSource]],
+    wanted_id: str | None,
+) -> tuple[Mapping[str, Any], Mapping[str, Any], ExtractionSource] | None:
+    """landingsuper 图文落地页：bsData.superlanding[0].itemData 结构。
+
+    ``nid`` 挂在 bsData 层（superlanding 的父映射），用于目标身份校验；
+    itemData.infoBaiJiaHao 携带作者，itemData.sections 携带正文分段。
+    """
+
+    for payload, source in payloads:
+        for mapping in iter_mappings(payload):
+            items = mapping.get("superlanding")
+            if not isinstance(items, (list, tuple)) or not items:
+                continue
+            nid = text_at(mapping, ("nid",))
+            if wanted_id:
+                if not nid:
+                    continue
+                if _strip_nid_prefix(nid) != _strip_nid_prefix(wanted_id):
+                    continue
+            first = items[0]
+            if not isinstance(first, Mapping):
+                continue
+            item_data = first.get("itemData")
+            if not isinstance(item_data, Mapping):
+                continue
+            return item_data, mapping, source
+    return None
+
+
+def _sections_content(item: Mapping[str, Any]) -> str | None:
+    sections = item.get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return None
+    parts: list[str] = []
+    for section in sections:
+        if not isinstance(section, Mapping) or section.get("type") != "text":
+            continue
+        text = text_at(section, ("content",))
+        if text:
+            parts.append(text)
+    return "\n".join(parts) or None
+
+
+def _apply_root_author(
+    data: PageData,
+    payload_root: Any,
+    source: ExtractionSource,
+) -> int:
+    """视频落地页形态：作者信息在载荷根部（如 jsonData.author）。"""
+
+    if not isinstance(payload_root, Mapping):
+        return 0
+    author = _author_mapping(payload_root)
+    if not author:
+        return 0
+    return apply_json_fields(
+        data,
+        {
+            "author_name": text_at(
+                author,
+                (
+                    "name",
+                    "nickname",
+                    "authorName",
+                    "accountName",
+                    "mediaName",
+                    "media_name",
+                ),
+            ),
+            "author_id": text_at(
+                author,
+                ("uk", "id", "author_id", "authorId", "app_id", "appId"),
             ),
         },
         source=source,
