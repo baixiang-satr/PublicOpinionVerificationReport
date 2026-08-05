@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,25 @@ def is_short_link(url: str) -> bool:
 
     host = (urlsplit(url).hostname or "").casefold()
     return host in _SHORT_LINK_HOSTS
+
+
+def canonicalize_share_url(url: str) -> str:
+    """Synchronous canonicalization of known share URL shapes (no network).
+
+    Douyin ``/user/{sec_uid}?...&modal_id={aweme_id}`` links ask the profile
+    page to open that video in a modal.  The modal is unreliable (it may
+    present a feed video instead), which breaks evidence consistency between
+    extracted fields and the page screenshot.  The canonical
+    ``/video/{aweme_id}`` page always shows exactly the requested video.
+    """
+
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").casefold()
+    if host.endswith("douyin.com") and parsed.path.startswith("/user/"):
+        modal_id = (parse_qs(parsed.query).get("modal_id") or [""])[0].strip()
+        if re.fullmatch(r"\d{6,}", modal_id):
+            return f"https://www.douyin.com/video/{modal_id}"
+    return url
 
 
 async def resolve_share_link(page: Any, url: str) -> str | None:

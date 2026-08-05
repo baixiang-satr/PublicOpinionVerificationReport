@@ -19,7 +19,7 @@ from src.crawler.platform_fallbacks import (
 )
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.platform_types import PlatformDefinition
-from src.crawler.share_links import resolve_share_link
+from src.crawler.share_links import canonicalize_share_url, resolve_share_link
 from src.domain.models import RecordStatus, TaskError
 from src.tools.page_access import (
     inspect_http_response,
@@ -70,10 +70,17 @@ async def navigate_with_fallback(
     # platform's content id for the API-assist fallbacks.
     pre_hops: list[str] = []
     if candidates:
+        # 零网络规范化先行：/user/?modal_id= 等已知分享形态直接改写为规范内容地址。
+        canonical = canonicalize_share_url(candidates[0])
+        if canonical != candidates[0]:
+            pre_hops.append(candidates[0])
+            candidates = (canonical, *candidates[1:])
         resolved = await resolve_share_link(page, candidates[0])
         if resolved and resolved != candidates[0]:
-            pre_hops = [candidates[0], resolved]
+            pre_hops.append(candidates[0])
             candidates = (resolved, *candidates[1:])
+        if pre_hops:
+            pre_hops.append(candidates[0])
     # Attach only after short-link resolution: the canonical URL carries
     # the content id used for priority payload retention.
     collector.attach(page, candidates[0] if candidates else original_url)

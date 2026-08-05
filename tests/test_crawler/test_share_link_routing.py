@@ -11,7 +11,7 @@ from typing import Any
 
 from src.crawler.api_assist import douyin_aweme_id
 from src.crawler.platform_catalog import find_platform
-from src.crawler.share_links import is_short_link, resolve_share_link
+from src.crawler.share_links import canonicalize_share_url, is_short_link, resolve_share_link
 
 _CSV = Path(__file__).resolve().parents[1] / "test_input" / "social_share_links.csv"
 
@@ -69,6 +69,24 @@ def test_douyin_video_url_still_yields_aweme_id() -> None:
     assert douyin_aweme_id("https://www.douyin.com/video/7557112345678901234") == "7557112345678901234"
     assert douyin_aweme_id("https://www.douyin.com/note/7557112345678901234?x=1") == "7557112345678901234"
     assert douyin_aweme_id("https://www.douyin.com/discover") is None
+
+
+def test_douyin_user_modal_url_canonicalizes_to_video_page() -> None:
+    url = (
+        "https://www.douyin.com/user/MS4wLjABAAAAUMAd-PhEWYOgVbIgyw"
+        "?from_tab_name=main&modal_id=7669738019598945551&vid=7668445095837846799"
+    )
+    assert canonicalize_share_url(url) == (
+        "https://www.douyin.com/video/7669738019598945551"
+    )
+    # 纯个人主页（无 modal_id）不得改写
+    assert canonicalize_share_url("https://www.douyin.com/user/MS4wLjABAAAAUMAd") == (
+        "https://www.douyin.com/user/MS4wLjABAAAAUMAd"
+    )
+    # 视频页原样保留
+    assert canonicalize_share_url("https://www.douyin.com/video/123456789") == (
+        "https://www.douyin.com/video/123456789"
+    )
 
 
 def test_mobile_toutiao_host_is_short_link_but_ixigua_dx_is_not() -> None:

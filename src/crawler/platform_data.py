@@ -298,7 +298,7 @@ PLATFORM_DEFINITIONS: tuple[PlatformDefinition, ...] = (
         "图文视频",
         "快手科技_快手_图文视频",
         ExtractorFamily.SOCIAL,
-        ("kuaishou.com", "gifshow.com"),
+        ("kuaishou.com", "gifshow.com", "chenzhongtech.com"),
         _selectors(
             content_text=(
                 ".video-info-title",
