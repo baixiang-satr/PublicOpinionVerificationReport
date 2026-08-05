@@ -26,6 +26,10 @@ def missing_required_fields(result: RecordResult) -> list[str]:
         "store_name": result.page.store_name,
         "published_at": result.page.published_at,
     }
+    if "account_uin" in layout.field_columns:
+        # 公众号表：微信号(必填)列交付公众号昵称，与导出映射层规则一致。
+        runtime_values["author_id"] = result.page.author_name
+        runtime_values["account_uin"] = None
     missing: list[str] = []
     for column in sorted(layout.required_columns):
         if column == layout.primary_screenshot_column:

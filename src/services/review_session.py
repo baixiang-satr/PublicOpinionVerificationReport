@@ -8,7 +8,6 @@ the next incomplete record.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import re
@@ -17,16 +16,16 @@ from src.domain.models import RecordResult, RecordStatus, RouteDecision, UrlTask
 from src.domain.overrides import OVERRIDEABLE_FIELDS, ManualOverride
 from src.domain.template_schema import SHEET_LAYOUTS, SheetLayout
 from src.services import job_records
+from src.services import recovery_mirror
 from src.services.checkpoint_store import CheckpointStore
 from src.services.manual_assets import MANUAL_ASSETS_DIR_NAME
 from src.services.override_store import ManualOverrideStore
+from src.services.review_models import ReviewFieldView, ReviewRecordSummary
 
 #: Field keys shown in the editor, in canonical template order.
 _EDITOR_FIELDS: tuple[str, ...] = OVERRIDEABLE_FIELDS
 
 _MULTILINE_FIELDS = frozenset({"content"})
-
-_SOURCE_TEXT = {"manual": "人工", "crawled": "抓取", "empty": ""}
 
 _FALLBACK_LABELS = {
     "title": "标题",
@@ -39,46 +38,6 @@ _FALLBACK_LABELS = {
     "text_type": "文本类型",
     "platform": "发布平台",
 }
-
-
-@dataclass(frozen=True)
-class ReviewFieldView:
-    field: str
-    label: str
-    value: str
-    source: str  # "manual" | "crawled" | "empty"
-    required: bool
-    missing: bool
-    multiline: bool
-    choices: tuple[str, ...] = ()
-
-    @property
-    def source_text(self) -> str:
-        return _SOURCE_TEXT.get(self.source, "")
-
-
-@dataclass(frozen=True)
-class ReviewRecordSummary:
-    evidence_id: int
-    original_url: str
-    final_url: str | None
-    sheet_name: str
-    platform_value: str
-    status: RecordStatus
-    missing_labels: tuple[str, ...]
-    has_override: bool
-
-    @property
-    def needs_attention(self) -> bool:
-        if self.missing_labels:
-            return True
-        if self.has_override:
-            # A human already reviewed and completed this record.
-            return False
-        return self.status in {
-            RecordStatus.NEEDS_REVIEW,
-            RecordStatus.FAILED,
-        }
 
 
 class ReviewSession:
@@ -113,6 +72,11 @@ class ReviewSession:
     # ── queries ──
     def evidence_ids(self) -> list[int]:
         return sorted(self._records)
+
+    def records(self) -> list[RecordResult]:
+        """全部记录（按证据号排序），供断点重建/导出兜底使用。"""
+
+        return self._ordered_records()
 
     def get_record(self, evidence_id: int) -> RecordResult:
         return self._records[evidence_id]
@@ -257,11 +221,20 @@ class ReviewSession:
         return self._slot_path(name, record.assets.author_screenshot)
 
     def _slot_path(self, override_name: str | None, crawled: Path | None) -> Path | None:
-        """Resolve one screenshot slot: manual-assets name wins over the crawled file."""
+        """Resolve one screenshot slot: manual-assets name wins over the crawled file.
+
+        任务目录文件可能被外部清理；主路径缺失时回退到恢复镜像。
+        """
         if override_name:
             candidate = self.manual_assets_dir() / override_name
-            return candidate if candidate.exists() else None
-        return Path(crawled) if crawled is not None and Path(crawled).exists() else None
+            if candidate.exists():
+                return candidate
+            return recovery_mirror.mirrored_asset(self.job_dir.name, override_name)
+        if crawled is not None and Path(crawled).exists():
+            return Path(crawled)
+        if crawled is not None:
+            return recovery_mirror.mirrored_asset(self.job_dir.name, Path(crawled).name)
+        return None
 
     def completion_counts(self) -> tuple[int, int]:
         summaries = self.summaries()
@@ -431,14 +404,17 @@ class ReviewSession:
             if manual:
                 return manual, "manual"
         page = record.page
+        layout = self.layout_for(record)
         crawled = ""
         if field == "content":
             crawled = page.content_text or page.content_summary or ""
         elif field == "published_at":
+            # 解析失败时不再回显原始串（如抖音异常的 245000），
+            # 发布时间宁可留空待补录；raw 保留在 checkpoint 供诊断。
             crawled = (
                 page.published_at.strftime("%Y-%m-%d %H:%M:%S")
                 if page.published_at
-                else (page.published_at_raw or "")
+                else ""
             )
         elif field == "text_type":
             crawled = record.route.text_type if record.route else page.text_type_hint
@@ -452,6 +428,12 @@ class ReviewSession:
             "store_name",
         }:
             crawled = getattr(page, field) or ""
+        if layout is not None and "account_uin" in layout.field_columns:
+            # 公众号表：微信号(必填)列直接交付公众号昵称；UIN 不采集，留空。
+            if field == "author_id":
+                crawled = page.author_name or ""
+            elif field == "account_uin":
+                crawled = ""
         return crawled, "crawled" if crawled.strip() else "empty"
 
     def _is_required(self, layout: SheetLayout | None, field: str) -> bool:

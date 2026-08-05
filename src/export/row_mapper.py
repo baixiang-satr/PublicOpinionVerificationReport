@@ -47,6 +47,10 @@ class TemplateRowMapper:
         fields = self._field_values(result)
         fields["platform"] = result.route.platform_value
         fields["text_type"] = result.route.text_type
+        if "account_uin" in layout.field_columns:
+            # 公众号表：微信号(必填)列直接交付公众号昵称；UIN 留空不采集。
+            fields["author_id"] = result.page.author_name
+            fields["account_uin"] = None
         if "title" not in layout.field_columns:
             fields["content"] = _content_with_title(
                 result.page.title,

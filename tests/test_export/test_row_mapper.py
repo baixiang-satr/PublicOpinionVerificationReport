@@ -120,6 +120,30 @@ def test_row_mapper_preserves_failed_record_without_a_screenshot() -> None:
     assert row.all_asset_names() == ()
 
 
+def test_official_account_sheet_exports_nickname_as_wechat_id_and_blank_uin() -> None:
+    """公众号表：微信号(必填)列直接交付公众号昵称；UIN 留空不采集。"""
+
+    result = RecordResult(
+        task=UrlTask(9, "https://mp.weixin.qq.com/s/abc", "https://mp.weixin.qq.com/s/abc"),
+        status=RecordStatus.READY_FOR_EXPORT,
+        route=RouteDecision("公众号", "微信-公众号", "正文"),
+        page=PageData(
+            final_url="https://mp.weixin.qq.com/s/abc",
+            title="文章标题",
+            content_text="正文",
+            author_name="邵阳观察",
+            author_id="gh_fakeid123",
+            account_uin="123456789",
+        ),
+        assets=AssetSet(page_screenshot=Path("009.jpg")),
+    )
+
+    row = TemplateRowMapper().map(result)
+
+    assert row.values_by_column["D"] == "邵阳观察"
+    assert "E" not in row.values_by_column
+
+
 def test_row_mapper_exports_full_content_instead_of_the_short_summary() -> None:
     full_content = "完整正文" * 1_000
     result = RecordResult(
