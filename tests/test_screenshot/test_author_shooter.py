@@ -4,10 +4,10 @@ import pytest
 
 from src.config.settings import TaskConfig
 from src.screenshot.author_evidence import identity_verdict
+from src.screenshot.author_identity import best_header_name
 from src.screenshot.author_shooter import (
     AuthorShooter,
     AuthorScreenshotError,
-    _best_header_name,
 )
 
 
@@ -248,7 +248,7 @@ def test_profile_header_selection_prefers_expected_author_over_city_switcher() -
         "headerNames": ["北京", "新华社", "推荐账号"],
     }
 
-    assert _best_header_name(signals, "新华社") == "新华社"
+    assert best_header_name(signals, "新华社") == "新华社"
 
 
 def test_profile_header_selection_uses_scoped_title_over_viewer_city() -> None:
@@ -259,7 +259,7 @@ def test_profile_header_selection_uses_scoped_title_over_viewer_city() -> None:
         "body": "钰然成长记 3.1万获赞 2584粉丝 12关注",
     }
 
-    assert _best_header_name(signals, "钰然成长记") == "钰然成长记"
+    assert best_header_name(signals, "钰然成长记") == "钰然成长记"
 
 
 def test_profile_header_selection_rejects_title_only_shell() -> None:
@@ -270,4 +270,4 @@ def test_profile_header_selection_rejects_title_only_shell() -> None:
         "body": "关注 推荐 视频 财经 科技 热点",
     }
 
-    assert _best_header_name(signals, "钰然成长记") == "邵阳"
+    assert best_header_name(signals, "钰然成长记") == "邵阳"

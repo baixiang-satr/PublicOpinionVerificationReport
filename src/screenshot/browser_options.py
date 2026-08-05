@@ -42,7 +42,8 @@ ANTI_DETECTION_ARGS = (
     "--disable-hang-monitor",
     # ── Feature flags ────────────────────────────────────────────────
     "--disable-features=IsolateOrigins,site-per-process",
-    "--disable-web-security",
+    # 注：不得加入 --disable-web-security —— 实测会让微信视频号
+    # finder-preview SPA 启动后渲染空壳（2026-08-04 二分定位）。
     "--disable-sync",
     "--disable-extensions",
     "--disable-component-extensions-with-background-pages",

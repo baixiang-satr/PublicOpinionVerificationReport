@@ -19,10 +19,9 @@ from src.screenshot.author_evidence import (
     classify_profile_page,
     dismiss_profile_overlays,
     identity_verdict,
-    normalize_identity,
     write_decision,
 )
-from src.screenshot.author_identity import signals_contain_expected
+from src.screenshot.author_identity import best_header_name, signals_contain_expected
 from src.screenshot.page_shooter import (
     PageShooter,
     PageScreenshotError,
@@ -215,7 +214,7 @@ class AuthorShooter:
                 decision.accepted = True
                 decision.rejection_code = None
                 return path
-            decision.detected_name = _best_header_name(
+            decision.detected_name = best_header_name(
                 signals,
                 decision.expected_name,
             )
@@ -446,43 +445,6 @@ async def _wait_for_profile_identity(page: Any) -> None:
         await stabilize_rendered_page(page, 600)
     except Exception:
         pass
-
-
-def _best_header_name(
-    signals: dict[str, Any],
-    expected_name: str | None,
-) -> str | None:
-    """Prefer a profile-header candidate matching the content-page author."""
-
-    raw_names = signals.get("headerNames")
-    candidates = (
-        [str(value).strip() for value in raw_names if str(value).strip()]
-        if isinstance(raw_names, list)
-        else []
-    )
-    fallback = str(signals.get("headerName") or "").strip()
-    if fallback and fallback not in candidates:
-        candidates.append(fallback)
-    expected_key = normalize_identity(expected_name)
-    if expected_key:
-        for candidate in candidates:
-            candidate_key = normalize_identity(candidate)
-            if candidate_key and (
-                expected_key in candidate_key or candidate_key in expected_key
-            ):
-                return candidate
-        # Toutiao and similar desktop profile pages can expose the signed-in
-        # viewer's city/name in the global navigation under a broad
-        # ``user-name`` class while the actual profile identity is rendered
-        # without a stable selector.  The page title is still scoped to the
-        # candidate URL (for example "作者名的头条主页").  Accept the already
-        # extracted author only when that full identity is present in title;
-        # the later identity gate still checks the body and page URL.
-        title_key = normalize_identity(str(signals.get("title") or ""))
-        body_key = normalize_identity(str(signals.get("body") or ""))
-        if title_key and expected_key in title_key and expected_key in body_key:
-            return expected_name.strip() if expected_name else None
-    return candidates[0] if candidates else None
 
 
 async def _has_author_content(page: Any) -> bool:
