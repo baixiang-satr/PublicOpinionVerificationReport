@@ -96,34 +96,12 @@ python -m pytest -m "not excel and not external"
 
 真实模板契约测试使用 `python -m pytest -m excel tests/contract`。发布前运行 `python tools/release_check.py`；普通测试和发布检查均不会访问真实外部站点。
 
-### 抖音视频专项验收工具
+### 分享链接验收工具
 
-`tools/test_douyin_fix.py` 封装了两条真实抖音短链的定向验收：校验目标视频正文、可见发布时间、内容页截图和个人页截图，结果写入独立的 `output/test-douyin-*` 目录。它会访问真实页面并复用本机已保存的抖音登录态。
-
-```powershell
-# 两条都验收；跳过重复预检可减少触发平台风控
-.venv\Scripts\python.exe -X utf8 tools\test_douyin_fix.py --headed --edge --skip-precheck
-
-# 只验收第 1 或第 2 条
-.venv\Scripts\python.exe -X utf8 tools\test_douyin_fix.py --headed --edge --skip-precheck --only 1
-```
-
-### 小红书笔记专项验收工具
-
-`tools/test_xiaohongshu_fix.py` 默认复用小红书已验证登录态，按 URL 中的笔记 ID 提取标题、正文、作者、账号和完整发布时间，并生成内容页截图及可取得的作者主页截图。默认 URL 是当前小红书回归样例；完整验收只请求笔记一次，以降低触发平台频控的概率。默认使用可视 Edge，因为小红书当前会对部分无头 Chromium 会话返回安全限制。
+`tools/test_share_links.py` 按 `tests/test_input/social_share_links.csv` 的样例清单（9 平台 23 条）做端到端验收：复用本机登录态访问真实页面，校验正文、作者与截图资产，报告写入 `output/share-link-acceptance/`。
 
 ```powershell
-# 使用默认回归 URL 完整验收
-.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py
-
-# 只检查目标笔记内嵌数据，不截图
-.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py --precheck-only
-
-# CI/无桌面环境可尝试无头模式；若出现 300012 请改回默认模式
-.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py --headless
-
-# 默认即强制复用已保存的小红书登录态；缺少登录凭据会在导航前停止
-.venv\Scripts\python.exe -X utf8 tools\test_xiaohongshu_fix.py
+.venv\Scripts\python.exe -X utf8 tools\test_share_links.py
 ```
 
 ## 打包分发（免安装）
