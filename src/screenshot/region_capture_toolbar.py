@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import gc
 from queue import Empty, SimpleQueue
 from threading import Event, Thread, current_thread
 from typing import Any
@@ -32,7 +33,8 @@ class NativeCaptureToolbar:
         self._commands: SimpleQueue[tuple[str, str | None]] = SimpleQueue()
         self._ready = Event()
         self._closed = Event()
-        self._error: BaseException | None = None
+        # 仅保存字符串消息，绝不跨线程持有异常对象（traceback 会引用 Tk 帧）。
+        self._error: str | None = None
         self._thread = Thread(
             target=self._run,
             daemon=True,
@@ -70,10 +72,27 @@ class NativeCaptureToolbar:
 
     def _run(self) -> None:
         try:
-            import tkinter as tk
-            from tkinter import ttk
+            self._run_tk()
+        except BaseException as error:  # noqa: BLE001 - forwarded to caller
+            # 只保留字符串：异常 traceback 会引用 _run_tk 帧中的 root，一旦在
+            # 其他线程被 GC 回收，Tcl 解释器会被错误线程销毁（Tcl_AsyncDelete
+            # 致命崩溃）。except 结束即释放 error，traceback 随之断开。
+            self._error = f"{type(error).__name__}: {error}"
+            self._ready.set()
+        finally:
+            # Tcl 解释器由创建它的线程独占。_run_tk 返回/抛错后其帧已释放，
+            # root 与控件/闭包组成的引用环变成不可达垃圾；必须在本线程就地
+            # 回收，否则其他线程的 GC 会代为释放并触发 Tcl_AsyncDelete
+            # （async handler deleted by the wrong thread）进程级崩溃。
+            gc.collect()
+            self._closed.set()
 
-            root = tk.Tk()
+    def _run_tk(self) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+
+        root = tk.Tk()
+        try:
             label = "正文" if self._target == "content" else "个人主页"
             default_text = (
                 f"截图 #{self._evidence_id:03d} · {label}｜"
@@ -136,11 +155,15 @@ class NativeCaptureToolbar:
             root.after(40, drain_commands)
             self._ready.set()
             root.mainloop()
-        except BaseException as error:  # noqa: BLE001 - forwarded to caller
-            self._error = error
-            self._ready.set()
         finally:
-            self._closed.set()
+            try:
+                root.destroy()
+            except Exception:  # noqa: BLE001 - 销毁兜底，不能再抛出
+                pass
+            # tkinter 模块级 _default_root 会持有 root，使引用环逃逸到其他
+            # 线程的 GC；必须在本线程断开。
+            if getattr(tk, "_default_root", None) is root:
+                tk._default_root = None
 
 
 def open_capture_toolbar(
