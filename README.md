@@ -25,7 +25,9 @@ T01 至 T08 已完成：模板契约、URL 导入、页面采集、平台路由�
 | [docs/task_breakdown.md](docs/task_breakdown.md) | 按依赖与验收标准拆分的实施任务。 |
 | [docs/ai_coding_constraints.md](docs/ai_coding_constraints.md) | 编码前必须遵守的 10 条 AI 约束。 |
 | [docs/developer_guide.md](docs/developer_guide.md) | 开发环境、模块职责、测试和完成定义。 |
+| [docs/user_manual_v2.md](docs/user_manual_v2.md) | 用户操作手册 V2.0：授权码激活/续期与平台功能详解（面向业务用户）。 |
 | [docs/user_guide.md](docs/user_guide.md) | 完成实现后的安装、操作流程和限制说明。 |
+| [docs/license_guide.md](docs/license_guide.md) | 一机一码授权的激活、签发与技术说明。 |
 
 ## 运行工具
 
