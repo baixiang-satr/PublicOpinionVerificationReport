@@ -26,7 +26,7 @@ interface PyWebviewApi {
   get_sheet_payload(): Promise<SheetPayload[]>
   apply_edit(eid: number, field: string, value: string): Promise<{ ok: boolean }>
   add_manual_row(sheet_name: string): Promise<{ eid: number | null }>
-  remove_manual_row(eid: number): Promise<{ ok: boolean }>
+  remove_record(eid: number): Promise<{ ok: boolean }>
   pick_screenshot(eid: number, mode: 'primary' | 'author' | 'attachment'): Promise<{ ok: boolean; name: string }>
   list_screenshots(eid: number): Promise<ScreenshotPair>
   start_region_capture(eid: number, target: 'content' | 'author'): Promise<{ ok: boolean; code?: string; message: string }>
@@ -360,7 +360,7 @@ export const bridge = {
   applyEdit: (eid: number, field: string, value: string) =>
     call<{ ok: boolean }>('apply_edit', eid, field, value),
   addManualRow: (sheet: string) => call<{ eid: number | null }>('add_manual_row', sheet),
-  removeManualRow: (eid: number) => call<{ ok: boolean }>('remove_manual_row', eid),
+  removeRecord: (eid: number) => call<{ ok: boolean }>('remove_record', eid),
   pickScreenshot: (eid: number, mode: 'primary' | 'author' | 'attachment') =>
     call<{ ok: boolean; name: string }>('pick_screenshot', eid, mode),
   listScreenshots: (eid: number) => call<ScreenshotPair>('list_screenshots', eid),

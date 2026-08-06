@@ -93,6 +93,22 @@ def mirrored_asset(job_id: str, name: str | None) -> Path | None:
     return _mirrored(job_id, name, subdir=ASSETS_DIR_NAME)
 
 
+def discard_mirrored_asset(job_id: str, name: str | None) -> None:
+    """删除镜像中的截图副本（记录删除时联动）；只告警不抛异常。"""
+
+    target_dir = _job_dir(job_id)
+    if target_dir is None or not name:
+        return
+    try:
+        safe = require_safe_file_name(name)
+    except ValueError:
+        return
+    try:
+        (target_dir / ASSETS_DIR_NAME / safe).unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning("恢复镜像清理失败 %s/%s：%s", job_id, safe, error)
+
+
 def mirrored_json(job_id: str, name: str | None) -> Path | None:
     """返回镜像中的任务级 JSON（断点/补录覆盖）；不存在为 None。"""
 

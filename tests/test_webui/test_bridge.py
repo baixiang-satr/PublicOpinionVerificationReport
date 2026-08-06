@@ -126,7 +126,7 @@ def test_open_session_and_review_mutations(tmp_path: Path) -> None:
 
     added = bridge.add_manual_row("群聊")
     assert added["eid"] is not None
-    assert bridge.remove_manual_row(added["eid"])["ok"] is True
+    assert bridge.remove_record(added["eid"])["ok"] is True
 
 
 def test_open_session_rejects_bad_dir(tmp_path: Path) -> None:

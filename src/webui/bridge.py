@@ -276,11 +276,11 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
         self._sink.emit("session", {})
         return {"eid": record.task.evidence_id}
 
-    def remove_manual_row(self, evidence_id: int) -> dict:
+    def remove_record(self, evidence_id: int) -> dict:
         session = self._session()
         if session is None:
             return {"ok": False}
-        ok = session.remove_manual_record(int(evidence_id))
+        ok = session.remove_record(int(evidence_id))
         if ok:
             self._sink.emit("session", {})
         return {"ok": ok}

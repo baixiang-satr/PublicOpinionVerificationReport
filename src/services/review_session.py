@@ -20,6 +20,7 @@ from src.services import recovery_mirror
 from src.services.checkpoint_store import CheckpointStore
 from src.services.manual_assets import MANUAL_ASSETS_DIR_NAME
 from src.services.override_store import ManualOverrideStore
+from src.services.record_disposal import delete_record_artifacts
 from src.services.review_models import ReviewFieldView, ReviewRecordSummary
 
 #: Field keys shown in the editor, in canonical template order.
@@ -340,7 +341,7 @@ class ReviewSession:
             return ids[ids.index(evidence_id) - 1]
         return None
 
-    # ── manual rows (群聊/朋友圈 and other URL-less sheets) ──
+    # ── manual rows (群聊/朋友圈) 与记录删除 ──
     @staticmethod
     def is_manual_row(record: RecordResult) -> bool:
         """Rows with an empty original URL only exist via import or manual add."""
@@ -366,12 +367,17 @@ class ReviewSession:
             job_records.append_record(self.job_dir, record)
         return record
 
-    def remove_manual_record(self, evidence_id: int) -> bool:
-        """Delete a manual row (and its overrides); refuses crawled rows."""
+    def remove_record(self, evidence_id: int) -> bool:
+        """删除任意记录（含带 URL 的抓取行），联动清理截图/覆盖/断点。"""
 
         record = self._records.get(evidence_id)
-        if record is None or not self.is_manual_row(record):
+        if record is None:
             return False
+        delete_record_artifacts(
+            self.job_dir,
+            record,
+            self.store.get(evidence_id),
+        )
         del self._records[evidence_id]
         self.store.remove(evidence_id)
         if job_records.checkpoint_exists(self.job_dir):

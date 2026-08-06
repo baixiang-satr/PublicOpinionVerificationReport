@@ -381,25 +381,23 @@ async function addManualRow() {
   ElMessage.success(`已添加手工行 ${String(eid).padStart(3, '0')}`)
 }
 
-async function removeManualRow() {
+async function removeRecord() {
   const active = activeCell()
   if (!active) {
-    ElMessage.info('请先选中要删除的手工行。')
+    ElMessage.info('请先选中要删除的记录。')
     return
   }
   const row = active.model.rowAt(active.row)
-  if (!row?.manual) {
-    ElMessage.warning('只能删除手工行（无 URL 的行）。')
-    return
-  }
+  if (!row) return
   await ElMessageBox.confirm(
-    `确定删除记录 ${String(row.eid).padStart(3, '0')} 吗？它的人工填写内容也会一并删除。`,
-    '删除手工行',
+    `确定删除记录 ${String(row.eid).padStart(3, '0')} 吗？它的截图与人工填写内容都会一并删除。`,
+    '删除记录',
     { type: 'warning' },
   )
-  await bridge.removeManualRow(row.eid)
+  await bridge.removeRecord(row.eid)
   payload.value = await bridge.getSheetPayload()
   await buildGrid()
+  ElMessage.success(`已删除记录 ${String(row.eid).padStart(3, '0')}`)
 }
 
 // ── 截图：两张预览 + 框选截取（FS Capture 式）────────────────────────────
@@ -518,7 +516,7 @@ watch(visible, async (open) => {
         <el-option v-for="s in manualSheets" :key="s.name" :label="s.name" :value="s.name" />
       </el-select>
       <el-button size="small" :disabled="!manualSheet" @click="addManualRow">添加手工行</el-button>
-      <el-button size="small" type="danger" plain @click="removeManualRow">删除手工行</el-button>
+      <el-button size="small" type="danger" plain @click="removeRecord">删除记录</el-button>
       <span class="muted toolbar-hint">URL 单元格点击即可打开原页面</span>
       <span class="muted toolbar-stats">共 {{ stats.total }} 条 · 已完整 {{ stats.done }}</span>
     </div>

@@ -8,6 +8,8 @@ from src.domain.models import (
     RouteDecision,
     UrlTask,
 )
+from src.services import job_records
+from src.services.checkpoint_store import CheckpointStore
 from src.services.manual_assets import MANUAL_ASSETS_DIR_NAME, stage_manual_assets
 from src.services.review_session import ReviewSession
 
@@ -314,3 +316,66 @@ def test_swapped_sheet_primary_name_and_path_come_from_homepage_slot(tmp_path: P
     assert session.primary_screenshot_name(record) == "001_author_manual.png"
     # 内容页槽位不受人工主页影响
     assert session.content_screenshot_name(record) == "001.jpg"
+
+
+def test_remove_record_deletes_crawled_row_with_screenshots(tmp_path: Path) -> None:
+    """带 URL 的抓取行可删除；截图/判定 sidecar/人工资产/断点一并清理。"""
+
+    record = _record(1)
+    (tmp_path / "001.jpg").write_bytes(b"jpg")
+    (tmp_path / "001主页.jpg").write_bytes(b"jpg")
+    (tmp_path / "001主页.decision.json").write_text("{}", encoding="utf-8")
+    record.assets.page_screenshot = tmp_path / "001.jpg"
+    record.assets.author_screenshot = tmp_path / "001主页.jpg"
+    manual_dir = tmp_path / MANUAL_ASSETS_DIR_NAME
+    manual_dir.mkdir()
+    (manual_dir / "001_extra.png").write_bytes(b"png")
+    session = _session(tmp_path, [record])
+    session.set_field(1, "author_name", "人工昵称")
+    session.set_attachments(1, ["001_extra.png"])
+    job_records.write_checkpoint(tmp_path, tmp_path.name, [record])
+
+    assert session.remove_record(1) is True
+
+    assert session.evidence_ids() == []
+    assert session.get_override(1) is None
+    assert not (tmp_path / "001.jpg").exists()
+    assert not (tmp_path / "001主页.jpg").exists()
+    assert not (tmp_path / "001主页.decision.json").exists()
+    assert not (manual_dir / "001_extra.png").exists()
+    snapshot = CheckpointStore.load(tmp_path / "job_checkpoint.json")
+    assert list(snapshot.records) == []
+
+
+def test_remove_record_keeps_sibling_rows_and_files(tmp_path: Path) -> None:
+    first = _record(1)
+    second = _record(2)
+    (tmp_path / "002.jpg").write_bytes(b"jpg")
+    second.assets.page_screenshot = tmp_path / "002.jpg"
+    session = _session(tmp_path, [first, second])
+
+    assert session.remove_record(1) is True
+
+    assert session.evidence_ids() == [2]
+    assert (tmp_path / "002.jpg").exists()
+
+
+def test_remove_record_refuses_assets_outside_job_dir(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"png")
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    record = _record(1)
+    record.assets.page_screenshot = outside
+    session = _session(job_dir, [record])
+
+    assert session.remove_record(1) is True
+
+    assert outside.exists()  # 任务目录之外的文件绝不动
+    assert session.evidence_ids() == []
+
+
+def test_remove_record_unknown_id_returns_false(tmp_path: Path) -> None:
+    session = _session(tmp_path, [_record(1)])
+    assert session.remove_record(99) is False
+    assert session.evidence_ids() == [1]
