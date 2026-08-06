@@ -6,6 +6,12 @@ import pytest
 
 from src.crawler.content_parser import ContentParser
 from src.crawler.platform_catalog import find_platform
+from src.crawler.platforms import kuaishou
+
+
+@pytest.fixture(autouse=True)
+def _fast_hydration_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(kuaishou, "_HYDRATION_POLL_DELAY_MS", 0)
 
 
 @pytest.mark.asyncio
@@ -81,3 +87,57 @@ async def test_kuaishou_parser_keeps_requested_photo_authoritative() -> None:
         "2026-07-28 23:19:35"
     )
     assert data.image_urls == []
+
+
+@pytest.mark.asyncio
+async def test_kuaishou_parser_strips_payloads_when_target_photo_missing() -> None:
+    """目标 photo 未命中（水合失败）时，载荷里的推荐/配置节点不得成为证据。"""
+
+    config_like = {
+        "caption": "配置节点文案不应进入结果",
+        "timestamp": 1_785_200_000_000,
+        "userName": "配置作者",
+        "kwaiId": "config_account",
+    }
+    recommendation = {
+        "caption": "推荐视频文案不应进入结果",
+        "timestamp": 1_785_200_000_000,
+        "userName": "推荐作者",
+        "userEid": "3xrecommendation",
+        "photoId": "9000111222333444555",
+    }
+
+    class KuaishouShellPage:
+        url = "https://www.kuaishou.com/short-video/3xev27cpa7jba4i"
+
+        async def evaluate(self, script: str, *_args: object):
+            if "platformSelectors" in script:
+                return {
+                    "url": self.url,
+                    "title": "更多精彩视频等你来看",
+                    "visibleText": "快手壳页面可见文本",
+                    "canonicalUrl": self.url,
+                    "meta": {},
+                    "jsonLd": [],
+                    "embeddedPayloads": [
+                        {"config": config_like, "feeds": [recommendation]}
+                    ],
+                    "domValues": {},
+                    "platformValues": {},
+                    "images": [],
+                }
+            return None  # INIT_STATE 始终未水合
+
+    definition = find_platform(KuaishouShellPage.url)
+    assert definition is not None
+    data = await ContentParser().extract(
+        KuaishouShellPage(),
+        definition,
+        network_payloads=({"data": {"feeds": [recommendation]}},),
+    )
+
+    payload_captions = {config_like["caption"], recommendation["caption"]}
+    assert data.title not in payload_captions
+    assert data.content_text not in payload_captions
+    assert data.author_name not in {"配置作者", "推荐作者"}
+    assert data.author_id != "config_account"

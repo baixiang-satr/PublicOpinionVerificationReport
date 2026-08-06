@@ -5,9 +5,19 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from src.crawler.extractors.base import RenderedDocument
 from src.crawler.platform_catalog import find_platform
+from src.crawler.platforms import kuaishou
 from src.crawler.platforms.kuaishou import KuaishouExtractor
+
+
+@pytest.fixture(autouse=True)
+def _fast_hydration_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """轮询节奏与用例无关；测试里把延迟压到 0 保持快速。"""
+
+    monkeypatch.setattr(kuaishou, "_HYDRATION_POLL_DELAY_MS", 0)
 
 
 class FakePage:
@@ -96,3 +106,66 @@ def test_rejects_recommendations_when_requested_photo_is_missing() -> None:
     )
 
     assert _extract(document) is None
+
+
+def test_waits_for_late_init_state_hydration() -> None:
+    """INIT_STATE 水合晚于导航稳定判定时，轮询后仍能命中目标 photo。"""
+
+    target = {
+        "caption": "晚水合的目标文案",
+        "userName": "迟到作者",
+        "userEid": "3xlatehyd",
+        "photoId": "5226990523508912741",
+        "timestamp": 1_785_251_975_086,
+    }
+
+    class LatePage:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate(self, _script: str, *_args: object) -> Any:
+            self.calls += 1
+            if self.calls < 3:
+                return None  # 前两次尚未水合
+            return {"data": {"photo": target}}
+
+    document = RenderedDocument(
+        url=(
+            "https://www.kuaishou.com/short-video/3xlatehyd"
+            "?photoId=5226990523508912741"
+        ),
+    )
+    definition = find_platform(document.url)
+    assert definition is not None
+    page = LatePage()
+
+    data = asyncio.run(KuaishouExtractor().extract(page, document, definition))
+
+    assert data is not None
+    assert data.content_text == "晚水合的目标文案"
+    assert data.author_name == "迟到作者"
+    assert page.calls == 3
+
+
+def test_gives_up_after_bounded_hydration_polls() -> None:
+    """一直未水合时有界放弃（不错收推荐，也不无限等待）。"""
+
+    class DryPage:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate(self, _script: str, *_args: object) -> Any:
+            self.calls += 1
+            return None
+
+    document = RenderedDocument(
+        url="https://www.kuaishou.com/short-video/3xev27cpa7jba4i",
+    )
+    definition = find_platform(document.url)
+    assert definition is not None
+    page = DryPage()
+
+    result = asyncio.run(KuaishouExtractor().extract(page, document, definition))
+
+    assert result is None
+    assert page.calls == 1 + kuaishou._HYDRATION_POLL_ATTEMPTS

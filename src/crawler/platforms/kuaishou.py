@@ -8,6 +8,7 @@ photo ID carried by the URL before accepting a node.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -41,6 +42,12 @@ _PATH_PHOTO_ID = re.compile(
     re.IGNORECASE,
 )
 _STRONG_PHOTO_ID = re.compile(r"[A-Za-z0-9_-]{6,}")
+
+# INIT_STATE 水合常晚于导航稳定判定，同一条 URL 会时好时坏；有界轮询实时
+# 页面兜底（网络载荷在导航结束即冻结，只有页面全局可以重读），轮询总量
+# 必须短，由引擎 page_processing_timeout 最终兜底。
+_HYDRATION_POLL_ATTEMPTS = 3
+_HYDRATION_POLL_DELAY_MS = 900
 
 
 class KuaishouExtractor:
@@ -118,22 +125,54 @@ class KuaishouExtractor:
     ) -> tuple[Mapping[str, Any] | None, ExtractionSource | None]:
         wanted_ids = _wanted_photo_ids(document.url)
         init_state = await evaluate_json(page, _INIT_STATE_SCRIPT)
-        payloads: list[tuple[Any, ExtractionSource]] = []
-        if init_state is not None:
-            payloads.append((init_state, ExtractionSource.EMBEDDED_JSON))
-        payloads.extend(
-            (payload, ExtractionSource.EMBEDDED_JSON)
-            for payload in document.embedded_payloads
-        )
-        payloads.extend(
-            (payload, ExtractionSource.NETWORK_JSON)
-            for payload in document.network_payloads
-        )
-        for payload, source in payloads:
+        for payload, source in _ordered_payloads(init_state, document):
             photo = _photo_node(payload, wanted_ids=wanted_ids)
             if photo is not None:
                 return photo, source
+        for _ in range(_HYDRATION_POLL_ATTEMPTS):
+            await _pause_between_polls(page)
+            init_state = await evaluate_json(page, _INIT_STATE_SCRIPT)
+            if init_state is None:
+                continue
+            photo = _photo_node(init_state, wanted_ids=wanted_ids)
+            if photo is not None:
+                return photo, ExtractionSource.EMBEDDED_JSON
         return None, None
+
+
+def kuaishou_photo_id(url: str) -> str | None:
+    """URL 锁定的目标 photo id；供未命中守卫判断是否剥离载荷字段。"""
+
+    return next(iter(_wanted_photo_ids(url)), None)
+
+
+def _ordered_payloads(
+    init_state: Any,
+    document: RenderedDocument,
+) -> list[tuple[Any, ExtractionSource]]:
+    payloads: list[tuple[Any, ExtractionSource]] = []
+    if init_state is not None:
+        payloads.append((init_state, ExtractionSource.EMBEDDED_JSON))
+    payloads.extend(
+        (payload, ExtractionSource.EMBEDDED_JSON)
+        for payload in document.embedded_payloads
+    )
+    payloads.extend(
+        (payload, ExtractionSource.NETWORK_JSON)
+        for payload in document.network_payloads
+    )
+    return payloads
+
+
+async def _pause_between_polls(page: Any) -> None:
+    wait = getattr(page, "wait_for_timeout", None)
+    if callable(wait):
+        try:
+            await wait(_HYDRATION_POLL_DELAY_MS)
+            return
+        except Exception:
+            pass
+    await asyncio.sleep(_HYDRATION_POLL_DELAY_MS / 1000)
 
 
 def _photo_node(

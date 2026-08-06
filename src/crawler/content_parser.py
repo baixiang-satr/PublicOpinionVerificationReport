@@ -19,6 +19,7 @@ from src.crawler.platform_catalog import ExtractorFamily, PlatformDefinition
 from src.crawler.platforms.bilibili import bilibili_video_id
 from src.crawler.platforms.registry import dedicated_extractor_for
 from src.crawler.platforms.baijiahao import is_video_landing_url
+from src.crawler.platforms.kuaishou import kuaishou_photo_id
 from src.crawler.platforms.tieba import sanitize_tieba_content
 from src.domain.models import ExtractionSource, PageData
 from src.utils.time_utils import parse_web_published_at
@@ -97,6 +98,12 @@ class ContentParser:
             self._finalize_xiaohongshu_note(merged, dedicated_snapshot)
         if definition.key == "kuaishou" and dedicated_snapshot is not None:
             self._finalize_kuaishou_video(merged, dedicated_snapshot)
+        if definition.key == "kuaishou" and dedicated_snapshot is None:
+            # 与抖音/B站同规：目标 photo 未命中时推荐/配置节点不是证据，
+            # 剥离后回 DOM 兜底，宁可留空待补录。
+            self._strip_untrusted_payload_fields(
+                merged, document, kuaishou_photo_id(document.url), strip_images=True
+            )
         if definition.key == "ixigua" and dedicated_snapshot is not None:
             self._finalize_ixigua_video(merged)
         if definition.key == "netease_news" and dedicated_snapshot is not None:
