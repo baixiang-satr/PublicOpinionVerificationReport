@@ -44,6 +44,15 @@ def test_eligible_records_includes_required_author_screenshot() -> None:
     assert [record.task.evidence_id for record in eligible] == [1]
 
 
+def test_eligible_records_includes_http_403_blocked_pages() -> None:
+    # 知乎等平台间歇性用 403 拦截无头 Chromium，有头重试可渲染真实页面。
+    blocked = _record(1, RecordStatus.NEEDS_REVIEW, "HTTP_403")
+
+    eligible = eligible_records([blocked])
+
+    assert [record.task.evidence_id for record in eligible] == [1]
+
+
 @pytest.mark.asyncio
 async def test_retry_replaces_records_with_headed_results(tmp_path: Path) -> None:
     failed = _record(1, RecordStatus.FAILED, "PAGE_PROCESSING_TIMEOUT")

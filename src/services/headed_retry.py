@@ -31,6 +31,9 @@ ELIGIBLE_CODES = frozenset(
         "LOGIN_REQUIRED",
         "CAPTCHA_REQUIRED",
         "ACCESS_CHALLENGE",
+        # 知乎 /question/ 等页面会间歇性用 403 拦截无头 Chromium；有头重试
+        # 后能渲染出真实页面（正常内容或“已删除”错误页），从而得到正确归类。
+        "HTTP_403",
         "EMPTY_RENDERED_PAGE",
         "AUTHOR_SCREENSHOT_REQUIRED",
     }

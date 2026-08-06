@@ -99,6 +99,16 @@ async def test_read_page_snapshot_is_bounded_when_renderer_hangs(
             "CONTENT_UNAVAILABLE",
         ),
         (
+            # 知乎内容删除后的专用错误页（标题与正文均含“荒原”提示）。
+            "https://www.zhihu.com/question/2068088684528791862",
+            {
+                "title": "你似乎来到了没有知识存在的荒原 - 知乎",
+                "body": "你似乎来到了没有知识存在的荒原 5 秒后自动跳转至知乎首页 去往首页",
+            },
+            AccessKind.CONTENT_UNAVAILABLE,
+            "CONTENT_UNAVAILABLE",
+        ),
+        (
             "https://www.kuaishou.com/short-video/example",
             {"title": "", "body": '{"result": 1}'},
             AccessKind.API_RESPONSE,
