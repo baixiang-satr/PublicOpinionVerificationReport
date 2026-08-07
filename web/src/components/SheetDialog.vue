@@ -381,23 +381,92 @@ async function addManualRow() {
   ElMessage.success(`已添加手工行 ${String(eid).padStart(3, '0')}`)
 }
 
+// ── 删除记录：支持多选（拖选多行 / Ctrl 多段选区），就地删行不弹跳 ──────
+interface DeleteTarget {
+  model: SheetModel
+  row: number // Univer 行号（1 起，0 是表头）
+  eid: number
+}
+
+/** 收集当前活动工作表全部选区覆盖的数据行（去重、按行号升序）。 */
+function selectedRows(): DeleteTarget[] {
+  const workbook = univerInstance?.univerAPI.getActiveWorkbook()
+  const sheet = workbook?.getActiveSheet()
+  if (!workbook || !sheet) return []
+  const model = models.value.find((m) => m.sheetId === sheet.getSheetId())
+  if (!model) return []
+  const ranges = sheet.getSelection()?.getActiveRangeList() ?? []
+  const byRow = new Map<number, number>()
+  for (const range of ranges) {
+    for (let row = range.getRow(); row <= range.getLastRow(); row += 1) {
+      const payloadRow = model.rowAt(row)
+      if (payloadRow) byRow.set(row, payloadRow.eid)
+    }
+  }
+  return [...byRow.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([row, eid]) => ({ model, row, eid }))
+}
+
 async function removeRecord() {
-  const active = activeCell()
-  if (!active) {
+  const targets = selectedRows()
+  if (!targets.length) {
     ElMessage.info('请先选中要删除的记录。')
     return
   }
-  const row = active.model.rowAt(active.row)
-  if (!row) return
-  await ElMessageBox.confirm(
-    `确定删除记录 ${String(row.eid).padStart(3, '0')} 吗？它的截图与人工填写内容都会一并删除。`,
-    '删除记录',
-    { type: 'warning' },
-  )
-  await bridge.removeRecord(row.eid)
+  const eids = targets.map((t) => t.eid)
+  const label = (e: number) => String(e).padStart(3, '0')
+  const preview = eids.slice(0, 8).map(label).join('、')
+  const message =
+    eids.length === 1
+      ? `确定删除记录 ${label(eids[0])} 吗？它的截图与人工填写内容都会一并删除。`
+      : `确定删除这 ${eids.length} 条记录（${preview}${eids.length > 8 ? ' …' : ''}）吗？它们的截图与人工填写内容都会一并删除。`
+  await ElMessageBox.confirm(message, '删除记录', { type: 'warning' })
+
+  const failed: number[] = []
+  for (const eid of eids) {
+    const result = await bridge.removeRecord(eid)
+    if (!result?.ok) failed.push(eid)
+  }
+
+  const model = targets[0].model
+  const sheet = univerInstance?.univerAPI.getActiveWorkbook()?.getActiveSheet()
+  const removedRows = targets.filter((t) => !failed.includes(t.eid)).map((t) => t.row)
+  // 就地删行并同步 payload：不重建表格，滚动与选中位置不弹跳。
+  let inPlace = failed.length === 0 && Boolean(sheet)
+  if (inPlace && sheet) {
+    applying = true
+    try {
+      for (const row of [...removedRows].sort((a, b) => b - a)) {
+        sheet.deleteRows(row, 1)
+        model.sheet.rows.splice(row - 1, 1)
+      }
+    } catch {
+      inPlace = false
+    } finally {
+      applying = false
+    }
+  }
+  if (inPlace) {
+    const nextRow = Math.min(Math.min(...removedRows), model.sheet.rows.length)
+    if (sheet && nextRow >= 1) sheet.getRange(nextRow, 0).activate()
+    hideHoverTip()
+    peekText.value = ''
+    ElMessage.success(
+      eids.length === 1 ? `已删除记录 ${label(eids[0])}` : `已删除 ${eids.length} 条记录`,
+    )
+    emit('changed')
+    return
+  }
+  // 有失败或就地删除异常：整表刷新重新对齐。
   payload.value = await bridge.getSheetPayload()
   await buildGrid()
-  ElMessage.success(`已删除记录 ${String(row.eid).padStart(3, '0')}`)
+  if (failed.length) {
+    ElMessage.warning(`有 ${failed.length} 条删除失败：${failed.map(label).join('、')}`)
+  } else {
+    ElMessage.success('已删除所选记录')
+  }
+  emit('changed')
 }
 
 // ── 截图：两张预览 + 框选截取（FS Capture 式）────────────────────────────

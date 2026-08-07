@@ -10,6 +10,11 @@ import { useJobStore } from '@/stores/job'
 const store = useJobStore()
 const exporting = ref(false)
 
+/** 交付目录：最终包所在文件夹（template.zip 与 template_final.zip 同目录）。 */
+const finalDir = computed(
+  () => store.lastFinalArchive?.replace(/[\\/][^\\/]*$/, '') ?? '',
+)
+
 const checklist = computed(() => {
   const session = store.session
   if (!session) return '还没有可导出的内容。'
@@ -38,10 +43,10 @@ watch(
   async (path) => {
     if (!exporting.value || !path) return
     exporting.value = false
-    const finalNote = store.lastFinalArchive
-      ? `\n\n补录最终版已保存：\n${store.lastFinalArchive}`
-      : ''
-    await ElMessageBox.alert(`template.zip 已生成。\n\n位置：\n${path}${finalNote}`, '导出完成', {
+    const message = store.lastFinalArchive
+      ? `导出完成。\n\ntemplate.zip 与 template_final.zip 都在同一文件夹：\n${finalDir.value}`
+      : `template.zip 已生成。\n\n位置：\n${path}`
+    await ElMessageBox.alert(message, '导出完成', {
       confirmButtonText: '知道了',
     })
   },
@@ -90,11 +95,11 @@ watch(
           打开输出位置
         </el-button>
       </div>
-      <p v-if="store.lastArchive" class="muted archive-path">
-        ✅ 最近导出：{{ store.lastArchive }}
-      </p>
       <p v-if="store.lastFinalArchive" class="muted archive-path">
-        ✅ 补录最终版（template_final.zip）：{{ store.lastFinalArchive }}
+        ✅ 交付目录：{{ finalDir }}（template.zip 与 template_final.zip 都在此文件夹）
+      </p>
+      <p v-else-if="store.lastArchive" class="muted archive-path">
+        ✅ 最近导出：{{ store.lastArchive }}
       </p>
     </div>
   </section>
