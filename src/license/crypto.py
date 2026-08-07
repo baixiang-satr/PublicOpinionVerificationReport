@@ -34,11 +34,11 @@ from src.license.models import LicensePayload
 CODE_PREFIX = "POIR1"
 _CODE_PARTS = 3
 
-# 开发占位公钥：由 ``python tools/license_admin.py genkey`` 生成的开发密钥对写入
-# （配套私钥在 keys/dev/，仅供开发联调）。
-# 发布正式版前务必替换为卖方正式公钥，私钥离线保管、绝不随包分发。
+# 正式公钥：由 ``python tools/license_admin.py genkey`` 生成，配套私钥在
+# keys/release/license_private_key.pem（离线保管，绝不随包分发）。
+# 私钥泄露=任何人可签发授权码，若泄露必须重新生成密钥对并重新打包。
 EMBEDDED_PUBLIC_KEY_PEM = """-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEA954OBqi5Q0Y91Q5E470hN8w1Tweg9iFJeB3P5EitfAU=
+MCowBQYDK2VwAyEAf0LM5NO1eDc7Qa2eQ2Hz0tCuGAEx0JCr9pEKNmyvU4s=
 -----END PUBLIC KEY-----"""
 
 
