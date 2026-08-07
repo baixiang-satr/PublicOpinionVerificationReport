@@ -18,6 +18,10 @@ from src.domain.template_schema import (
     SHEET_ORDER,
     SheetLayout,
 )
+from src.export.sheet_protection import (
+    normalize_sheet_protection,
+    rewrite_styles,
+)
 from src.export.writer_models import (
     TemplateIntegrityError,
     WorkbookInspection,
@@ -35,7 +39,6 @@ _CELL_REF = re.compile(r"^([A-Z]+)(\d+)$")
 _INVALID_XML = re.compile(
     "[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]"
 )
-_DATETIME_FORMAT_CODE = "yyyy-mm-dd hh:mm:ss"
 
 ET.register_namespace("", _MAIN)
 ET.register_namespace("r", _DOC_REL)
@@ -62,11 +65,10 @@ class OoxmlTemplateWriter:
             raise TemplateIntegrityError(
                 f"Worksheet order changed: {tuple(sheet_targets)}"
             )
-        replacements: dict[str, bytes] = {
-            "xl/styles.xml": _rewrite_datetime_number_format(
-                package["xl/styles.xml"]
-            )
-        }
+        # 格式/结构保持锁定，但数据区单元格换成解锁样式：收件人可在
+        # Excel/WPS 中修改/增删单元格内容，不能改格式与行列结构。
+        styles_xml, unlocked_styles = rewrite_styles(package["xl/styles.xml"])
+        replacements: dict[str, bytes] = {"xl/styles.xml": styles_xml}
         for sheet_name, target in sheet_targets.items():
             layout = SHEET_LAYOUTS[sheet_name]
             replacements[target] = _rewrite_sheet(
@@ -74,6 +76,7 @@ class OoxmlTemplateWriter:
                 shared_strings,
                 layout,
                 grouped.get(sheet_name, []),
+                unlocked_styles,
             )
         _write_package(workbook_path, package, replacements)
         inspection = self.inspect(workbook_path)
@@ -195,32 +198,6 @@ def _write_package(
         raise
 
 
-def _rewrite_datetime_number_format(xml: bytes) -> bytes:
-    """Match the workbook's date display to its yyyy-mm-dd header contract."""
-
-    root = ET.fromstring(xml)
-    number_formats = root.find(f"{{{_MAIN}}}numFmts")
-    if number_formats is None:
-        return xml
-    changed = False
-    for item in number_formats.findall(f"{{{_MAIN}}}numFmt"):
-        code = str(item.get("formatCode") or "").casefold()
-        if (
-            "yyyy" in code
-            and "mm" in code
-            and "dd" in code
-            and "hh" in code
-            and "ss" in code
-        ):
-            item.set("formatCode", _DATETIME_FORMAT_CODE)
-            changed = True
-    return (
-        ET.tostring(root, encoding="utf-8", xml_declaration=True)
-        if changed
-        else xml
-    )
-
-
 def _sheet_targets(package: dict[str, bytes]) -> dict[str, str]:
     workbook = ET.fromstring(package["xl/workbook.xml"])
     relations = ET.fromstring(package["xl/_rels/workbook.xml.rels"])
@@ -266,6 +243,7 @@ def _rewrite_sheet(
     shared_strings: tuple[str, ...],
     layout: SheetLayout,
     rows: list[TemplateRow],
+    unlocked_styles: dict[str, str] | None = None,
 ) -> bytes:
     root = ET.fromstring(xml)
     _verify_headers(root, shared_strings, layout)
@@ -291,6 +269,7 @@ def _rewrite_sheet(
         if int(row.get("r") or 0) >= layout.data_start_row:
             sheet_data.remove(row)
     column_styles = _column_styles(root)
+    unlocked = unlocked_styles or {}
     for offset, template_row in enumerate(rows):
         row_number = layout.data_start_row + offset
         sheet_data.append(
@@ -300,8 +279,10 @@ def _rewrite_sheet(
                 layout,
                 template_row,
                 column_styles,
+                unlocked,
             )
         )
+    normalize_sheet_protection(root)
     dimension = root.find(f"{{{_MAIN}}}dimension")
     if dimension is not None:
         last_row = max(2, layout.data_start_row + len(rows) - 1)
@@ -318,6 +299,7 @@ def _build_row(
     layout: SheetLayout,
     template_row: TemplateRow,
     column_styles: dict[str, str],
+    unlocked_styles: dict[str, str] | None = None,
 ) -> ET.Element:
     attributes = dict(prototype.attrib)
     attributes["r"] = str(row_number)
@@ -328,6 +310,7 @@ def _build_row(
         _cell_column(cell): cell
         for cell in prototype.findall(f"{{{_MAIN}}}c")
     }
+    unlocked = unlocked_styles or {}
     for column_number in range(1, layout.column_count + 1):
         column = _column_name(column_number)
         source = prototypes.get(column)
@@ -346,6 +329,13 @@ def _build_row(
         # it to General, exposing datetimes as Excel serial numbers.
         if "s" not in cell_attributes and column in column_styles:
             cell_attributes["s"] = column_styles[column]
+        # 数据区单元格换成解锁克隆样式：内容可编辑，格式随克隆保持不变。
+        if "s" in cell_attributes:
+            cell_attributes["s"] = unlocked.get(
+                cell_attributes["s"], cell_attributes["s"]
+            )
+        elif "0" in unlocked:
+            cell_attributes["s"] = unlocked["0"]
         cell_attributes["r"] = f"{column}{row_number}"
         cell = ET.SubElement(
             row,
