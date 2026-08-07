@@ -6,8 +6,12 @@ import zipfile
 
 import pytest
 
+from src.domain.models import TemplateRow
 from src.domain.template_schema import SHEET_LAYOUTS, SHEET_ORDER
+from src.export.staging_assets import audit_staged_author_assets
+from src.screenshot.author_evidence import read_decision
 from src.services.checkpoint_store import CheckpointStore
+from src.services.retained_records import copy_retained_records
 from src.services.review_session import ReviewSession
 from src.services.zip_import import TemplateZipImporter, TemplateZipImportError
 
@@ -70,6 +74,8 @@ def test_import_reconstructs_records_checkpoint_and_assets(tmp_path: Path) -> No
 
     assert job_dir.is_dir()
     assert (job_dir / "staging" / "template" / "template.xlsx").is_file()
+    # 交付目录锚定：导入目录自带一份 template.zip，与后续 template_final.zip 同目录
+    assert (job_dir / "template.zip").is_file()
     snapshot = CheckpointStore.load(job_dir / "job_checkpoint.json")
     assert len(snapshot.records) == 3
 
@@ -171,3 +177,67 @@ def test_import_swapped_sheet_restores_homepage_to_author_slot(tmp_path: Path) -
     session = ReviewSession.from_job_dir(job_dir)
     assert session.primary_screenshot_name(record) == "001主页.jpg"
     assert session.content_screenshot_name(record) == "001.jpg"
+
+
+def test_import_preserves_delivered_author_screenshot_through_audit(tmp_path: Path) -> None:
+    """交付 zip 里的爬取主页截图：导入补建已验收决策，再导出不被审计剥离。"""
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for name in SHEET_ORDER:
+        layout = SHEET_LAYOUTS[name]
+        sheet = workbook.create_sheet(name)
+        sheet.append(list(layout.headers))
+        sheet.append(["示例"] * layout.column_count)
+    weibo = workbook["微博博客"]
+    weibo.append([
+        "https://example.test/post/7",
+        "昵称甲",
+        "新浪_新浪微博_博客贴吧",
+        "正文",
+        "2026-07-01 12:00:00",
+        "完整内容",
+        "shot_007.png",
+        "007主页.png",
+    ])
+    staging = tmp_path / "build"
+    (staging / "template").mkdir(parents=True)
+    workbook.save(staging / "template" / "template.xlsx")
+    for name in ("shot_007.png", "007主页.png"):
+        (staging / "template" / name).write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    zip_path = tmp_path / "template.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for path in (staging / "template").iterdir():
+            archive.write(path, f"template/{path.name}")
+
+    importer = TemplateZipImporter(tmp_path / "output")
+    job_dir = importer.import_zip(zip_path)
+
+    # sidecar 按图片名命名（记录证据号 1 ≠ 图号 7），内容已验收。
+    sidecar = job_dir / "author_decisions" / "007主页.decision.json"
+    assert sidecar.is_file()
+    decision = read_decision(sidecar)
+    assert decision is not None
+    assert decision.accepted
+    assert decision.evidence_id == 7
+    assert decision.candidate_source == "delivered_zip"
+
+    # 模拟补录后再导出：retained copy 把图与决策带入新 staging，审计保留。
+    snapshot = CheckpointStore.load(job_dir / "job_checkpoint.json")
+    (record,) = snapshot.records
+    assert record.assets.author_screenshot is not None
+    assert record.assets.author_screenshot.name == "007主页.png"
+    new_staging = tmp_path / "reexport" / "staging" / "template"
+    new_staging.mkdir(parents=True)
+    copy_retained_records((record,), new_staging)
+    assert (new_staging / "007主页.png").is_file()
+    assert (new_staging / "007主页.decision.json").is_file()
+
+    row = TemplateRow("微博博客", 1, {"H": "007主页.png"}, None, ("007主页.png",))
+    updated_rows, entries = audit_staged_author_assets(new_staging, [row])
+    assert entries == []
+    assert (new_staging / "007主页.png").is_file()
+    assert updated_rows[0].attachment_names == ("007主页.png",)
+    assert updated_rows[0].values_by_column["H"] == "007主页.png"

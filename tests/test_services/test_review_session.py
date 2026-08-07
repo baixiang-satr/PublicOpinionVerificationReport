@@ -347,6 +347,27 @@ def test_remove_record_deletes_crawled_row_with_screenshots(tmp_path: Path) -> N
     assert list(snapshot.records) == []
 
 
+def test_remove_record_cleans_staging_sidecar_alongside_author_image(
+    tmp_path: Path,
+) -> None:
+    """retained 复制到 staging/template/ 的审计 sidecar 随记录删除一并清理。"""
+
+    record = _record(1)
+    staging = tmp_path / "staging" / "template"
+    staging.mkdir(parents=True)
+    author = staging / "007主页.jpg"
+    author.write_bytes(b"jpg")
+    (staging / "007主页.decision.json").write_text("{}", encoding="utf-8")
+    record.assets.author_screenshot = author
+    job_records.write_checkpoint(tmp_path, tmp_path.name, [record])
+    session = _session(tmp_path, [record])
+
+    assert session.remove_record(1) is True
+
+    assert not author.exists()
+    assert not (staging / "007主页.decision.json").exists()
+
+
 def test_remove_record_keeps_sibling_rows_and_files(tmp_path: Path) -> None:
     first = _record(1)
     second = _record(2)

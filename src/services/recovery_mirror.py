@@ -85,6 +85,30 @@ def mirror_record_assets(job_id: str, job_dir: Path, record: RecordResult) -> No
         if not candidate.is_absolute():
             candidate = manual_dir / candidate.name
         mirror_file(job_id, candidate, subdir=ASSETS_DIR_NAME)
+    _mirror_author_decision(job_id, job_dir, record)
+
+
+def _mirror_author_decision(job_id: str, job_dir: Path, record: RecordResult) -> None:
+    """连同主页截图的审计决策一起镜像。
+
+    output/ 被外部清理后靠镜像恢复导出时，缺少 ``NNN主页.decision.json``
+    会让 ZIP 前审计把已验收的爬取主页截图误剥。sidecar 名按图片名推导。
+    """
+
+    author = record.assets.author_screenshot
+    if author is None:
+        return
+    author = Path(author)
+    sidecar_name = author.with_suffix(".decision.json").name
+    candidates = [Path(job_dir) / "author_decisions" / sidecar_name]
+    if author.is_absolute():
+        candidates.insert(0, author.with_suffix(".decision.json"))
+        if len(author.parents) >= 3:
+            candidates.insert(1, author.parents[2] / "author_decisions" / sidecar_name)
+    for candidate in candidates:
+        if candidate.is_file():
+            mirror_file(job_id, candidate, subdir=ASSETS_DIR_NAME)
+            return
 
 
 def mirrored_asset(job_id: str, name: str | None) -> Path | None:

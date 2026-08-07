@@ -161,3 +161,40 @@ def test_override_store_restores_from_mirror(tmp_path: Path) -> None:
     override = reloaded.get(1)
     assert override is not None
     assert override.values.get("content") == "人工正文"
+
+
+def test_mirror_record_assets_mirrors_author_decision_sidecar(tmp_path: Path) -> None:
+    """主页截图的审计决策随截图一起镜像（staging 旁 sidecar）。"""
+
+    job_dir = tmp_path / "job-8"
+    staging = job_dir / "staging" / "template"
+    staging.mkdir(parents=True)
+    author = staging / "003主页.jpg"
+    author.write_bytes(b"img")
+    (staging / "003主页.decision.json").write_text("{}", encoding="utf-8")
+    record = _record(3)
+    record.assets = AssetSet(author_screenshot=author)
+
+    recovery_mirror.mirror_record_assets("job-8", job_dir, record)
+
+    assert recovery_mirror.mirrored_asset("job-8", "003主页.jpg") is not None
+    assert recovery_mirror.mirrored_asset("job-8", "003主页.decision.json") is not None
+
+
+def test_mirror_record_assets_mirrors_archived_author_decision(tmp_path: Path) -> None:
+    """已归档到 author_decisions/ 的决策也能镜像。"""
+
+    job_dir = tmp_path / "job-9"
+    staging = job_dir / "staging" / "template"
+    staging.mkdir(parents=True)
+    author = staging / "004主页.jpg"
+    author.write_bytes(b"img")
+    archived = job_dir / "author_decisions"
+    archived.mkdir()
+    (archived / "004主页.decision.json").write_text("{}", encoding="utf-8")
+    record = _record(4)
+    record.assets = AssetSet(author_screenshot=author)
+
+    recovery_mirror.mirror_record_assets("job-9", job_dir, record)
+
+    assert recovery_mirror.mirrored_asset("job-9", "004主页.decision.json") is not None

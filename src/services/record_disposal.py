@@ -52,6 +52,15 @@ def delete_record_artifacts(
             if name:
                 candidates.append(manual_dir / name)
     candidates.append(job_dir / decision_sidecar_name(record.task.evidence_id))
+    author = record.assets.author_screenshot
+    if author is not None:
+        # sidecar 名按图片名推导（zip 导入会重排证据号，图名才是审计键）。
+        sidecar_name = Path(author).with_suffix(".decision.json").name
+        candidates.append(job_dir / sidecar_name)
+        candidates.append(job_dir / "author_decisions" / sidecar_name)
+        if Path(author).is_absolute():
+            # retained 复制的 sidecar 与截图同在 staging/template/ 下。
+            candidates.append(Path(author).with_suffix(".decision.json"))
 
     deleted: list[Path] = []
     for candidate in candidates:

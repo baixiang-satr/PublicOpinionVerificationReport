@@ -11,7 +11,6 @@ from src.domain.models import UrlTask
 from src.services import recovery_mirror
 from src.services.checkpoint_store import CheckpointStore
 from src.services.models import JobRequest
-from src.screenshot.author_evidence import decision_sidecar_name
 from src.utils.file_utils import require_safe_file_name
 
 
@@ -151,19 +150,29 @@ def _mirror_fallback(source: Path) -> Path | None:
 
 
 def _copy_author_decision(source_record: RecordResult, template_dir: Path) -> None:
-    """Carry the accepted/rejected homepage audit fact into a resumed job."""
+    """Carry the accepted/rejected homepage audit fact into a resumed job.
+
+    The sidecar name derives from the image file name (``003主页.jpg`` →
+    ``003主页.decision.json``) instead of the record's evidence id: a zip
+    import renumbers records while image names stay the audit key.
+    """
 
     author = source_record.assets.author_screenshot
     if author is None:
         return
     author = Path(author)
-    sidecar_name = decision_sidecar_name(source_record.task.evidence_id)
+    sidecar_name = author.with_suffix(".decision.json").name
     candidates = [author.with_suffix(".decision.json")]
     # Normal completed jobs archive sidecars outside staging so cleanup keeps
     # them out of template.zip.  A checkpoint record still points to the
     # staging image, from which its job root is deterministic.
     if len(author.parents) >= 3:
-        candidates.append(author.parents[2] / "author_decisions" / sidecar_name)
+        job_dir = author.parents[2]
+        candidates.append(job_dir / "author_decisions" / sidecar_name)
+        # 任务目录可能被外部清理：恢复镜像里的同名 sidecar 可救回。
+        mirrored = recovery_mirror.mirrored_asset(job_dir.name, sidecar_name)
+        if mirrored is not None:
+            candidates.append(mirrored)
     source = next((path for path in candidates if path.is_file()), None)
     if source is None:
         return

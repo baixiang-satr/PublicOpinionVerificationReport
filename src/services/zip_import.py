@@ -17,6 +17,8 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+import re
+import shutil
 import zipfile
 
 from src.domain.models import (
@@ -28,6 +30,7 @@ from src.domain.models import (
     UrlTask,
 )
 from src.domain.template_schema import SHEET_LAYOUTS, SHEET_ORDER, SheetLayout
+from src.screenshot.author_evidence import AuthorEvidenceDecision, ProfilePageType
 from src.services.job_records import write_checkpoint
 from src.utils.file_utils import atomic_replace
 from src.utils.time_utils import DEFAULT_TIMEZONE
@@ -35,6 +38,10 @@ from src.utils.time_utils import DEFAULT_TIMEZONE
 
 class TemplateZipImportError(ValueError):
     """Raised when the uploaded file is not a usable template.zip."""
+
+
+# 与 export.staging_assets._AUTHOR_ASSET_PATTERN 同一口径：爬取主页截图命名。
+_CRAWLED_AUTHOR_ASSET = re.compile(r"^(\d{3})主页\.(?:jpg|jpeg|png|webp)$", re.I)
 
 
 class TemplateZipImporter:
@@ -70,8 +77,15 @@ class TemplateZipImporter:
             raise TemplateZipImportError(
                 "工作簿 8 张表的第 3 行起没有任何已填写内容，无法补录。"
             )
+        self._preserve_author_decisions(job_dir, records)
         write_checkpoint(job_dir, job_id, records)
         self._write_manifest(job_dir, zip_path, len(records))
+        # 交付目录锚定：导入目录自带一份 template.zip，
+        # 后续补录导出的 template_final.zip 与之同目录。
+        try:
+            shutil.copy2(zip_path, job_dir / "template.zip")
+        except OSError:
+            pass
         return job_dir
 
     # ── workbook reading ──
@@ -199,6 +213,46 @@ class TemplateZipImporter:
         return False
 
     # ── job dir ──
+    @staticmethod
+    def _preserve_author_decisions(job_dir: Path, records: list[RecordResult]) -> None:
+        """为交付 zip 中的爬取主页截图补建「已验收」审计决策。
+
+        主页截图能进入交付 zip 即证明它当年通过了 ZIP 前审计；但
+        ``NNN主页.decision.json`` 从不随 zip 分发。不补建的话，再次导出
+        时 ``audit_staged_author_assets`` 会把这些截图当未验收证据剥离。
+        sidecar 名按图片文件名推导（导入会重排 evidence_id，图名才是审计键）。
+        """
+
+        destination = Path(job_dir) / "author_decisions"
+        for record in records:
+            author = record.assets.author_screenshot
+            if author is None:
+                continue
+            match = _CRAWLED_AUTHOR_ASSET.match(Path(author).name)
+            if match is None:
+                continue
+            path = destination / f"{Path(author).stem}.decision.json"
+            if path.is_file():
+                continue
+            destination.mkdir(parents=True, exist_ok=True)
+            decision = AuthorEvidenceDecision(
+                candidate_url=record.task.original_url,
+                evidence_id=int(match.group(1)),
+                candidate_source="delivered_zip",
+                expected_name=record.page.author_name,
+                detected_name=record.page.author_name,
+                page_type=ProfilePageType.PERSON_PROFILE.value,
+                access_state="accessible",
+                overlay_state="clear",
+                capture_region="delivered_zip",
+                identity_state="verified",
+                accepted=True,
+            )
+            path.write_text(
+                json.dumps(decision.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
     def _new_job_id(self, zip_path: Path) -> str:
         stamp = datetime.now(DEFAULT_TIMEZONE).strftime("%Y%m%d-%H%M%S")
         digest = hashlib.sha256(
