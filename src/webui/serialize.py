@@ -80,7 +80,13 @@ def finished_payload(result: JobResult, final_copy: Path | None = None) -> dict:
     return {
         "job_id": result.job_id,
         "label": result.label,
-        "archive_path": str(result.archive_path) if result.archive_path else None,
+        # 补录导出时最终包已复制回锚定目录（scratch 副本已清理），
+        # archive_path 直接指向 template_final.zip，界面只展示一个交付目录。
+        "archive_path": (
+            str(final_copy or result.archive_path)
+            if (final_copy or result.archive_path)
+            else None
+        ),
         "final_copy_path": str(final_copy) if final_copy else None,
         "cancelled": result.cancelled,
         "ready": counts.get("exported", 0),

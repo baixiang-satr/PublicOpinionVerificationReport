@@ -226,6 +226,9 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
                 resume_checkpoint_path=checkpoint_path,
                 label="断点继续",
             )
+        if reexport_only:
+            # 断点重导出也锚定交付目录：最终包复制回断点所在任务目录。
+            self.jobs.final_copy_dir = Path(checkpoint_path).parent
         ok, message = self.jobs.start(request)
         return {"ok": ok, "message": message}
 
@@ -427,12 +430,7 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
         return {"ok": True}
 
     def open_output_dir(self) -> dict:
-        target: Path | None = None
-        result = self.jobs.result
-        if result is not None and result.archive_path is not None:
-            target = Path(result.archive_path).parent
-        if target is None:
-            target = Path(self._base_config.template.output_dir)
+        target = self.jobs.last_deliver_dir or Path(self._base_config.template.output_dir)
         target.mkdir(parents=True, exist_ok=True)
         os.startfile(str(target))  # type: ignore[attr-defined]  # Windows
         return {"ok": True}

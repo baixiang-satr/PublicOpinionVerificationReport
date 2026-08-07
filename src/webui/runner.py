@@ -137,6 +137,23 @@ def _copy_final_archive(result: JobResult, target_dir: Path | None) -> Path | No
         return None
 
 
+def _discard_scratch_archive(result: JobResult, final_copy: Path | None) -> None:
+    """最终包已复制回锚定目录后，scratch 目录里的同名 zip 只是重复品。
+
+    不删除整个 scratch 任务目录：断点/质量报告留作排查现场；只移除会让
+    用户误以为「两个 ZIP 不在同一文件夹」的重复压缩包。失败仅忽略。
+    """
+
+    if final_copy is None or result.archive_path is None:
+        return
+    archive = Path(result.archive_path)
+    try:
+        if archive.resolve() != Path(final_copy).resolve():
+            archive.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class JobRunner(AsyncThreadJob):
     """Runs TaskRunner requests; keeps the latest result + review session."""
 
@@ -148,12 +165,15 @@ class JobRunner(AsyncThreadJob):
         self.result: JobResult | None = None
         self.session: ReviewSession | None = None
         self.last_checkpoint: str | None = None
+        # 最近一次成功导出的交付目录（含 template.zip / template_final.zip）。
+        self.last_deliver_dir: Path | None = None
         # export_zip 设置：补录导出完成后把最终 ZIP 复制回原任务目录。
         self.final_copy_dir: Path | None = None
 
     def start(self, request: JobRequest) -> tuple[bool, str]:
         if self.is_running():
             return False, "已有任务正在运行，请先完成或取消。"
+        self.last_deliver_dir = None
         self._spawn(self._run_async(request))
         return True, ""
 
@@ -210,11 +230,22 @@ class JobRunner(AsyncThreadJob):
             return
         self.result = result
         final_copy = _copy_final_archive(result, self.final_copy_dir)
+        anchor_dir = self.final_copy_dir if final_copy is not None else None
         self.final_copy_dir = None
-        if result.checkpoint_path is not None:
+        session_dir = Path(result.job_dir)
+        if anchor_dir is not None:
+            # 补录导出：会话锚定回原任务目录，两个 ZIP 同目录，不再漂移。
+            session_dir = Path(anchor_dir)
+            _discard_scratch_archive(result, final_copy)
+            anchor_checkpoint = session_dir / "job_checkpoint.json"
+            if anchor_checkpoint.is_file():
+                self.last_checkpoint = str(anchor_checkpoint)
+        elif result.checkpoint_path is not None:
             self.last_checkpoint = str(result.checkpoint_path)
+        if result.archive_path is not None:
+            self.last_deliver_dir = session_dir
         try:
-            self.session = ReviewSession.from_job_dir(result.job_dir)
+            self.session = ReviewSession.from_job_dir(session_dir)
         except Exception:
             self.session = None
         self._sink.emit("finished", finished_payload(result, final_copy))
