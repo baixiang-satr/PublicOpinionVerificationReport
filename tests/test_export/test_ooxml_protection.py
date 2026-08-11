@@ -1,7 +1,8 @@
-"""问题1：导出工作簿「格式锁死、数据区内容可编辑可增删」的保护语义。
+"""问题1：导出工作簿「格式/列结构锁死、数据区可编辑可增删行」的保护语义。
 
 数据区单元格引用解锁克隆样式（``<protection locked="0"/>``），表头/
-示例行保持锁定；sheetProtection 元素保留且格式/结构操作依旧禁止。
+示例行保持锁定；sheetProtection 元素保留：格式与列结构操作依旧禁止，
+数据行插入/删除显式放开（insertRows/deleteRows="0"）。
 """
 from __future__ import annotations
 
@@ -78,13 +79,13 @@ def test_sheet_protection_keeps_format_and_structure_blocked(tmp_path: Path) -> 
             protection = sheet.find(f"{{{_MAIN}}}sheetProtection")
             assert protection is not None, name
             assert protection.get("sheet") == "1"
-            # 格式与行列结构仍禁止修改；选中不受限。
+            # 格式与列结构仍禁止修改；数据行增删显式放开；选中不受限。
             assert protection.get("formatCells") != "0"
             assert protection.get("formatColumns") != "0"
             assert protection.get("insertColumns") != "0"
             assert protection.get("deleteColumns") != "0"
-            assert protection.get("insertRows") != "0"
-            assert protection.get("deleteRows") != "0"
+            assert protection.get("insertRows") == "0"
+            assert protection.get("deleteRows") == "0"
             assert protection.get("selectLockedCells") is None
             assert protection.get("selectUnlockedCells") is None
 
@@ -121,6 +122,9 @@ def test_normalize_sheet_protection_recreates_or_repairs_attributes() -> None:
     protection = sheet.find(f"{{{_MAIN}}}sheetProtection")
     assert protection is not None
     assert protection.get("sheet") == "1"
+    # 新建分支同样显式放开数据行增删
+    assert protection.get("insertRows") == "0"
+    assert protection.get("deleteRows") == "0"
     # schema 顺序：sheetData 之后
     children = [child.tag for child in sheet]
     assert children.index(f"{{{_MAIN}}}sheetProtection") == children.index(
@@ -137,5 +141,6 @@ def test_normalize_sheet_protection_recreates_or_repairs_attributes() -> None:
     assert repaired is not None
     assert repaired.get("selectLockedCells") is None
     assert repaired.get("formatCells") is None  # 显式放开被撤销（默认禁止）
-    assert repaired.get("deleteRows") is None
+    assert repaired.get("insertRows") == "0"  # 数据行增删显式放开
+    assert repaired.get("deleteRows") == "0"
     assert repaired.get("password") == "ABCD"  # 密码哈希保留

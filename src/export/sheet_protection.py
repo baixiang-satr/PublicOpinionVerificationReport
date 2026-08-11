@@ -1,8 +1,9 @@
 """数据区解锁样式与工作表保护语义（OOXML 层）。
 
-交付工作簿的每张工作表都带 sheetProtection：格式、行列结构、增删行列
-一律锁定。模板的数据区单元格原本也是锁定样式，收件人无法在 Excel/WPS
-里补录内容。这里在写入业务行前为 cellXfs 的每个 xf 生成「解锁克隆」
+交付工作簿的每张工作表都带 sheetProtection：格式与列结构锁定，
+数据行允许插入/删除（insertRows/deleteRows 显式写 0 放开）。模板的
+数据区单元格原本也是锁定样式，收件人无法在 Excel/WPS 里补录内容。
+这里在写入业务行前为 cellXfs 的每个 xf 生成「解锁克隆」
 （``applyProtection="1"`` + ``<protection locked="0"/>``），写出的数据
 单元格全部引用解锁克隆；表头行/示例行不被重写，保持原锁定样式不变。
 """
@@ -17,19 +18,20 @@ _MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 ET.register_namespace("", _MAIN)
 
 # sheetProtection 中「1=禁止」的操作属性：显式写 0 会放开格式/结构修改。
+# 数据行增删（insertRows/deleteRows）自 2026-08-11 起放开，不在此列。
 _BLOCKED_ACTION_ATTRIBUTES = (
     "formatCells",
     "formatColumns",
     "formatRows",
     "insertColumns",
-    "insertRows",
     "insertHyperlinks",
     "deleteColumns",
-    "deleteRows",
     "sort",
     "autoFilter",
     "pivotTables",
 )
+# 显式写 0 才放开的操作（OOXML 语义：属性缺省=禁止）。
+_ALLOWED_ACTION_ATTRIBUTES = ("insertRows", "deleteRows")
 # 「1=禁止选中」的选择属性：移除即恢复默认（允许自由选中）。
 _SELECTION_ATTRIBUTES = ("selectLockedCells", "selectUnlockedCells")
 
@@ -104,11 +106,13 @@ def unlocked_style_map(styles_xml: bytes) -> tuple[bytes, dict[str, str]]:
 
 
 def normalize_sheet_protection(sheet_root: ET.Element) -> None:
-    """把工作表保护规范为「格式/结构锁定，可选中、数据区内容可编辑」。
+    """把工作表保护规范为「格式/列结构锁定，数据行可增删、内容可编辑」。
 
     保护元素本身保留（含密码哈希等全部既有属性），只撤销会放开格式/
-    结构的显式允许（属性值 0），并移除禁止选中的属性以恢复默认自由选中。
-    模板当前属性已符合该语义，本函数是防御性兜底。
+    结构的显式允许（属性值 0），显式放开数据行增删（insertRows/
+    deleteRows=0，OOXML 缺省即禁止，必须写 0 才放开），并移除禁止选中
+    的属性以恢复默认自由选中。模板当前属性已符合该语义，本函数是防御性
+    兜底。
     """
 
     protection = sheet_root.find(f"{{{_MAIN}}}sheetProtection")
@@ -117,6 +121,8 @@ def normalize_sheet_protection(sheet_root: ET.Element) -> None:
         protection.set("sheet", "1")
         protection.set("objects", "1")
         protection.set("scenarios", "1")
+        for name in _ALLOWED_ACTION_ATTRIBUTES:
+            protection.set(name, "0")
         anchor = sheet_root.find(f"{{{_MAIN}}}sheetData")
         if anchor is None:
             sheet_root.append(protection)
@@ -130,3 +136,5 @@ def normalize_sheet_protection(sheet_root: ET.Element) -> None:
     for name in _BLOCKED_ACTION_ATTRIBUTES:
         if protection.get(name) == "0":
             del protection.attrib[name]
+    for name in _ALLOWED_ACTION_ATTRIBUTES:
+        protection.set(name, "0")
