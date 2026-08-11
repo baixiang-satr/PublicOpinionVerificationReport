@@ -192,6 +192,8 @@ class InputReadResult:
     tasks: tuple[UrlTask, ...]
     rejected_values: tuple[str, ...]
     source_path: Path
+    duplicate_count: int = 0
+    duplicate_examples: tuple[str, ...] = ()
 
     @property
     def duplicate_or_invalid_count(self) -> int:

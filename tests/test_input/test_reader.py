@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.input.reader import list_xlsx_sheets, read_url_input
+from src.input.reader import describe_input, list_xlsx_sheets, read_url_input
 
 
 def test_read_url_input_supports_text_and_csv(tmp_path: Path) -> None:
@@ -45,3 +45,34 @@ def test_read_url_input_supports_standard_xlsx_and_selected_sheet(tmp_path: Path
         "https://example.com/b?z=2&y=1",
     ]
     assert result.duplicate_or_invalid_count == 0
+
+
+def test_read_url_input_dedupe_keeps_first_and_reports_duplicates(tmp_path: Path) -> None:
+    text_path = tmp_path / "dupes.txt"
+    text_path.write_text(
+        "https://example.com/a\nhttps://example.com/a\nhttps://example.com/b\n",
+        encoding="utf-8",
+    )
+
+    kept = read_url_input(text_path)
+    assert [task.normalized_url for task in kept.tasks] == [
+        "https://example.com/a",
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+    assert kept.duplicate_count == 1
+    assert kept.duplicate_examples == ("https://example.com/a",)
+
+    deduped = read_url_input(text_path, dedupe=True)
+    assert [task.normalized_url for task in deduped.tasks] == [
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+    assert [task.evidence_id for task in deduped.tasks] == [1, 2]
+    # 去重选择不改变「检测到重复」的事实，供界面回显
+    assert deduped.duplicate_count == 1
+
+    payload = describe_input(deduped)
+    assert payload["url_count"] == 2
+    assert payload["duplicate_count"] == 1
+    assert payload["duplicate_examples"] == ["https://example.com/a"]

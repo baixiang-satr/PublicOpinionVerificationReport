@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 
 from src.domain.models import InputReadResult
-from src.input.url_parser import build_url_tasks
+from src.input.url_parser import build_url_tasks, find_duplicate_urls
 
 
 SUPPORTED_INPUT_SUFFIXES = {".txt", ".csv", ".xlsx"}
@@ -19,7 +19,7 @@ class InputReadError(ValueError):
     """Raised when a user input file cannot safely be read as a URL source."""
 
 
-def read_url_input(path: Path, sheet_name: str | None = None) -> InputReadResult:
+def read_url_input(path: Path, sheet_name: str | None = None, *, dedupe: bool = False) -> InputReadResult:
     path = Path(path)
     if not path.is_file():
         raise InputReadError(f"Input file does not exist: {path}")
@@ -32,8 +32,27 @@ def read_url_input(path: Path, sheet_name: str | None = None) -> InputReadResult
         values = _read_csv_values(path)
     else:
         values = _read_xlsx_values(path, sheet_name)
-    tasks, rejected = build_url_tasks(values)
-    return InputReadResult(tuple(tasks), tuple(rejected), path)
+    duplicate_count, duplicate_examples = find_duplicate_urls(values)
+    tasks, rejected = build_url_tasks(values, dedupe=dedupe)
+    return InputReadResult(
+        tuple(tasks),
+        tuple(rejected),
+        path,
+        duplicate_count=duplicate_count,
+        duplicate_examples=duplicate_examples,
+    )
+
+
+def describe_input(result: InputReadResult) -> dict:
+    """pick_input_file 的前端载荷（bridge 行数受限，字典构造收口在这里）。"""
+
+    return {
+        "path": str(result.source_path),
+        "url_count": len(result.tasks),
+        "rejected_count": len(result.rejected_values),
+        "duplicate_count": result.duplicate_count,
+        "duplicate_examples": list(result.duplicate_examples),
+    }
 
 
 def list_xlsx_sheets(path: Path) -> list[str]:
