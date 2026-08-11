@@ -7,6 +7,7 @@ from pathlib import Path
 from src.config.settings import AppConfig, PROJECT_ROOT
 from src.services import recovery_mirror
 from src.webui.bridge import WebUIBridge
+from src.webui.exit_control import install_close_confirmation
 from src.webui.runner import EventSink
 
 _DIST_INDEX = PROJECT_ROOT / "web" / "dist" / "index.html"
@@ -47,6 +48,8 @@ def run_app() -> int:
     )
     window_box["window"] = window
     sink.bind(window)
+    # 点关闭不直接退出：否决默认关闭，交前端确认「直接退出 / 最小化」。
+    install_close_confirmation(window, sink)
     try:
         # http_server=True：内置 HTTP 服务加载 dist，规避 file:// 下
         # ES module / 动态 import 的 CORS 限制（WebView2 会拦截）。

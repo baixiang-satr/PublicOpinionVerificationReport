@@ -55,12 +55,15 @@ class LicenseApiMixin:
 _GUARDED_METHODS = (
     "pick_input_file",
     "pick_zip_file",
+    "pick_letter_file",
     "start_crawl",
     "retry_failed",
     "resume_checkpoint",
     "export_zip",
     "start_region_capture",
     "auth_login",
+    "start_url_recheck",
+    "remove_records",
 )
 
 

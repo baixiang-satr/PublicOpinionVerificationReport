@@ -16,7 +16,7 @@ from src.auth.login_evidence import state_has_authenticated_session
 from src.auth.registry import auth_policy_for_url
 from src.config.settings import AppConfig, TaskConfig
 from src.crawler.author_profile_urls import is_author_profile_url
-from src.input.reader import InputReadError, read_url_input
+from src.input.reader import InputReadError, describe_input, read_url_input
 from src.license.manager import LicenseManager
 from src.services import job_records, recovery_mirror
 from src.services.checkpoint_store import CheckpointStore
@@ -29,6 +29,7 @@ from src.webui.auth_runner import AuthRunner
 from src.webui.image_payload import image_payload
 from src.webui.runner import CaptureRunner, EventSink, JobRunner
 from src.webui.auth_ui import build_auth_list, missing_auth_platforms
+from src.webui.api_mixins import ExitControlMixin, LetterApiMixin, RecheckApiMixin
 from src.webui.license_gate import LicenseApiMixin, apply_license_guard, default_license_manager
 from src.webui.serialize import (
     row_delta,
@@ -40,7 +41,7 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 _SCREENSHOT_SLOTS = {"primary": "content", "author": "author"}
 
 
-class WebUIBridge(LicenseApiMixin, AuthApiMixin):
+class WebUIBridge(LicenseApiMixin, AuthApiMixin, LetterApiMixin, ExitControlMixin, RecheckApiMixin):
     def __init__(
         self,
         base_config: AppConfig,
@@ -55,6 +56,7 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
         self._window_provider = window_provider
         self.license = license_manager if license_manager is not None else default_license_manager()
         self._input_platform_keys: set[str] = set()
+        self._letter_path: Path | None = None
         self.auth = AuthRunner(
             lambda: self._task_config, self._sink, relevant_keys_getter=lambda: self._input_platform_keys
         )
@@ -136,11 +138,7 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
             for task in result.tasks
             if (policy := auth_policy_for_url(task.normalized_url)) is not None
         }
-        return {
-            "path": str(path),
-            "url_count": len(result.tasks),
-            "rejected_count": len(result.rejected_values),
-        }
+        return describe_input(result)
 
     def pick_zip_file(self) -> dict:
         path = self._pick_file(("template 交付包 (*.zip)", "全部文件 (*.*)"))
@@ -158,11 +156,11 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
         return {"ok": ok, "message": message}
 
     # ── 抓取任务 ──
-    def start_crawl(self, input_path: str) -> dict:
+    def start_crawl(self, input_path: str, dedupe: bool = False) -> dict:
         if not input_path:
             return {"ok": False, "message": "请先选择 URL 文件。"}
         try:
-            parsed = read_url_input(Path(input_path))
+            parsed = read_url_input(Path(input_path), dedupe=dedupe)
         except InputReadError as error:
             return {"ok": False, "message": f"无法读取 URL 文件：{error}"}
         missing = missing_auth_platforms(
@@ -180,7 +178,9 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
                     "成功保存一次后，后续抓取会自动复用。"
                 ),
             }
-        request = JobRequest(input_path=Path(input_path))
+        request = JobRequest(
+            input_path=Path(input_path), dedupe=dedupe, letter_path=self._letter_path
+        )
         ok, message = self.jobs.start(request)
         return {"ok": ok, "message": message}
 
@@ -202,7 +202,7 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
         ok, message = self.jobs.start(request)
         return {"ok": ok, "message": message}
 
-    def resume_checkpoint(self, reexport_only: bool, input_path: str = "") -> dict:
+    def resume_checkpoint(self, reexport_only: bool, input_path: str = "", dedupe: bool = False) -> dict:
         checkpoint = self.jobs.last_checkpoint
         if not checkpoint:
             return {"ok": False, "message": "没有可用的断点。"}
@@ -225,6 +225,7 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin):
                 input_path=Path(input_path),
                 resume_checkpoint_path=checkpoint_path,
                 label="断点继续",
+                dedupe=dedupe,
             )
         if reexport_only:
             # 断点重导出也锚定交付目录：最终包复制回断点所在任务目录。
