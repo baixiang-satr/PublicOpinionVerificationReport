@@ -95,6 +95,9 @@ class TaskConfig:
     manual_intervention_timeout_seconds: int = 90
     enable_auth_health_gate: bool = True
     pause_platform_on_auth_failure: bool = True
+    # 抓取前复验新鲜期：登录态在该分钟数内已验证（VALID）则跳过复验；
+    # <=0 表示每次都复验。
+    auth_preflight_freshness_minutes: int = 30
 
     # ── Author / OCR ──────────────────────────────────────────────────
     allow_nickname_as_id: bool = True
@@ -283,6 +286,12 @@ class AppConfig:
             pause_platform_on_auth_failure=_bool_env(
                 "POR_PAUSE_PLATFORM_ON_AUTH_FAILURE",
                 defaults.task.pause_platform_on_auth_failure,
+            ),
+            auth_preflight_freshness_minutes=int(
+                os.getenv(
+                    "POIR_AUTH_PREFLIGHT_FRESHNESS_MINUTES",
+                    defaults.task.auth_preflight_freshness_minutes,
+                )
             ),
             capture_network_json=_bool_env(
                 "POR_CAPTURE_NETWORK_JSON",

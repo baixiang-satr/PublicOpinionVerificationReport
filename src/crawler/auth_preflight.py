@@ -4,14 +4,41 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
+from src.auth.models import AuthStatus
 from src.auth.registry import auth_policy_for_url
 from src.config.settings import TaskConfig
 from src.domain.models import RecordResult, TaskEvent, UrlTask
 
 logger = logging.getLogger(__name__)
+
+
+def _is_fresh_validated(
+    auth_store: Any,
+    platform_key: str,
+    freshness_minutes: int,
+) -> bool:
+    """VALID 且 validated_at 在新鲜期内 → 可跳过抓取前复验。"""
+
+    if freshness_minutes <= 0:
+        return False
+    try:
+        profile = auth_store.profile_for(platform_key)
+    except Exception:  # noqa: BLE001 - profile read failure keeps revalidation
+        return False
+    if profile.status != AuthStatus.VALID or not profile.validated_at:
+        return False
+    try:
+        validated_at = datetime.fromisoformat(str(profile.validated_at))
+    except ValueError:
+        return False
+    if validated_at.tzinfo is None:
+        validated_at = validated_at.astimezone()
+    age = datetime.now().astimezone() - validated_at
+    return age <= timedelta(minutes=freshness_minutes)
 
 
 async def preflight_auth_profiles(
@@ -38,6 +65,18 @@ async def preflight_auth_profiles(
         policy = auth_policy_for_url(queue[0].normalized_url)
         if policy is None:
             return None
+        freshness = getattr(config, "auth_preflight_freshness_minutes", 0)
+        if _is_fresh_validated(auth_store, policy.platform_key, freshness):
+            emit(
+                RecordResult(task=queue[0]),
+                "auth_preflight",
+                (
+                    f"{policy.display_name} 登录态在 {freshness} 分钟内已验证，"
+                    "跳过抓取前复验"
+                ),
+                on_event,
+            )
+            return policy.platform_key, True
         emit(
             RecordResult(task=queue[0]),
             "auth_preflight",
