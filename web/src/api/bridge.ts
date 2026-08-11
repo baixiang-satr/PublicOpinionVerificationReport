@@ -9,6 +9,7 @@ import type {
   ScreenshotPair,
   SheetPayload,
   TaskOptions,
+  UrlRecheckRow,
 } from '@/types'
 
 interface PyWebviewApi {
@@ -18,11 +19,14 @@ interface PyWebviewApi {
   license_deactivate(): Promise<LicenseInfo>
   pick_input_file(): Promise<InputFileInfo | null>
   pick_zip_file(): Promise<{ ok: boolean; message: string }>
+  pick_letter_file(): Promise<{ ok: boolean; name: string; message: string }>
+  clear_letter_file(): Promise<{ ok: boolean }>
+  letter_state(): Promise<{ name: string }>
   set_options(options: TaskOptions): Promise<{ ok: boolean }>
-  start_crawl(input_path: string): Promise<{ ok: boolean; message: string }>
+  start_crawl(input_path: string, dedupe: boolean): Promise<{ ok: boolean; message: string }>
   cancel_job(): Promise<{ ok: boolean }>
   retry_failed(): Promise<{ ok: boolean; message: string }>
-  resume_checkpoint(reexport_only: boolean, input_path: string): Promise<{ ok: boolean; message: string }>
+  resume_checkpoint(reexport_only: boolean, input_path: string, dedupe: boolean): Promise<{ ok: boolean; message: string }>
   get_sheet_payload(): Promise<SheetPayload[]>
   apply_edit(eid: number, field: string, value: string): Promise<{ ok: boolean }>
   add_manual_row(sheet_name: string): Promise<{ eid: number | null }>
@@ -32,6 +36,12 @@ interface PyWebviewApi {
   start_region_capture(eid: number, target: 'content' | 'author'): Promise<{ ok: boolean; code?: string; message: string }>
   open_url(url: string): Promise<{ ok: boolean }>
   open_output_dir(): Promise<{ ok: boolean }>
+  confirm_exit(): Promise<{ ok: boolean }>
+  minimize_window(): Promise<{ ok: boolean }>
+  list_url_recheck(): Promise<{ ok: boolean; rows: UrlRecheckRow[]; running: boolean }>
+  start_url_recheck(): Promise<{ ok: boolean; message: string }>
+  cancel_url_recheck(): Promise<{ ok: boolean }>
+  remove_records(eids: number[]): Promise<{ ok: boolean; removed: number }>
   export_zip(): Promise<{ ok: boolean; message: string }>
   auth_list(): Promise<AuthPlatform[]>
   auth_probe_all(): Promise<{ ok: boolean }>
@@ -350,12 +360,17 @@ export const bridge = {
   licenseDeactivate: () => call<LicenseInfo>('license_deactivate'),
   pickInputFile: () => call<InputFileInfo | null>('pick_input_file'),
   pickZipFile: () => call<{ ok: boolean; message: string }>('pick_zip_file'),
+  pickLetterFile: () =>
+    call<{ ok: boolean; name: string; message: string }>('pick_letter_file'),
+  clearLetterFile: () => call<{ ok: boolean }>('clear_letter_file'),
+  letterState: () => call<{ name: string }>('letter_state'),
   setOptions: (o: TaskOptions) => call<{ ok: boolean }>('set_options', o),
-  startCrawl: (p: string) => call<{ ok: boolean; message: string }>('start_crawl', p),
+  startCrawl: (p: string, dedupe = false) =>
+    call<{ ok: boolean; message: string }>('start_crawl', p, dedupe),
   cancelJob: () => call<{ ok: boolean }>('cancel_job'),
   retryFailed: () => call<{ ok: boolean; message: string }>('retry_failed'),
-  resumeCheckpoint: (reexportOnly: boolean, inputPath: string) =>
-    call<{ ok: boolean; message: string }>('resume_checkpoint', reexportOnly, inputPath),
+  resumeCheckpoint: (reexportOnly: boolean, inputPath: string, dedupe = false) =>
+    call<{ ok: boolean; message: string }>('resume_checkpoint', reexportOnly, inputPath, dedupe),
   getSheetPayload: () => call<SheetPayload[]>('get_sheet_payload'),
   applyEdit: (eid: number, field: string, value: string) =>
     call<{ ok: boolean }>('apply_edit', eid, field, value),
@@ -368,6 +383,14 @@ export const bridge = {
     call<{ ok: boolean; code?: string; message: string }>('start_region_capture', eid, target),
   openUrl: (url: string) => call<{ ok: boolean }>('open_url', url),
   openOutputDir: () => call<{ ok: boolean }>('open_output_dir'),
+  confirmExit: () => call<{ ok: boolean }>('confirm_exit'),
+  minimizeWindow: () => call<{ ok: boolean }>('minimize_window'),
+  listUrlRecheck: () =>
+    call<{ ok: boolean; rows: UrlRecheckRow[]; running: boolean }>('list_url_recheck'),
+  startUrlRecheck: () => call<{ ok: boolean; message: string }>('start_url_recheck'),
+  cancelUrlRecheck: () => call<{ ok: boolean }>('cancel_url_recheck'),
+  removeRecords: (eids: number[]) =>
+    call<{ ok: boolean; removed: number }>('remove_records', eids),
   exportZip: () => call<{ ok: boolean; message: string }>('export_zip'),
   authList: () => call<AuthPlatform[]>('auth_list'),
   authProbeAll: () => call<{ ok: boolean }>('auth_probe_all'),

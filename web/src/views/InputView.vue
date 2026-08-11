@@ -1,12 +1,33 @@
 <script setup lang="ts">
-// 第 1 步：选择 URL 文件 + 运行参数 + 登录态管理入口。
+// 第 1 步：选择 URL 文件 + 函文档 + 运行参数 + 登录态管理入口。
 import { FolderOpened, Lock } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { onMounted } from 'vue'
 
 import { bridge } from '@/api/bridge'
 import { useJobStore } from '@/stores/job'
 
 const store = useJobStore()
+
+onMounted(async () => {
+  const state = await bridge.letterState()
+  store.letterName = state.name || ''
+})
+
+async function pickLetter() {
+  const res = await bridge.pickLetterFile()
+  if (!res.ok) {
+    if (res.message) ElMessage.warning(res.message)
+    return
+  }
+  store.letterName = res.name
+  ElMessage.success(`已选择函文档：${res.name}，导出时将自动加入交付包并写入附件列。`)
+}
+
+async function clearLetter() {
+  await bridge.clearLetterFile()
+  store.letterName = ''
+}
 
 async function pickFile() {
   const info = await bridge.pickInputFile()
@@ -19,17 +40,40 @@ async function pickFile() {
   }
   store.inputPath = info.path
   store.urlCount = info.url_count
+  store.dedupeChoice = false
   if ((info as { error?: string }).error) {
     ElMessage.warning((info as { error?: string }).error ?? '文件读取失败。')
     return
   }
   if (info.url_count === 0) {
     ElMessage.warning('文件中没有可处理的 HTTP(S) URL。')
-  } else {
-    ElMessage.success(
-      `已读取 ${info.url_count} 条有效 URL` +
-        (info.rejected_count ? `，${info.rejected_count} 条无效已忽略。` : '。'),
-    )
+    return
+  }
+  ElMessage.success(
+    `已读取 ${info.url_count} 条有效 URL` +
+      (info.rejected_count ? `，${info.rejected_count} 条无效已忽略。` : '。'),
+  )
+  const dupCount = info.duplicate_count ?? 0
+  if (dupCount > 0) {
+    const examples = (info.duplicate_examples ?? []).slice(0, 3)
+    const exampleText = examples.length ? `\n示例：${examples.join('、')}` : ''
+    try {
+      await ElMessageBox.confirm(
+        `检测到 ${dupCount} 条重复 URL（去重判定以规范化后的链接为准）。${exampleText}\n\n选择「删除重复」将只保留每个链接的首次出现；选择「全部保留」则按原样抓取。`,
+        '发现重复 URL',
+        {
+          confirmButtonText: '删除重复（保留首次出现）',
+          cancelButtonText: '全部保留',
+          type: 'warning',
+          distinguishCancelAndClose: true,
+        },
+      )
+      store.dedupeChoice = true
+      ElMessage.info('已选择：删除重复，开始抓取时仅保留每个链接的首次出现。')
+    } catch {
+      store.dedupeChoice = false
+      ElMessage.info('已选择：全部保留。')
+    }
   }
 }
 
@@ -43,7 +87,7 @@ function openAuth() {
   <section>
     <h1 class="page-title">第 1 步 · 选择 URL 文件并确认参数</h1>
     <p class="page-subtitle muted">
-      文件里只要出现 http(s) 链接即可，重复链接会自动去重。
+      文件里只要出现 http(s) 链接即可；如有重复链接，选择文件后会提示是否删除重复。
     </p>
     <div class="notice-banner">
       首次使用请进入「管理平台登录态」，只登录本次 URL 涉及的平台。
@@ -60,7 +104,23 @@ function openAuth() {
         <span v-else class="muted">尚未选择文件</span>
       </div>
       <div v-if="store.urlCount > 0" class="muted file-meta">
-        已识别 {{ store.urlCount }} 条有效 URL
+        已识别 {{ store.urlCount }} 条有效 URL{{ store.dedupeChoice ? '（已选择删除重复）' : '' }}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">函文档（可选）</h2>
+      <p class="card-desc muted">
+        选择一份「函」文件（如 XX市申请处置的函.docx），导出时自动放入交付包，
+        并把函名追加到每一行附件列末尾；不选择则导出行为与之前完全一致。
+      </p>
+      <div class="file-row">
+        <el-button :icon="FolderOpened" @click="pickLetter">选择函文档…</el-button>
+        <template v-if="store.letterName">
+          <span class="file-path">{{ store.letterName }}</span>
+          <el-button size="small" text type="danger" @click="clearLetter">清除</el-button>
+        </template>
+        <span v-else class="muted">尚未选择函文档</span>
       </div>
     </div>
 

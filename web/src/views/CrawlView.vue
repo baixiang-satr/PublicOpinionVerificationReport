@@ -27,7 +27,7 @@ async function start() {
   store.running = true
   store.statusText = '正在启动任务…'
   if (store.options) await bridge.setOptions(store.options)
-  const res = await bridge.startCrawl(store.inputPath)
+  const res = await bridge.startCrawl(store.inputPath, store.dedupeChoice)
   if (!res.ok) {
     store.running = false
     store.statusText = res.message || '任务启动失败'
@@ -56,7 +56,7 @@ async function retry() {
 async function resume(reexportOnly: boolean) {
   store.resetRunState()
   store.running = true
-  const res = await bridge.resumeCheckpoint(reexportOnly, store.inputPath)
+  const res = await bridge.resumeCheckpoint(reexportOnly, store.inputPath, store.dedupeChoice)
   if (!res.ok) {
     store.running = false
     ElMessage.warning(res.message || '没有可用的断点。')

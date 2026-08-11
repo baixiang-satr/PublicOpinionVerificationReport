@@ -132,6 +132,8 @@ export interface InputFileInfo {
   path: string
   url_count: number
   rejected_count: number
+  duplicate_count?: number
+  duplicate_examples?: string[]
 }
 
 export interface ScreenshotInfo {
@@ -162,6 +164,9 @@ export type BridgeEventType =
   | 'auth'
   | 'auth_relogin'
   | 'capture'
+  | 'app_closing'
+  | 'url_recheck'
+  | 'url_recheck_done'
 
 export interface AuthReloginPayload {
   key: string
@@ -173,4 +178,33 @@ export interface AuthReloginPayload {
 export interface BridgeEvent {
   type: BridgeEventType
   payload: unknown
+}
+
+// ── U04：URL 有效性复验 ────────────────────────────────────────────
+export type UrlRecheckStatus = 'valid' | 'invalid' | 'uncertain'
+
+export interface UrlRecheckEntry {
+  status: UrlRecheckStatus
+  code: string
+  message: string
+  checked_at: string
+}
+
+export interface UrlRecheckRow {
+  eid: number
+  url: string
+  status: string
+  recheck: UrlRecheckEntry | null
+}
+
+export interface UrlRecheckEventPayload extends UrlRecheckEntry {
+  eid: number
+  done: number
+  total: number
+}
+
+export interface UrlRecheckDonePayload {
+  cancelled: boolean
+  done: number
+  total: number
 }

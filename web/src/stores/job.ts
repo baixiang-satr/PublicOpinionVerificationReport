@@ -43,6 +43,10 @@ interface JobState {
   license: LicenseInfo | null
   inputPath: string
   urlCount: number
+  // U07：选文件时用户对重复 URL 的选择（true=删除重复保留首条，false=全部保留）
+  dedupeChoice: boolean
+  // U01：已选「函」文档文件名（空串=未选择）
+  letterName: string
   running: boolean
   started: JobStartedPayload | null
   progress: ProgressPayload
@@ -58,6 +62,12 @@ interface JobState {
   sheetDialogOpen: boolean
   sheetDialogMode: 'preview' | 'edit'
   lastCapture: CaptureEventPayload | null
+  // U02：后端否决窗口关闭后自增，App.vue 监听弹出三态确认框
+  closePrompt: number
+  // U04：URL 复验对话框；recheckVersion 每次复验事件自增触发列表刷新
+  recheckDialogOpen: boolean
+  recheckRunning: boolean
+  recheckVersion: number
 }
 
 export const useJobStore = defineStore('job', {
@@ -68,6 +78,8 @@ export const useJobStore = defineStore('job', {
     license: null,
     inputPath: '',
     urlCount: 0,
+    dedupeChoice: false,
+    letterName: '',
     running: false,
     started: null,
     progress: { ...EMPTY_PROGRESS },
@@ -83,6 +95,10 @@ export const useJobStore = defineStore('job', {
     sheetDialogOpen: false,
     sheetDialogMode: 'preview',
     lastCapture: null,
+    closePrompt: 0,
+    recheckDialogOpen: false,
+    recheckRunning: false,
+    recheckVersion: 0,
   }),
   getters: {
     canGoNext(state): boolean {
@@ -164,6 +180,16 @@ export const useJobStore = defineStore('job', {
           break
         case 'capture':
           this.onCaptureEvent(payload as unknown as CaptureEventPayload)
+          break
+        case 'app_closing':
+          this.closePrompt += 1
+          break
+        case 'url_recheck':
+          this.recheckVersion += 1
+          break
+        case 'url_recheck_done':
+          this.recheckRunning = false
+          this.recheckVersion += 1
           break
       }
     },
