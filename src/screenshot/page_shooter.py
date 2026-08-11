@@ -26,6 +26,7 @@ from src.screenshot.page_layout import (
 from src.screenshot.page_layout import (
     page_dimensions as _page_dimensions,
 )
+from src.screenshot.url_banner_scripts import inject_url_banner, remove_url_banner
 from src.utils.file_utils import UnsafeFileNameError, require_safe_file_name
 
 
@@ -212,11 +213,16 @@ class PageShooter:
                 if is_long_page
                 else self._config.screenshot_jpeg_quality
             )
+        # 截图前注入顶部 URL 横幅（最终 URL 可溯源，证据合规）；无论截图
+        # 成败都在 finally 中移除，页面 DOM 不留残留。
+        await inject_url_banner(page)
         try:
             await page.screenshot(**options)
         except Exception as error:
             output_path.unlink(missing_ok=True)
             raise PageScreenshotError(f"Unable to capture screenshot: {error}") from error
+        finally:
+            await remove_url_banner(page)
         _raise_if_cancelled(cancel_event)
         if not output_path.is_file() or output_path.stat().st_size == 0:
             output_path.unlink(missing_ok=True)
