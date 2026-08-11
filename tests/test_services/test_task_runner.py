@@ -413,3 +413,57 @@ def test_build_rows_routes_failed_record_from_submitted_url(tmp_path: Path) -> N
     assert rows[0].values_by_column["B"] == "京东_京东商城_电商平台"
     assert rows[0].primary_screenshot_name is None
     assert record.status == RecordStatus.NEEDS_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_runner_stages_letter_into_archive_and_attachment_column(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    writer = FakeWriter()
+    letter = tmp_path / "XX市申请处置的函.docx"
+    letter.write_bytes(b"letter")
+    runner = TaskRunner(
+        config,
+        engine_factory=lambda _task_config: FakeEngine(),
+        excel_writer=writer,
+    )
+
+    result = await runner.run(
+        JobRequest(
+            tasks=(UrlTask(1, "https://example.test/1", "https://example.test/1"),),
+            job_id="letter-job",
+            letter_path=letter,
+        )
+    )
+
+    assert result.archive_path is not None
+    (row,) = writer.rows
+    assert row.attachment_names[-1] == "XX市申请处置的函.docx"
+    with ZipFile(result.archive_path) as archive:
+        assert "template/XX市申请处置的函.docx" in archive.namelist()
+    # 函文件持久化到任务目录，断点/补录重导出可发现
+    assert (result.job_dir / "letter" / "XX市申请处置的函.docx").is_file()
+
+
+@pytest.mark.asyncio
+async def test_runner_missing_letter_degrades_to_plain_export(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    writer = FakeWriter()
+    runner = TaskRunner(
+        config,
+        engine_factory=lambda _task_config: FakeEngine(),
+        excel_writer=writer,
+    )
+
+    result = await runner.run(
+        JobRequest(
+            tasks=(UrlTask(1, "https://example.test/1", "https://example.test/1"),),
+            job_id="missing-letter-job",
+            letter_path=tmp_path / "已被删除的函.docx",
+        )
+    )
+
+    assert result.archive_path is not None
+    (row,) = writer.rows
+    assert "已被删除的函.docx" not in row.attachment_names
+    with ZipFile(result.archive_path) as archive:
+        assert archive.namelist() == ["template/001.jpg", "template/template.xlsx"]
