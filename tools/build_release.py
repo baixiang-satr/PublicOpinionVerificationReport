@@ -41,6 +41,8 @@ USAGE_TEXT = """\
 ------------
 - Windows 10 / 11（64 位）。
 - 无需安装 Python、Node.js 或任何浏览器，已全部随包携带。
+- 解压位置必须是纯英文路径（路径中不要含中文，例如 D:\\poir\\），
+  否则内嵌运行组件可能初始化失败。
 - 需要系统自带 WebView2 运行时（Win10/Win11 一般都已有；
   若启动后窗口空白，请从微软官网搜索 “WebView2 Runtime” 安装后重试）。
 
@@ -79,6 +81,10 @@ USAGE_TEXT = """\
 五、常见问题
 ------------
 - 双击没反应：等 15 秒；仍无反应请检查杀毒软件拦截记录。
+- 报错含 Python.Runtime.dll 或 Failed to resolve Python.Runtime.Loader.Initialize：
+  多为解压路径含中文，或系统 .NET 组件缺失/异常。先把整个文件夹移到纯英文
+  路径（如 D:\\poir\\）再运行；仍报错则从微软官网安装 “.NET Framework 4.8
+  Runtime”，并检查杀毒软件是否隔离了 _internal 文件夹内的文件。
 - 提示缺少 WebView2：安装微软 WebView2 Runtime 后重试。
 - 截图窗口打不开：确认没有同时开着其他截图窗口，关闭后重试。
 - 平台提示需要重新登录：说明保存态没有账号级 Cookie 或已失效；重新点击
