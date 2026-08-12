@@ -19,6 +19,14 @@ DOCUMENT_SCRIPT = r"""
 (platformSelectors) => {
   const text = (element) => element ? (element.innerText || element.textContent || '').trim() : '';
   const isSelfProfile = (href) => /\/user\/self(?:[/?#]|$)/i.test(href || '');
+  // 查看者本人主页（微博登录态 $CONFIG.uid 对应 /u/{uid}）同样绝非作者：
+  // 删除页 chrome 的头像/导航链接会把查看者误当作者（2026-08-12 实测）。
+  const viewerUid = String((window.$CONFIG && window.$CONFIG.uid) || '');
+  const isViewerProfile = (href) => {
+    if (!viewerUid) return false;
+    try { return new RegExp('^/u/' + viewerUid + '/?$').test(new URL(href).pathname); }
+    catch (_) { return false; }
+  };
   const pick = (selectors, field) => {
     for (const selector of selectors || []) {
       const elements = Array.from(document.querySelectorAll(selector)).slice(0, 20);
@@ -27,8 +35,8 @@ DOCUMENT_SCRIPT = r"""
           const link = element.matches?.('a[href]')
             ? element
             : (element.closest?.('a[href]') || element.querySelector?.('a[href]'));
-          // /user/self 是查看者自己的主页（抖音登录后导航栏），绝非作者
-          if (link?.href && !isSelfProfile(link.href)) return link.href;
+          // /user/self 与查看者本人主页（登录态导航栏/头像链接），绝非作者
+          if (link?.href && !isSelfProfile(link.href) && !isViewerProfile(link.href)) return link.href;
           continue;
         }
         const value = text(element) || element.getAttribute('content') || element.getAttribute('datetime') || '';
@@ -114,6 +122,7 @@ DOCUMENT_SCRIPT = r"""
       if (!['http:', 'https:'].includes(target.protocol)) return null;
       if (target.href.split('#')[0] === currentUrl.href.split('#')[0]) return null;
       if (/\/user\/self(?:\/|$)/i.test(target.pathname)) return null;
+      if (isViewerProfile(target.href)) return null;
       if (/\/(?:login|signin|register|share|search|topic|tag|comment)(?:\/|$)/i.test(target.pathname)) return null;
       const context = [
         anchor.getAttribute('rel') || '',

@@ -14,7 +14,7 @@ from src.crawler.dedicated_restore import (
     restore_dedicated_time,
 )
 from src.crawler.field_resolver import merge_page_data
-from src.crawler.api_assist import douyin_aweme_id
+from src.crawler.api_assist import douyin_aweme_id, weibo_bid
 from src.crawler.platform_catalog import ExtractorFamily, PlatformDefinition
 from src.crawler.platforms.bilibili import bilibili_video_id
 from src.crawler.platforms.registry import dedicated_extractor_for
@@ -103,6 +103,14 @@ class ContentParser:
             # 剥离后回 DOM 兜底，宁可留空待补录。
             self._strip_untrusted_payload_fields(
                 merged, document, kuaishou_photo_id(document.url), strip_images=True
+            )
+        if definition.key == "weibo" and dedicated_snapshot is None:
+            # 与抖音/B站/快手同规：微博详情页内嵌载荷含查看者身份节点，
+            # 未命中时载荷字段会把查看者当成作者（2026-08-12 查看者 uid 被
+            # 误作 author_id、主页截图截成查看者本人主页的实测教训）；
+            # 剥离后回 DOM 兜底，宁可留空待补录。
+            self._strip_untrusted_payload_fields(
+                merged, document, weibo_bid(document.url), strip_images=True
             )
         if definition.key == "ixigua" and dedicated_snapshot is not None:
             self._finalize_ixigua_video(merged)

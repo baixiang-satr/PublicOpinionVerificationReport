@@ -1,4 +1,4 @@
-"""Tests for the unmatched-dedicated guards (douyin / bilibili / tieba).
+"""Tests for the unmatched-dedicated guards (douyin / bilibili / kuaishou / weibo / tieba).
 
 When the dedicated extractor cannot match the URL's content id, fields read
 from network/embedded payloads belong to configuration or recommendation
@@ -162,6 +162,59 @@ async def test_douyin_modal_url_without_aweme_match_never_exports_config_node() 
     assert data.published_at is None
     assert data.published_at_raw is None
     assert data.image_urls == []
+
+
+@pytest.mark.asyncio
+async def test_weibo_deleted_page_never_exports_viewer_identity() -> None:
+    """Regression for 2026-08-12：删除页载荷中的查看者身份被当成作者。
+
+    微博详情页内嵌/网络载荷含查看者身份节点；专用提取器未命中时若不剥离，
+    查看者 uid 会成为 author_id 并拼出 weibo.com/u/{查看者uid} 候选主页，
+    身份核验的"URL 含 id 即 verified"规则被循环论证击穿，最终把查看者本人
+    主页截图当作者证据接受（author_decisions 实测记录）。剥离后作者字段回
+    DOM 兜底（删除页无作者节点），宁可留空待补录。
+    """
+
+    viewer_node = {
+        "title": "推荐流标题",
+        "desc": "推荐流内容摘要",
+        "user": {
+            "screen_name": "查看者本人",
+            "id": "7526833006",
+            "url": "https://weibo.com/u/7526833006",
+        },
+    }
+
+    class WeiboDeletedPage:
+        url = "https://weibo.com/2068705397/R9tmcyUN0"
+
+        async def evaluate(self, script: str, *_args: object):
+            if "platformSelectors" in script:
+                return {
+                    "url": self.url,
+                    "title": "微博",
+                    "visibleText": "",
+                    "canonicalUrl": self.url,
+                    "meta": {},
+                    "jsonLd": [],
+                    "embeddedPayloads": [viewer_node],
+                    "domValues": {},
+                    "platformValues": {},
+                    "images": [],
+                }
+            return None
+
+    definition = find_platform(WeiboDeletedPage.url)
+    assert definition is not None
+    data = await ContentParser().extract(
+        WeiboDeletedPage(),
+        definition,
+        network_payloads=(viewer_node,),
+    )
+
+    assert data.author_id != "7526833006"
+    assert data.author_name != "查看者本人"
+    assert not (data.author_url or "").endswith("/u/7526833006")
 
 
 # ── 贴吧正文净化 ──
