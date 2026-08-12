@@ -48,13 +48,6 @@ const totalAttention = computed(() => {
         >
           预览表格
         </el-button>
-        <el-button
-          size="large"
-          :disabled="store.recheckRunning"
-          @click="store.recheckDialogOpen = true"
-        >
-          复验 URL 有效性
-        </el-button>
       </div>
       <el-divider />
       <div class="sheet-chips">

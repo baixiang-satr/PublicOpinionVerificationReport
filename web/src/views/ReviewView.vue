@@ -32,21 +32,23 @@ const sheets = computed(() => (store.session?.sheets ?? []).filter((s) => s.tota
             补录在弹出的表格窗口中进行，操作方式与 WPS 表格一致。
           </div>
         </div>
-        <el-button
-          type="primary"
-          size="large"
-          :icon="EditPen"
-          @click="store.openSheetDialog('edit')"
-        >
-          打开补录表格
-        </el-button>
-        <el-button
-          size="large"
-          :disabled="store.recheckRunning"
-          @click="store.recheckDialogOpen = true"
-        >
-          复验 URL 有效性
-        </el-button>
+        <div class="actions">
+          <el-button
+            type="primary"
+            size="large"
+            :icon="EditPen"
+            @click="store.openSheetDialog('edit')"
+          >
+            打开补录表格
+          </el-button>
+          <el-button
+            size="large"
+            :disabled="store.recheckRunning"
+            @click="store.recheckDialogOpen = true"
+          >
+            复验 URL 有效性
+          </el-button>
+        </div>
       </div>
       <el-divider />
       <div class="sheet-chips">
@@ -76,6 +78,13 @@ const sheets = computed(() => (store.session?.sheets ?? []).filter((s) => s.tota
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   flex-wrap: wrap;
 }
 

@@ -186,7 +186,9 @@ function formatTime(iso: string): string {
   word-break: break-all;
 }
 
-:deep(.invalid-row) {
-  background: #fef0f0;
+/* Element Plus 单元格背景由 --el-table-tr-bg-color 变量绘制，
+   直接给 tr 设 background 会被单元格盖住（失效行高亮不可见的根因）。 */
+:deep(.el-table .invalid-row) {
+  --el-table-tr-bg-color: #fef0f0;
 }
 </style>
