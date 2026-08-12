@@ -211,7 +211,131 @@ async def test_probe_page_barrier_uses_three_way_classification(
     assert code == "LOGIN_REQUIRED"
 
 
+@pytest.mark.asyncio
+async def test_probe_repolls_until_late_hydrated_deleted_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SPA 删除错误框晚水合：初检无屏障时有界重检，命中即判失效（命中即停）。"""
+
+    runner = RecheckRunner(lambda: None, EventSink())
+    browser = _FakeBrowser(_FakePage(200))
+    config = TaskConfig(enable_stealth=False, page_stabilize_milliseconds=0)
+    monkeypatch.setattr(recheck_runner, "_UNAVAILABLE_RECHECK_DELAY_MS", 0)
+    calls = 0
+
+    async def _late_barrier(
+        _page: Any, _final: str, _original: str
+    ) -> AccessBarrier | None:
+        nonlocal calls
+        calls += 1
+        if calls < 2:
+            return None
+        return AccessBarrier(
+            AccessKind.CONTENT_UNAVAILABLE,
+            "CONTENT_UNAVAILABLE",
+            "平台明确提示内容不存在、已删除或已下线；请核对原始 URL。",
+            RecordStatus.FAILED,
+        )
+
+    monkeypatch.setattr(recheck_runner, "inspect_page_access", _late_barrier)
+
+    status, code, _message = await runner._probe(browser, config, None, "https://a.test/1")
+
+    assert status is RecheckStatus.INVALID
+    assert code == "CONTENT_UNAVAILABLE"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_repoll_is_bounded_for_genuinely_valid_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """持续无屏障时重检次数有界（首检 1 次 + 重检 N 次），最终判有效。"""
+
+    runner = RecheckRunner(lambda: None, EventSink())
+    browser = _FakeBrowser(_FakePage(200))
+    config = TaskConfig(enable_stealth=False, page_stabilize_milliseconds=0)
+    monkeypatch.setattr(recheck_runner, "_UNAVAILABLE_RECHECK_ATTEMPTS", 2)
+    monkeypatch.setattr(recheck_runner, "_UNAVAILABLE_RECHECK_DELAY_MS", 0)
+    calls = 0
+
+    async def _no_barrier(_page: Any, _final: str, _original: str) -> None:
+        nonlocal calls
+        calls += 1
+        return None
+
+    monkeypatch.setattr(recheck_runner, "inspect_page_access", _no_barrier)
+
+    status, _code, _message = await runner._probe(browser, config, None, "https://a.test/1")
+
+    assert status is RecheckStatus.VALID
+    assert calls == 3
+
+
 def test_recheck_file_lives_in_job_dir(tmp_path: Path) -> None:
     UrlRecheckStore(tmp_path).set(7, RecheckStatus.VALID)
     assert (tmp_path / RECHECK_FILENAME).is_file()
     assert asyncio  # 保持 asyncio 导入供异步用例使用
+
+
+class _FakePlaywrightHandle:
+    def __init__(self, browser: _FakeBrowser) -> None:
+        self.chromium = SimpleNamespace(launch=self._launch)
+        self._browser = browser
+
+    async def _launch(self, **_options: Any) -> _FakeBrowser:
+        return self._browser
+
+    async def stop(self) -> None:
+        return None
+
+
+class _FakePlaywrightFactory:
+    def __init__(self, browser: _FakeBrowser) -> None:
+        self._browser = browser
+
+    async def start(self) -> _FakePlaywrightHandle:
+        return _FakePlaywrightHandle(self._browser)
+
+
+def _wait_runner_idle(runner: RecheckRunner, timeout: float = 15.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while runner.is_running() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def test_recheck_runner_can_restart_after_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """复验完成（done 事件发出）后必须能再次启动（只能点一次的竞态回归）。"""
+
+    browser = _FakeBrowser(_FakePage(200))
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: _FakePlaywrightFactory(browser),
+    )
+    session = _FakeSession(tmp_path, [_record(1, "https://a.test/1")])
+    config = AppConfig(
+        template=TemplateConfig(source_dir=Path("."), output_dir=Path(".")),
+        task=TaskConfig(
+            enable_stealth=False,
+            page_stabilize_milliseconds=0,
+            min_host_interval_seconds=0,
+        ),
+    )
+    runner = RecheckRunner(lambda: config, EventSink())
+
+    ok, message = runner.start(session, None)  # type: ignore[arg-type]
+    assert ok is True, message
+    _wait_runner_idle(runner)
+    assert runner.is_running() is False
+
+    ok, message = runner.start(session, None)  # type: ignore[arg-type]
+    assert ok is True, message
+    _wait_runner_idle(runner)
+    assert runner.is_running() is False
+    entry = UrlRecheckStore(tmp_path).get(1)
+    assert entry is not None
+    assert entry.status is RecheckStatus.VALID

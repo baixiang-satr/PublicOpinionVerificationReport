@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 _STEALTH_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "libs" / "stealth.min.js"
 
+# SPA「内容已删除」错误框常晚于 domcontentloaded+稳定等待才水合渲染（如微博）；
+# 初检无屏障时按 尝试次数×间隔 有界重检，命中任意屏障即停（测试可 monkeypatch 为 0）。
+_UNAVAILABLE_RECHECK_ATTEMPTS = 4
+_UNAVAILABLE_RECHECK_DELAY_MS = 1000
+
 
 class RecheckRunner(AsyncThreadJob):
     """在专属线程 + 独立 asyncio 循环中运行的 URL 复验任务。"""
@@ -36,10 +41,16 @@ class RecheckRunner(AsyncThreadJob):
     def __init__(self, config_getter: Callable[[], Any], sink: EventSink) -> None:
         super().__init__(sink)
         self._config_getter = config_getter
+        # 活动标志替代线程存活判断：done 事件发出时基类线程句柄仍在 finally
+        # 收尾（is_alive 为 True），会让 list_url_recheck 误报 running，前端
+        # "开始复验"按钮因此被永久卡住（只能点一次的 bug）。
+        self._active = False
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._active
 
     def start(self, session: ReviewSession, auth_store: Any) -> tuple[bool, str]:
-        if self.is_running():
-            return False, "复验任务正在运行。"
         targets = [
             (record.task.evidence_id, url)
             for record in session.records()
@@ -49,6 +60,10 @@ class RecheckRunner(AsyncThreadJob):
         ]
         if not targets:
             return False, "当前任务没有可复验的 URL。"
+        with self._lock:
+            if self._active:
+                return False, "复验任务正在运行。"
+            self._active = True
         self._spawn(self._run(Path(session.job_dir), targets, auth_store))
         return True, ""
 
@@ -107,6 +122,9 @@ class RecheckRunner(AsyncThreadJob):
                     await playwright.stop()
                 except Exception:  # noqa: BLE001
                     pass
+            # done 事件发出前先复位活动标志：前端收到事件立即刷新列表。
+            with self._lock:
+                self._active = False
             self._sink.emit(
                 "url_recheck_done",
                 {"cancelled": cancelled, "done": done, "total": total},
@@ -154,6 +172,12 @@ class RecheckRunner(AsyncThreadJob):
             )
             if barrier is None:
                 barrier = await inspect_page_access(page, str(page.url), url)
+                # 仅初判有效的页面才重检；失效/存疑立即返回不等待。
+                for _ in range(_UNAVAILABLE_RECHECK_ATTEMPTS):
+                    if barrier is not None:
+                        break
+                    await page.wait_for_timeout(_UNAVAILABLE_RECHECK_DELAY_MS)
+                    barrier = await inspect_page_access(page, str(page.url), url)
             if barrier is None:
                 return RecheckStatus.VALID, "", ""
             return classify_barrier(barrier), barrier.code, barrier.message

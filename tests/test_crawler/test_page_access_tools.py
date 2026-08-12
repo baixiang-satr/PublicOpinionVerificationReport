@@ -234,3 +234,79 @@ async def test_manual_access_wait_honors_cancellation() -> None:
             timeout_seconds=90,
             cancel_event=cancel_event,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("snapshot_title", "snapshot_body"),
+    [
+        ("哔哩哔哩", "啊叻？视频不见了？"),
+        ("微博", "该微博已被作者删除"),
+        ("抖音", "作品已删除，去看看其他视频吧"),
+        ("微信公众号", "该内容已被发布者删除"),
+        ("贴吧", "贴子不存在"),
+    ],
+)
+async def test_access_tool_flags_platform_deleted_pages(
+    snapshot_title: str, snapshot_body: str
+) -> None:
+    """各平台"内容已删除"的不同说法都必须识别为内容失效（2026-08-11 扩充）。"""
+    url = "https://www.example.test/content/123"
+    barrier = await inspect_page_access(
+        SnapshotPage(url, [{"title": snapshot_title, "body": snapshot_body}]),
+        url,
+        url,
+    )
+    assert barrier is not None
+    assert barrier.kind is AccessKind.CONTENT_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_access_tool_ignores_deleted_mentions_inside_real_article() -> None:
+    """正文充实的真实页面顺带出现"已删除"字样（评论区/推荐流）不得误判失效。"""
+    url = "https://www.example.test/article/123"
+    body = "这是一篇正常的新闻报道正文，包含大量真实内容。" * 60 + "相关链接提示：该内容已被删除。"
+    page = SnapshotPage(url, [{"title": "正常报道", "body": body}])
+
+    assert await inspect_page_access(page, url, url) is None
+
+
+@pytest.mark.asyncio
+async def test_access_tool_flags_deleted_page_with_full_site_chrome() -> None:
+    """带完整站点框架的真实删除页（标题=平台名、正文>800 字、删除文案在文首）。
+
+    2026-08-12 实测回归：10 条已删微博全部误判 valid——旧的"精确标题或短
+    正文"守卫必然被站点 chrome（导航/页脚/推荐流）击穿。
+    """
+    chrome = "微博 首页 视频 发现 游戏 会员 热门 关注 消息 " * 12
+    body = chrome + "抱歉，该微博已被作者删除。查看帮助 " + "热门推荐页脚链接 " * 200
+    url = "https://weibo.com/2068705397/R9tmcyUN0"
+
+    barrier = await inspect_page_access(
+        SnapshotPage(url, [{"title": "微博", "body": body}]),
+        url,
+        url,
+    )
+
+    assert barrier is not None
+    assert barrier.kind is AccessKind.CONTENT_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_access_tool_flags_weibo_no_view_permission_page() -> None:
+    """微博删除页实测真实文案“暂无查看权限”（2026-08-12 真机快照回归）。"""
+    body = (
+        "NEW 56 无障碍 首页 全部关注 最新微博 特别关注 好友圈 自定义分组 管理 "
+        "高校 名人明星 同事 同学 悄悄关注 返回 暂无查看权限 查看个人主页 微博热搜 "
+        + "热搜词条 讨论度 " * 300
+    )
+    url = "https://weibo.com/2068705397/R9tmcyUN0"
+
+    barrier = await inspect_page_access(
+        SnapshotPage(url, [{"title": "微博正文 - 微博", "body": body}]),
+        url,
+        url,
+    )
+
+    assert barrier is not None
+    assert barrier.kind is AccessKind.CONTENT_UNAVAILABLE

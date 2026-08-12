@@ -11,6 +11,10 @@ from urllib.parse import urlsplit
 
 from src.crawler.structured_data import payload_has_content
 from src.domain.models import RecordStatus
+from src.tools.page_access_guards import (
+    content_unavailable_confirmed,
+    looks_like_barrier_only_page,
+)
 
 # A jammed renderer (anti-bot loops) must never block barrier inspection.
 _EVALUATE_TIMEOUT_SECONDS = 5.0
@@ -152,25 +156,7 @@ _JAVASCRIPT_TEXT_MARKERS = (
     "javascript is required",
 )
 
-# ── 内容不可用文本特征 ─────────────────────────────────────────────────
-_UNAVAILABLE_TEXT_MARKERS = (
-    "笔记不存在",
-    "内容不存在",
-    "页面不存在",
-    "视频不存在",
-    "文章不存在",
-    "内容已删除",
-    "内容可能已删除",
-    "内容已下线",
-    "页面已失效",
-    "404 not found",
-    "该内容已被删除",
-    "页面不存在或已删除",
-    "内容找不到了",
-    "该内容暂时无法查看",
-    # 知乎内容删除/失效专用错误页（“你似乎来到了没有知识存在的荒原”，数秒后自动跳转首页）。
-    "没有知识存在的荒原",
-)
+# 内容不可用文本特征与删除确证守卫已迁至 src.tools.page_access_guards（行数上限拆分）。
 _HOME_PATHS = {"", "/", "/index.html", "/home", "/home/"}
 
 
@@ -250,17 +236,17 @@ async def inspect_page_access(
     normalized = f"{title}\n{body}".strip().lower()
     if (
         any(marker in normalized for marker in _CAPTCHA_TEXT_MARKERS)
-        and _looks_like_barrier_only_page(title, body, AccessKind.CAPTCHA)
+        and looks_like_barrier_only_page(title, body, AccessKind.CAPTCHA)
     ):
         return _captcha_barrier()
     if (
         any(marker in normalized for marker in _LOGIN_TEXT_MARKERS)
-        and _looks_like_barrier_only_page(title, body, AccessKind.LOGIN)
+        and looks_like_barrier_only_page(title, body, AccessKind.LOGIN)
     ):
         return _login_barrier()
     if (
         any(marker in normalized for marker in _RESTRICTED_TEXT_MARKERS)
-        and _looks_like_barrier_only_page(title, body, AccessKind.ACCESS_RESTRICTED)
+        and looks_like_barrier_only_page(title, body, AccessKind.ACCESS_RESTRICTED)
     ):
         return _restricted_barrier()
     if any(marker in normalized for marker in _JAVASCRIPT_TEXT_MARKERS):
@@ -270,11 +256,13 @@ async def inspect_page_access(
             "页面要求 JavaScript 但正文未渲染；可增加稳定等待后重试。",
             RecordStatus.NEEDS_REVIEW,
         )
-    if any(marker in normalized for marker in _UNAVAILABLE_TEXT_MARKERS):
+    # 删除确证收口在 content_unavailable_confirmed（标题子串/文首命中/短正文
+    # 三规则）；真实页面评论区/推荐流深处顺带出现的"已删除"字样不会误判。
+    if content_unavailable_confirmed(title, body):
         return AccessBarrier(
             AccessKind.CONTENT_UNAVAILABLE,
             "CONTENT_UNAVAILABLE",
-            "平台明确提示内容不存在、已删除或已下线；请核对原始 URL。",
+            "平台明确提示内容不存在、已删除、已下线或暂无查看权限；请核对原始 URL。",
             RecordStatus.FAILED,
         )
     if _looks_like_json(body) and not _json_has_extractable_content(body):
@@ -435,39 +423,3 @@ def _json_has_extractable_content(body: str) -> bool:
         return payload_has_content(json.loads(body.strip()))
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
-
-
-def _looks_like_barrier_only_page(title: str, body: str, kind: AccessKind) -> bool:
-    """Avoid rejecting a real article merely because its chrome has a login prompt."""
-
-    normalized_title = title.strip().casefold()
-    exact_titles = {
-        AccessKind.CAPTCHA: {
-            "安全验证",
-            "访问验证",
-            "人机验证",
-            "验证码中间页",
-            "captcha",
-            "verify you are human",
-        },
-        AccessKind.LOGIN: {
-            "登录",
-            "账号登录",
-            "扫码登录",
-            "sign in",
-            "log in",
-        },
-        AccessKind.ACCESS_RESTRICTED: {
-            "访问异常",
-            "访问受限",
-            "access denied",
-        },
-    }
-    if normalized_title in exact_titles.get(kind, set()):
-        return True
-
-    # Substantial public pages commonly include a login modal or login text in
-    # the header. Treat text markers as a barrier only when little other page
-    # content rendered.
-    visible_length = len("".join(body.split()))
-    return visible_length < 800
