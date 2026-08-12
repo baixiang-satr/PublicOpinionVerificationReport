@@ -88,8 +88,8 @@ def recover_fields_from_ocr_text(
 
     if not text:
         return
-    # 截图顶部的 URL 横幅会被 OCR 识别为裸 URL 行，剔除以免混入正文/
-    # 标题/发布时间提取。
+    # 全屏截图顶部浏览器地址栏的 URL 会被 OCR 识别为裸 URL 行，剔除
+    # 以免混入正文/标题/发布时间提取。
     text = strip_banner_lines(text)
     if not text.strip():
         return
@@ -115,7 +115,7 @@ _BANNER_LINE_PATTERN = re.compile(r"^\s*https?://\S+\s*$", re.IGNORECASE)
 
 
 def strip_banner_lines(text: str) -> str:
-    """剔除 OCR 文本中的裸 URL 行（截图 URL 横幅的识别产物）。"""
+    """剔除 OCR 文本中的裸 URL 行（截图地址栏 URL 的识别产物）。"""
 
     return "\n".join(
         line for line in text.splitlines() if not _BANNER_LINE_PATTERN.match(line)

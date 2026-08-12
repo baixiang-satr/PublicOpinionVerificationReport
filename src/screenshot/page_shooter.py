@@ -1,4 +1,4 @@
-"""Stable evidence-ID page screenshots written directly to the staging root."""
+"""Stable evidence-ID window screenshots written directly to the staging root."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from src.screenshot.page_layout import (
 from src.screenshot.page_layout import (
     page_dimensions as _page_dimensions,
 )
-from src.screenshot.url_banner_scripts import inject_url_banner, remove_url_banner
+from src.screenshot.window_capture import capture_browser_window
 from src.utils.file_utils import UnsafeFileNameError, require_safe_file_name
 
 
@@ -61,17 +61,16 @@ class PageShooter:
         definition: Any = None,
         focus_selectors: tuple[str, ...] = (),
         focus_texts: tuple[str, ...] = (),
-        clip_region: dict[str, int] | None = None,
         require_alignment: bool = True,
     ) -> Path:
-        """Capture with an optional explicit document-coordinate clip.
+        """直抓浏览器窗口（含地址栏 URL，窗口无需前台可见）。
 
-        ``clip_region`` skips geometry alignment and clips the screenshot to
-        the given page coordinates (profile-body containers, split-layout
-        columns).  All other gates (readiness, authentication, overlay
-        dismissal, blank-image rejection) still apply.  ``require_alignment``
-        为 False 时，对齐失败不再报错而直接截取当前视口（仅限身份已核验的
-        作者主页等场景作为兜底）。
+        就绪、认证、弹窗遮挡、媒体暂停与内容对齐等证据门槛保持不变；
+        对齐通过后不再 ``page.screenshot``，而是用 PrintWindow 抓取页面
+        所在浏览器窗口本体——标签栏 + 地址栏 + 页面同框，最终 URL 直接
+        进入证据图，窗口被遮挡/离屏（background_crawl_browser）也能截，
+        用户无感。``require_alignment`` 为 False 时，对齐失败不再报错而
+        直接截取当前视口（仅限身份已核验的作者主页等场景作为兜底）。
         """
         _raise_if_cancelled(cancel_event)
         extension = "jpg" if self._config.screenshot_format == "jpeg" else "png"
@@ -81,12 +80,6 @@ class PageShooter:
             raise PageScreenshotError(str(error)) from error
         output_path = Path(output_dir).resolve() / file_name
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        options: dict[str, Any] = {
-            "path": str(output_path),
-            "type": self._config.screenshot_format,
-            "full_page": self._config.full_page_screenshot,
-            "animations": "disabled",
-        }
         if definition is None:
             definition = find_platform(str(getattr(page, "url", "") or ""))
         await wait_for_capture_ready(
@@ -106,13 +99,9 @@ class PageShooter:
             and getattr(definition, "key", "") == "douyin"
             and "/video/" in str(getattr(page, "url", "") or "")
         )
+        # 抖音视频页是视口应用，文档几何随播放器/推荐栏不断变化；只对
+        # 水平偏移做取景修复，截图始终是当前视口的全屏画面。
         if is_douyin_video:
-            # Douyin video pages are viewport applications whose document
-            # geometry keeps changing with the player/recommendation rail.
-            # Full-page capture can wait indefinitely for that moving surface.
-            # One stable viewport contains the video caption, author and
-            # visible publish time and is the correct evidence moment.
-            options["full_page"] = False
             dimensions = await _page_dimensions(
                 page,
                 definition,
@@ -137,96 +126,50 @@ class PageShooter:
                     raise PageScreenshotError(
                         "Target content could not be framed completely in the viewport."
                     )
-        is_long_page = False
-        if clip_region is not None:
-            # Caller-supplied DOM region (profile body container / split
-            # column): the page was measured at its current scroll position,
-            # so no alignment pass is needed and the region must not be
-            # replaced by the full-page geometry branch below.
-            options["full_page"] = False
-            options["clip"] = dict(clip_region)
-        elif self._config.full_page_screenshot and not is_douyin_video:
+        else:
             dimensions = await _page_dimensions(
                 page,
                 definition,
                 focus_selectors,
                 focus_texts,
             )
-            if dimensions is not None:
-                is_long_page = (
-                    dimensions["height"]
-                    > self._config.max_full_page_screenshot_height
-                )
-                has_horizontal_overflow = (
-                    dimensions["document_width"]
-                    > dimensions["viewport_width"] + 32
-                )
-                needs_horizontal_alignment = bool(
-                    dimensions["needs_horizontal_alignment"]
-                )
-            else:
-                has_horizontal_overflow = False
-                needs_horizontal_alignment = False
-            if dimensions is not None and (
-                is_long_page
-                or has_horizontal_overflow
-                or needs_horizontal_alignment
-                or bool(focus_selectors)
-                or bool(focus_texts)
-            ):
-                aligned = True
-                if has_horizontal_overflow or needs_horizontal_alignment or focus_selectors or focus_texts:
-                    aligned = await align_page_for_capture(
-                        page,
-                        definition=definition,
-                        focus_selectors=focus_selectors,
-                        focus_texts=focus_texts,
-                    )
-                options["full_page"] = False
-                if not aligned and (needs_horizontal_alignment or focus_selectors or focus_texts):
-                    if require_alignment:
-                        raise PageScreenshotError(
-                            "Target content could not be framed completely in the viewport."
-                        )
-                # A Playwright clip and a horizontally scrolled document use
-                # different coordinate spaces on several Chromium builds.
-                # Let the browser capture the current viewport after verified
-                # alignment.  Only an unshifted long document uses a clip.
-                if not (
-                    has_horizontal_overflow
-                    or needs_horizontal_alignment
-                    or focus_selectors
-                    or focus_texts
-                ):
-                    options["clip"] = {
-                        "x": 0,
-                        "y": 0,
-                        "width": dimensions["viewport_width"],
-                        "height": min(
-                            dimensions["height"],
-                            self._config.max_full_page_screenshot_height,
-                        ),
-                    }
-        if self._config.screenshot_format == "jpeg":
-            options["quality"] = (
-                self._config.long_page_jpeg_quality
-                if is_long_page
-                else self._config.screenshot_jpeg_quality
+            has_horizontal_overflow = bool(
+                dimensions is not None
+                and dimensions["document_width"]
+                > dimensions["viewport_width"] + 32
             )
-        # 截图前注入顶部 URL 横幅（最终 URL 可溯源，证据合规）；无论截图
-        # 成败都在 finally 中移除，页面 DOM 不留残留。
-        await inject_url_banner(page)
+            needs_horizontal_alignment = bool(
+                dimensions is not None
+                and dimensions["needs_horizontal_alignment"]
+            )
+            if (
+                has_horizontal_overflow
+                or needs_horizontal_alignment
+                or focus_selectors
+                or focus_texts
+            ):
+                aligned = await align_page_for_capture(
+                    page,
+                    definition=definition,
+                    focus_selectors=focus_selectors,
+                    focus_texts=focus_texts,
+                )
+                if not aligned and (
+                    needs_horizontal_alignment or focus_selectors or focus_texts
+                ) and require_alignment:
+                    raise PageScreenshotError(
+                        "Target content could not be framed completely in the viewport."
+                    )
+        # 对齐完成后直抓窗口：地址栏 URL 即最终 URL，可溯源且不可篡改。
         try:
-            await page.screenshot(**options)
+            await capture_browser_window(page, output_path, self._config)
         except Exception as error:
             output_path.unlink(missing_ok=True)
             raise PageScreenshotError(f"Unable to capture screenshot: {error}") from error
-        finally:
-            await remove_url_banner(page)
         _raise_if_cancelled(cancel_event)
         if not output_path.is_file() or output_path.stat().st_size == 0:
             output_path.unlink(missing_ok=True)
-            raise PageScreenshotError("Playwright returned an empty screenshot.")
+            raise PageScreenshotError("Window capture produced an empty file.")
         if _is_visually_blank(output_path):
             output_path.unlink(missing_ok=True)
             raise PageScreenshotError(
