@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
-from src.webui.exit_control import ExitControlMixin, install_close_confirmation
+from src.webui.exit_control import (
+    _ALLOW_CLOSE_ATTR,
+    ExitControlMixin,
+    install_close_confirmation,
+)
 
 
 class _Event:
@@ -42,6 +47,15 @@ class _Host(ExitControlMixin):
         self._window_provider = lambda: window
 
 
+def _wait_events(sink: _FakeSink, timeout: float = 2.0) -> list[tuple[str, dict]]:
+    """emit 已改后台线程推送（GUI 线程同步 evaluate_js 会死锁），测试轮询等待。"""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not sink.events:
+        time.sleep(0.01)
+    return sink.events
+
+
 def test_closing_event_is_vetoed_and_frontend_notified() -> None:
     window = _FakeWindow()
     sink = _FakeSink()
@@ -51,7 +65,21 @@ def test_closing_event_is_vetoed_and_frontend_notified() -> None:
     assert len(window.events.closing.handlers) == 1
     handler = window.events.closing.handlers[0]
     assert handler() is False  # 否决默认关闭
-    assert sink.events == [("app_closing", {})]
+    assert _wait_events(sink) == [("app_closing", {})]
+
+
+def test_closing_allowed_after_exit_confirmed() -> None:
+    """confirm_exit 置允许关闭标志后，destroy 触发的二次关闭事件必须放行。"""
+
+    window = _FakeWindow()
+    sink = _FakeSink()
+
+    install_close_confirmation(window, sink)
+    setattr(window, _ALLOW_CLOSE_ATTR, True)
+
+    handler = window.events.closing.handlers[0]
+    assert handler() is True  # 放行，不再否决
+    assert _wait_events(sink, timeout=0.2) == []  # 也不再通知前端
 
 
 def test_confirm_exit_destroys_window() -> None:
@@ -60,6 +88,8 @@ def test_confirm_exit_destroys_window() -> None:
 
     assert host.confirm_exit() == {"ok": True}
     assert window.destroyed
+    # destroy 内部也是 Close()，需先置标志防止被自己的否决逻辑拦下
+    assert getattr(window, _ALLOW_CLOSE_ATTR) is True
 
 
 def test_minimize_window_keeps_process_alive() -> None:
