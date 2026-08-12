@@ -9,15 +9,16 @@
 - **条目结构**：每条含**背景与现状**（附代码依据）、**决策**（已拍板的方案）、**涉及模块**、**验收标准**，可直接作为实现任务卡。
 - **排期**：条目按优先级从高到低排列；实现时整条完成后独立验证，不把未完成的下游功能当作验收前提。
 
-## 当前状态（2026-08-11）
+## 当前状态（2026-08-12）
 
 - [x] U01：函文档统一入口（文件选择器 + 附件列末尾追加 + 自动入包）——2026-08-11 完成；`tests/test_export/test_letter_asset.py` + `test_task_runner` 函入包/降级用例通过
 - [x] U02：退出确认弹窗（直接退出 / 最小化到任务栏）——2026-08-11 完成；`tests/test_webui/test_exit_control.py` 通过（三态交互待人工实测）
 - [x] U03：抓取前登录态复验跳过（30 分钟新鲜期）——2026-08-11 完成；`tests/test_crawler/test_auth_preflight.py` 8 例通过（新鲜期跳过/超期复验/EXPIRED 不跳过/阈值可配）
 - [x] U04：URL 有效性复验与批量删除——2026-08-11 完成；`tests/test_services/test_url_recheck.py` + `tests/test_webui/test_recheck_api.py` 通过（独立复验对话框形态；含死链任务端到端待人工实测）
 - [x] U05：导出表格放开增删数据行（列结构与格式仍锁定）——2026-08-11 完成；`tests/test_export/test_ooxml_protection.py` 断言 insertRows/deleteRows=="0"，契约文档已同步（Excel/WPS 实测待人工）
-- [x] U06：自动截图注入 URL 横幅（内容页 + 个人主页）——2026-08-11 完成；`tests/test_screenshot/test_url_banner.py` 通过（各截图分支视觉效果待人工实测）
+- [x] U06：自动截图附带最终 URL（内容页 + 个人主页）——2026-08-11 完成初版注入横幅，因个人页 URL 失真同日改为全屏截图；2026-08-12 用户要求后台无感，最终改为 PrintWindow 直抓浏览器窗口（含地址栏 URL，窗口离屏亦可截）；`tests/test_screenshot/test_window_capture.py`、`test_url_ocr_filter.py` 通过
 - [x] U07：重复 URL 选文件即提示（删除重复 / 全部保留）——2026-08-11 完成；`tests/test_input/` 去重保留首条/全部保留/重复检测用例通过
+- [x] U08：复验失效判定修正 + 失效行高亮 + 微博删除页连锁修复（查看者主页截图）——2026-08-12 完成；`tests/test_tools/test_page_access_guards.py` 等 10 个新用例 + 全量 723 通过（10 条已删微博的端到端复验/高亮/一键删除与活页回归待人工实测）
 
 ---
 
@@ -185,6 +186,16 @@
 
 ## U06 自动截图注入 URL 横幅
 
+> **2026-08-12 最终方案**：注入横幅方案已废弃（个人页 SPA 上
+> `location.href` 与地址栏最终 URL 不一致，横幅内容错误）；全屏
+> ImageGrab 方案亦废弃（依赖窗口前台可见，违反后台无感要求）。最终
+> 方案：`src/screenshot/window_capture.py`——标题 token 定位 HWND 后
+> PrintWindow(PW_RENDERFULLCONTENT) 直抓浏览器窗口本体（标签栏+地址栏
+> +页面同框），抓取浏览器离屏（background_crawl_browser）也能截，用户
+> 无感；标签未激活时先激活再抓并恢复前台窗口；截图前先恢复真实标题
+> （证据图不留 token）。OCR 过滤（`strip_banner_lines`）保留，剔除地址
+> 栏 URL 行。以下为原始方案记录，仅供参考。
+
 **优先级**：高（证据图必须可溯源 URL，交付合规要求）
 
 **背景与现状**：
@@ -245,3 +256,38 @@
 - 含重复 URL 的文件选择后弹窗，两个分支行为正确：删除后任务列表无重复 normalized_url 且 url_count 相应减少；保留则与现状完全一致。
 - 无重复文件不弹窗；rejected（无效值）统计不受影响。
 - 界面文案与实际行为一致；`tests/test_input/` 覆盖「去重保留首条」与「全部保留」两条路径。
+
+---
+
+## U08 复验失效判定修正与微博删除页连锁修复
+
+**优先级**：高（复验误判有效 + 查看者主页截图污染交付，均为实测确认的功能性 BUG）
+
+**背景与现状**（2026-08-12 用户实测任务 `output/20260812-095449-e62d7372`，10 条已删除微博 URL）：
+
+- **复验全部误判「有效」**（`url_recheck.json` 10/10 valid）：双层根因——①旧纯错误页守卫要求标题**精确等于** 6 个固定值或正文 <800 可见字符，真实删除页带完整站点框架（导航/页脚/推荐流）必然超限；②真机探测（2026-08-12）证实微博删除页文案是「**暂无查看权限**」（标题仍为「微博正文 - 微博」），不在删除文案库中。另一漏检通道：SPA 删除错误框水合晚于 `domcontentloaded + 1500ms` 稳定等待。
+- **失效行高亮不可见**：`UrlRecheckDialog.vue` 给 tr 设 `background`，Element Plus 2.x 单元格背景由 `--el-table-tr-bg-color` 变量绘制，完全盖住。
+- **个人页截图截成查看者本人主页**（`author_decisions/001主页.decision.json` 铁证）：微博不在未命中剥离守卫名单 → 删除页内嵌载荷中的查看者 uid 被当作 author_id → 候选主页 `weibo.com/u/{查看者uid}` → `identity_verdict` 的「expected_id 出现在候选 URL 即 verified」被循环论证击穿。
+- 第 4 步「打开补录表格」与「复验 URL 有效性」按钮被 `.head-row` 的 `space-between` 分散对齐拉开。
+
+**决策**（2026-08-12 与用户确认）：
+
+- 「已失效」口径不变：确证删除（404/重定向首页/删除文案经新守卫确认）才 invalid；登录墙/验证码/风控/超时仍「存疑」，不进一键删除。
+- 不改 `identity_verdict` 的 URL 回声规则（抖音/头条既有验收依赖）；从输入端（载荷剥离 + 查看者链接过滤）保证 expected_id 可信。
+- 高亮只做在复验对话框；补录表格保持与 template 一致。
+
+**方案要点**：
+
+1. 新建 `src/tools/page_access_guards.py`（page_access.py 已 491/500 行必须拆）：`content_unavailable_confirmed` 三规则——标题子串命中删除文案 / 正文前 400 可见字符内命中 / 正文 <800 字纯错误页；`_UNAVAILABLE_TEXT_MARKERS` 与纯错误页守卫一并迁入，`page_access.py` 回导；文案库增补微博实测真实文案「暂无查看权限 / 暂无权限查看」。
+2. `recheck_runner._probe` 初检无屏障时有界重检（`_UNAVAILABLE_RECHECK_ATTEMPTS=4` × `_UNAVAILABLE_RECHECK_DELAY_MS=1000`，命中即停，测试可 monkeypatch 为 0）。
+3. `content_parser.py` 微博纳入未命中剥离守卫（与 kuaishou 同规，`weibo_bid` 现成）；`generic.py` 作者链接候选过滤查看者本人主页（`$CONFIG.uid` → `/u/{uid}`）。
+4. `UrlRecheckDialog.vue` 高亮改 `:deep(.el-table .invalid-row){ --el-table-tr-bg-color: #fef0f0 }`；`ReviewView.vue` 两按钮包 `.actions` 容器聚拢。
+
+**涉及模块**：`src/tools/page_access.py`、`src/tools/page_access_guards.py`（新建）、`src/webui/recheck_runner.py`、`src/crawler/content_parser.py`、`src/crawler/extractors/generic.py`、`web/src/components/UrlRecheckDialog.vue`、`web/src/views/ReviewView.vue`、`tests/test_tools/test_page_access_guards.py`（新建）、`tests/test_crawler/test_page_access_tools.py`、`tests/test_crawler/test_content_parser_guards.py`、`tests/test_webui/test_recheck_api.py`。
+
+**验收标准**：
+
+- 新增 12 个用例（守卫三规则/长文不误判/含「暂无查看权限」真机快照形态/重检命中与有界/微博剥离）+ 全量 725 通过；release-check-ok；前端 build + vue-tsc 通过。
+- 真机验证（2026-08-12 已完成）：`output/test-tmp/probe_recheck_diag.py` 以生产 `_probe` 路径实测 2 条被删微博均判 `invalid CONTENT_UNAVAILABLE`。
+- 实测（待人工确认界面侧）：重开 `output/20260812-095449-e62d7372` **重新点「开始复验」**（对话框默认展示持久化的旧结果，必须重跑才覆盖）→ 10 条应全部「已失效」+ 整行淡红 → 一键删除 → 重新导出 zip 不含这些行。
+- 实测回归：活着的微博复验判「有效」，文首规则不误伤真实页面（**待人工实测**）。
