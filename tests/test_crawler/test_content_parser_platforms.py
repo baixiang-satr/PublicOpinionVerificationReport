@@ -10,6 +10,9 @@ import json
 import pytest
 
 from src.crawler.content_parser import ContentParser
+from src.crawler.extractors.base import RenderedDocument
+from src.crawler.extractors.catalog import CatalogPlatformExtractor
+from src.crawler.extractors.generic import GenericExtractor
 from src.crawler.platform_catalog import find_platform
 from src.domain.models import ExtractionSource, PageData
 
@@ -191,3 +194,54 @@ async def test_xiaohongshu_parser_keeps_url_matched_note_authoritative() -> None
     assert data.image_urls == [
         "https://sns-img.example.test/target.webp",
     ]
+
+
+def test_generic_dom_picks_latest_in_post_time_candidate() -> None:
+    document = RenderedDocument(
+        url="https://news.example.test/a",
+        dom_values={"published_at": "2024-01-01 08:00"},
+        published_at_candidates=(
+            ("2024-01-01 08:00", False),
+            ("2026-09-21 12:30", True),
+            ("2026-09-20 09:00", False),
+        ),
+    )
+
+    data = GenericExtractor().extract(document)
+
+    assert data.published_at is not None
+    assert data.published_at.strftime("%Y-%m-%d %H:%M") == "2026-09-20 09:00"
+    assert data.published_at_raw == "2026-09-20 09:00"
+
+
+def test_catalog_dom_picks_latest_platform_time_candidate() -> None:
+    definition = find_platform("https://weibo.com/123456/abc")
+    assert definition is not None
+    document = RenderedDocument(
+        url="https://weibo.com/123456/abc",
+        platform_values={"published_at": "2024-01-01 08:00"},
+        published_at_candidates=(
+            ("2024-01-01 08:00", False),
+            ("2026-09-19 18:30", False),
+        ),
+    )
+
+    data = CatalogPlatformExtractor().extract(document, definition)
+
+    assert data.published_at is not None
+    assert data.published_at.strftime("%Y-%m-%d %H:%M") == "2026-09-19 18:30"
+    assert data.published_at_raw == "2026-09-19 18:30"
+
+
+def test_catalog_dom_keeps_first_match_when_no_candidates() -> None:
+    definition = find_platform("https://weibo.com/123456/abc")
+    assert definition is not None
+    document = RenderedDocument(
+        url="https://weibo.com/123456/abc",
+        platform_values={"published_at": "2026-09-18 08:00"},
+    )
+
+    data = CatalogPlatformExtractor().extract(document, definition)
+
+    assert data.published_at is not None
+    assert data.published_at.strftime("%Y-%m-%d %H:%M") == "2026-09-18 08:00"

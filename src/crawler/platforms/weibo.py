@@ -23,7 +23,11 @@ from src.crawler.platforms.extract_helpers import (
 from src.crawler.platforms.payload_search import iter_mappings, text_at
 from src.crawler.platforms.registry import register
 from src.domain.models import ExtractionSource, PageData
-from src.utils.time_utils import DEFAULT_TIMEZONE
+from src.utils.time_utils import (
+    DEFAULT_TIMEZONE,
+    parse_published_at_from_text,
+    pick_latest_published_at,
+)
 
 _MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -39,15 +43,31 @@ _DOM_PROBE = """
     }
     return '';
   };
+  const inCommentRegion = (element) => {
+    let node = element;
+    while (node) {
+      const label = String(node.className || '') + ' ' + String(node.id || '');
+      if (/comment|reply|recommend|related/i.test(label)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  };
   const authorLink = document.querySelector(
     "[class*='head_name'] a, [class*='ALink_default'][href*='/u/'], a[href*='/u/'][class*='name']"
   );
-  const timeNode = document.querySelector("[class*='head-info'] a[href*='weibo.com'], [class*='from'] a, time");
+  // 详情页存在多个时间（主帖/被转发原帖/评论/推荐），全部收集交给 Python 侧
+  // 取距离现在最近的主帖区候选。
+  const times = Array.from(document.querySelectorAll(
+    "[class*='head-info'] a[href*='weibo.com'], [class*='from'] a, time"
+  )).slice(0, 10).map((element) => ({
+    text: (element.textContent || '').trim(),
+    inComment: inCommentRegion(element)
+  })).filter((item) => item.text);
   return {
     content: pick(["[class*='detail_wbtext']", "[node-type='feed_list_content']"]),
     author: pick(["[class*='head_name']", "[class*='head-info'] [class*='name']"]),
     authorUrl: authorLink ? authorLink.href : '',
-    time: timeNode ? (timeNode.textContent || '').trim() : ''
+    times
   };
 }
 """
@@ -102,7 +122,12 @@ class WeiboExtractor:
         probe = await evaluate_value(page, _DOM_PROBE)
         if not isinstance(probe, Mapping):
             return 0
-        published = _parse_weibo_time(str(probe.get("time") or ""))
+        parsed_candidates: list[tuple[datetime, bool]] = []
+        for text, in_comment in _dom_time_candidates(probe):
+            parsed = _parse_weibo_time(text)
+            if parsed is not None:
+                parsed_candidates.append((parsed, in_comment))
+        published = pick_latest_published_at(parsed_candidates)
         return apply_json_fields(
             data,
             {
@@ -112,6 +137,26 @@ class WeiboExtractor:
                 "published_at_dt": published,
             },
         )
+
+
+def _dom_time_candidates(probe: Mapping[str, Any]) -> list[tuple[str, bool]]:
+    """Collect ``(text, in_comment)`` time candidates from the DOM probe.
+
+    兼容旧探针的单值 ``time`` 键（按主帖区候选处理）。
+    """
+
+    candidates: list[tuple[str, bool]] = []
+    raw = probe.get("times")
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, Mapping):
+                text = str(item.get("text") or "").strip()
+                if text:
+                    candidates.append((text, bool(item.get("inComment"))))
+    legacy = str(probe.get("time") or "").strip()
+    if legacy:
+        candidates.append((legacy, False))
+    return candidates
 
 
 def _apply_mblog(
@@ -150,7 +195,11 @@ def _mblog_node(payload: Any) -> Mapping[str, Any] | None:
 
 
 def _parse_weibo_time(value: str | None) -> datetime | None:
-    """Parse ``Wed Jul 01 12:00:00 +0800 2026`` without locale dependence."""
+    """Parse ``Wed Jul 01 12:00:00 +0800 2026`` without locale dependence.
+
+    中文格式（「9月21日 10:00」「今天 10:00」「1小时前」）与带标签的长文本
+    回退到通用网页时间解析。
+    """
 
     if not value:
         return None
@@ -169,7 +218,7 @@ def _parse_weibo_time(value: str | None) -> datetime | None:
             return datetime.strptime(value.strip(), fmt).replace(tzinfo=DEFAULT_TIMEZONE)
         except ValueError:
             continue
-    return None
+    return parse_published_at_from_text(value)
 
 
 register(WeiboExtractor())

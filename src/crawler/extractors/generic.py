@@ -12,7 +12,7 @@ from src.crawler.content_classifier import initialize_content_kind
 from src.crawler.field_resolver import consider_field
 from src.crawler.structured_data import StructuredDataExtractor
 from src.domain.models import ExtractionSource, PageData
-from src.utils.time_utils import parse_web_published_at
+from src.utils.time_utils import parse_published_at_from_text, select_latest_published_at
 
 
 DOCUMENT_SCRIPT = r"""
@@ -44,6 +44,27 @@ DOCUMENT_SCRIPT = r"""
       }
     }
     return '';
+  };
+  // 详情页常含多个时间（主帖/评论/推荐流），全量收集并标注评论区容器，
+  // 由 Python 侧取距离现在最近的主帖区候选。
+  const inCommentRegion = (element) => {
+    let node = element;
+    while (node) {
+      const label = String(node.className || '') + ' ' + String(node.id || '');
+      if (/comment|reply|recommend|related/i.test(label)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  };
+  const pickAll = (selectors) => {
+    const found = [];
+    for (const selector of selectors || []) {
+      for (const element of Array.from(document.querySelectorAll(selector)).slice(0, 20)) {
+        const value = text(element) || element.getAttribute('content') || element.getAttribute('datetime') || '';
+        if (value.trim()) found.push({ text: value.trim(), inComment: inCommentRegion(element) });
+      }
+    }
+    return found.slice(0, 20);
   };
   const meta = {};
   for (const element of document.querySelectorAll('meta[name], meta[property], meta[itemprop]')) {
@@ -175,6 +196,8 @@ DOCUMENT_SCRIPT = r"""
     embeddedPayloads,
     domValues,
     platformValues,
+    publishedAtCandidates: pickAll(domSelectors.published_at)
+      .concat(pickAll((platformSelectors || {}).published_at || [])),
     images
   };
 }
@@ -202,6 +225,11 @@ class GenericExtractor:
             embedded_payloads=tuple(raw.get("embeddedPayloads") or ()),
             dom_values={str(key): str(value) for key, value in (raw.get("domValues") or {}).items()},
             platform_values={str(key): str(value) for key, value in (raw.get("platformValues") or {}).items()},
+            published_at_candidates=tuple(
+                (str(item.get("text") or "").strip(), bool(item.get("inComment")))
+                for item in raw.get("publishedAtCandidates") or ()
+                if isinstance(item, Mapping) and str(item.get("text") or "").strip()
+            ),
             images=tuple(
                 ImageCandidate(
                     url=str(item.get("url") or ""),
@@ -307,7 +335,13 @@ class GenericExtractor:
         self._set(data, "content_text", document.dom_values.get("content_text"), ExtractionSource.GENERIC_DOM)
         self._set(data, "author_name", document.dom_values.get("author_name"), ExtractionSource.GENERIC_DOM)
         self._set(data, "author_url", document.dom_values.get("author_url"), ExtractionSource.GENERIC_DOM)
-        self._set(data, "published_at_raw", document.dom_values.get("published_at"), ExtractionSource.GENERIC_DOM)
+        # 多时间候选取距离现在最近的主帖区时间，raw 同步为选中候选原文；
+        # 无候选时保留首个非空匹配的历史行为。
+        published_raw = document.dom_values.get("published_at")
+        selected = select_latest_published_at(document.published_at_candidates)
+        if selected is not None and selected[1]:
+            published_raw = str(selected[1])
+        self._set(data, "published_at_raw", published_raw, ExtractionSource.GENERIC_DOM)
         if document.dom_values.get("text_type_hint") == "评论回复":
             data.text_type_hint = "评论回复"
         if not data.content_text:
@@ -319,7 +353,7 @@ class GenericExtractor:
         data.author_name = clean_author_name(data.author_name)
         data.store_name = clean_text(data.store_name)
         if data.published_at_raw:
-            data.published_at = parse_web_published_at(data.published_at_raw)
+            data.published_at = parse_published_at_from_text(data.published_at_raw)
             source = data.field_sources.get("published_at_raw")
             if source is not None:
                 data.field_sources["published_at"] = source

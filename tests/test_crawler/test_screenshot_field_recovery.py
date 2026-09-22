@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.crawler.screenshot_field_recovery import (
@@ -79,3 +79,48 @@ def test_mbd_video_landing_never_uses_shell_screenshot_as_field_source() -> None
     assert page.title is None
     assert page.content_text is None
     assert page.published_at is None
+
+
+def test_recovers_latest_publish_time_among_multiple_date_lines() -> None:
+    page = PageData(title="Prefetch")
+
+    recover_fields_from_screenshot(
+        page,
+        Path("002.jpg"),
+        summary_max_chars=2_000,
+        confidence_threshold=0.5,
+        ocr=lambda *_args, **_kwargs: (
+            "打开微博APP\n"
+            "某博主\n"
+            "今天 09:30 来自 iPhone\n"
+            "正文内容若干\n"
+            "2024-05-01 08:00 被转发原帖\n"
+            "热门推荐 2023-01-15 20:00"
+        ),
+    )
+
+    assert page.published_at is not None
+    assert page.published_at.date() == datetime.now().date()
+    assert (page.published_at.hour, page.published_at.minute) == (9, 30)
+    assert page.field_sources["published_at"] == ExtractionSource.OCR
+
+
+def test_recovers_current_year_chinese_month_day_time() -> None:
+    yesterday = datetime.now() - timedelta(days=1)
+    page = PageData(title="Prefetch")
+
+    recover_fields_from_screenshot(
+        page,
+        Path("003.jpg"),
+        summary_max_chars=2_000,
+        confidence_threshold=0.5,
+        ocr=lambda *_args, **_kwargs: (
+            f"{yesterday.month}月{yesterday.day}日 10:00 来自微博\n"
+            "正文内容\n"
+            "2020-01-01 08:00 旧推荐"
+        ),
+    )
+
+    assert page.published_at is not None
+    assert (page.published_at.month, page.published_at.day) == (yesterday.month, yesterday.day)
+    assert (page.published_at.hour, page.published_at.minute) == (10, 0)

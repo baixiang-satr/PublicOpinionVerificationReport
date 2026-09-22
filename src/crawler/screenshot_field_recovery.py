@@ -10,7 +10,7 @@ from typing import Callable
 from src.domain.models import ExtractionSource, PageData
 from src.crawler.platforms.baijiahao import is_video_landing_url
 from src.utils.ocr import extract_text_from_images
-from src.utils.time_utils import parse_web_published_at
+from src.utils.time_utils import pick_latest_published_at
 
 
 _NOISY_TITLES = {
@@ -102,7 +102,7 @@ def recover_fields_from_ocr_text(
         page.content_text = text
         page.field_sources["content_text"] = ExtractionSource.OCR
     if page.published_at is None:
-        published = _first_published_at(text)
+        published = _latest_published_at(text)
         if published is not None:
             page.published_at = published
             page.field_sources["published_at"] = ExtractionSource.OCR
@@ -147,11 +147,17 @@ def _best_title_line(text: str) -> str | None:
     return max(candidates)[2] if candidates else None
 
 
-def _first_published_at(text: str) -> datetime | None:
-    for line in text.splitlines():
-        if not re.search(r"(?:19|20)\d{2}[年./\-]\d{1,2}", line):
-            continue
-        parsed = parse_web_published_at(line)
-        if parsed is not None:
-            return parsed
-    return None
+# 截图 OCR 文本里含日期的行：带年份的绝对日期、微博当年帖的无年份
+# 「M月D日」、以及「今天/昨天 HH:MM」。
+_DATEISH_LINE_PATTERN = re.compile(
+    r"(?:19|20)\d{2}\s*[年./\-]\s*\d{1,2}"
+    r"|\d{1,2}\s*月\s*\d{1,2}\s*日"
+    r"|(?:今天|昨天)\s*\d{1,2}:\d{2}"
+)
+
+
+def _latest_published_at(text: str) -> datetime | None:
+    """截图内可能出现多个日期（主帖/被转发原帖/推荐），取距离现在最近的。"""
+
+    candidates = [line for line in text.splitlines() if _DATEISH_LINE_PATTERN.search(line)]
+    return pick_latest_published_at(candidates)

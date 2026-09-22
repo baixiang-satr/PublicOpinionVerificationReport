@@ -31,6 +31,8 @@ class RenderedDocument:
     network_payloads: tuple[Any, ...] = ()
     dom_values: dict[str, str] = field(default_factory=dict)
     platform_values: dict[str, str] = field(default_factory=dict)
+    # 页面全部发布时间候选（text, 是否评论区/推荐区），供「取最新」仲裁
+    published_at_candidates: tuple[tuple[str, bool], ...] = ()
     images: tuple[ImageCandidate, ...] = ()
 
 

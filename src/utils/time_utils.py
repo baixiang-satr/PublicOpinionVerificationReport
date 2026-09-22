@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone as fixed_timezone, tzinfo
 from email.utils import parsedate_to_datetime
 import re
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -126,14 +128,107 @@ def parse_web_published_at(
             second=int(relative_match.group(4) or 0),
             microsecond=0,
         )
-    month_day_match = re.fullmatch(r"(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?", text)
+    # 归一化文本匹配：微博当年发布时间显示为「9月21日 10:00」（无年份），
+    # 归一化后为「9-21 10:00」；直接对原文匹配会漏掉中文月日格式。
+    month_day_match = re.fullmatch(r"(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?", normalized)
     if month_day_match:
-        return reference.replace(
-            month=int(month_day_match.group(1)),
-            day=int(month_day_match.group(2)),
-            hour=int(month_day_match.group(3) or 0),
-            minute=int(month_day_match.group(4) or 0),
-            second=0,
-            microsecond=0,
-        )
+        try:
+            return reference.replace(
+                month=int(month_day_match.group(1)),
+                day=int(month_day_match.group(2)),
+                hour=int(month_day_match.group(3) or 0),
+                minute=int(month_day_match.group(4) or 0),
+                second=0,
+                microsecond=0,
+            )
+        except ValueError:
+            return None
     return None
+
+
+_MAX_FUTURE_DRIFT = timedelta(days=2)
+
+# 长文本（OCR 行/DOM 元素文本）中内嵌的发布日期片段：带年份的绝对日期、
+# 微博当年帖的无年份「M月D日」，以及「今天/昨天 HH:MM」相对时间。
+_DATE_FRAGMENT_PATTERN = re.compile(
+    r"(?<!\d)(?:19|20)\d{2}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?"
+    r"(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?(?!\d)"
+    r"|(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日(?:\s+\d{1,2}:\d{2})?"
+    r"|(?<!\d)\d{1,2}-\d{1,2}(?:\s+\d{1,2}:\d{2})?(?!\d)"
+    r"|(?:今天|昨天)\s*\d{1,2}:\d{2}(?::\d{2})?"
+)
+
+
+def parse_published_at_from_text(
+    value: str | int | float | datetime | None,
+    *,
+    now: datetime | None = None,
+    timezone: tzinfo = DEFAULT_TIMEZONE,
+) -> datetime | None:
+    """Parse the freshest publish time embedded in free text.
+
+    A single element/OCR line may carry several dates（标签、被转发原帖、推荐
+    卡片），因此所有日期片段都参与解析，最新者胜出；相对时间（"1小时前"）
+    与纯时间戳等整串格式同样兼容。
+    """
+
+    reference = now or datetime.now(timezone)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone)
+    candidates = [parse_web_published_at(value, now=reference, timezone=timezone)]
+    if isinstance(value, str):
+        candidates.extend(
+            parse_web_published_at(match.group(0), now=reference, timezone=timezone)
+            for match in _DATE_FRAGMENT_PATTERN.finditer(value)
+        )
+    parsed = [candidate for candidate in candidates if candidate is not None]
+    return max(parsed) if parsed else None
+
+
+def _candidate_parts(candidate: Any) -> tuple[Any, bool]:
+    if isinstance(candidate, tuple) and len(candidate) == 2:
+        return candidate[0], bool(candidate[1])
+    return candidate, False
+
+
+def select_latest_published_at(
+    candidates: Iterable[Any],
+    *,
+    now: datetime | None = None,
+    timezone: tzinfo = DEFAULT_TIMEZONE,
+) -> tuple[datetime, Any] | None:
+    """Return ``(parsed, raw_candidate)`` closest to now from one source.
+
+    Candidates are strings/datetimes, or ``(value, in_comment)`` tuples where
+    ``in_comment`` marks matches inside comment/recommendation containers.
+    评论区候选仅在无主帖区候选可解析时才启用；远未来（>now+2天）一律剔除。
+    """
+
+    reference = now or datetime.now(timezone)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone)
+    in_post: list[tuple[datetime, Any]] = []
+    any_region: list[tuple[datetime, Any]] = []
+    for candidate in candidates:
+        value, in_comment = _candidate_parts(candidate)
+        parsed = parse_published_at_from_text(value, now=reference, timezone=timezone)
+        if parsed is None or parsed > reference + _MAX_FUTURE_DRIFT:
+            continue
+        entry = (parsed, value)
+        any_region.append(entry)
+        if not in_comment:
+            in_post.append(entry)
+    pool = in_post or any_region
+    return max(pool, key=lambda item: item[0]) if pool else None
+
+
+def pick_latest_published_at(
+    candidates: Iterable[Any],
+    *,
+    now: datetime | None = None,
+    timezone: tzinfo = DEFAULT_TIMEZONE,
+) -> datetime | None:
+    """Return the freshest plausible publish time among ``candidates``."""
+
+    selected = select_latest_published_at(candidates, now=now, timezone=timezone)
+    return selected[0] if selected else None
