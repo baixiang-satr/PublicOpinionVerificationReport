@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import csv
 from dataclasses import dataclass
 from datetime import datetime
@@ -45,6 +46,7 @@ def write_quality_artifacts(
     job_id: str,
     label: str,
     rejected_count: int = 0,
+    rejected_values: Sequence[str] = (),
     router: PlatformRouter | None = None,
     author_decisions: list[Any] | None = None,
     author_audit_entries: list[dict[str, Any]] | None = None,
@@ -127,7 +129,7 @@ def write_quality_artifacts(
         encoding="utf-8",
     )
     manual_entry_path = destination / "pending_manual_entry.csv"
-    _write_manual_csv(manual_entry_path, manual_rows)
+    _write_manual_csv(manual_entry_path, manual_rows, rejected_values)
     report_path = destination / "quality_report.md"
     report_path.write_text(
         _markdown_report(summary, manual_entry_path.name),
@@ -241,7 +243,11 @@ def _platform_statistics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return statistics
 
 
-def _write_manual_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+def _write_manual_csv(
+    path: Path,
+    rows: list[dict[str, Any]],
+    rejected_values: Sequence[str] = (),
+) -> None:
     fieldnames = (
         "证据编号",
         "平台",
@@ -345,6 +351,22 @@ def _write_manual_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                         )
                         else "否"
                     ),
+                }
+            )
+        for value in rejected_values:
+            # 输入阶段被拒的无效链接：从未成为抓取任务，逐条列出让用户知晓
+            writer.writerow(
+                {
+                    "证据编号": "—",
+                    "平台": "未识别",
+                    "原始URL": value,
+                    "状态": "input_rejected",
+                    "错误码": "INPUT_REJECTED",
+                    "错误说明": "无法识别为有效的 HTTP(S) 链接，未参与本次抓取。",
+                    "建议处理": "修正为有效链接后重新导入。",
+                    "建议在登录态恢复后重试": "否",
+                    "推荐补录顺序": "无需补录",
+                    "是否可自动重试": "否",
                 }
             )
 

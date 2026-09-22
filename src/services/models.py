@@ -22,8 +22,8 @@ class JobRequest:
     reexport_only: bool = False
     retry_evidence_ids: tuple[int, ...] = ()
     dedupe: bool = False
-    # U01：用户统一入口选择的「函」文档；重导出分支为空时由任务目录 letter/ 发现。
-    letter_path: Path | None = None
+    # U01：用户统一入口选择的「函」文档（可多份 .jpg）；重导出分支为空时由任务目录 letter/ 发现。
+    letter_paths: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.input_path is None) == (not self.tasks):

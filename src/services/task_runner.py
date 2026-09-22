@@ -27,9 +27,9 @@ from src.export.package_validator import validate_template_assets
 from src.export.packager import create_template_archive
 from src.export.letter_asset import (
     append_letter_to_rows,
-    find_staged_letter,
-    persist_letter_file,
-    stage_letter_file,
+    find_staged_letters,
+    persist_letter_files,
+    stage_letter_files,
 )
 from src.export.row_mapper import TemplateRowMapper
 from src.export.staging_assets import cleanup_staging_assets
@@ -100,7 +100,7 @@ class TaskRunner:
         prepared: PreparedTemplate | None = None
         checkpoint: CheckpointStore | None = None
         try:
-            tasks, rejected_count = await self._resolve_tasks(request)
+            tasks, rejected_count, rejected_values = await self._resolve_tasks(request)
             if not tasks:
                 raise TaskRunnerError("输入文件中没有可处理的 HTTP(S) URL。")
             job_id = request.job_id or _new_job_id()
@@ -252,13 +252,13 @@ class TaskRunner:
                     checkpoint_path=checkpoint.path,
                 )
 
-            letter_name = self._stage_letter(request, prepared)
-            if letter_name is not None:
-                rows = append_letter_to_rows(rows, letter_name)
+            letter_names = self._stage_letters(request, prepared)
+            if letter_names:
+                rows = append_letter_to_rows(rows, letter_names)
                 self._log(
                     callbacks,
                     "INFO",
-                    f"函文档 {letter_name} 已加入交付包并写入所有行附件列。",
+                    f"函文档 {','.join(letter_names)} 已加入交付包并写入所有行附件列。",
                 )
             rows, author_decisions, author_audit_entries = (
                 audit_and_archive_author_evidence(
@@ -328,6 +328,7 @@ class TaskRunner:
                 prepared.job_id,
                 request.label,
                 rejected_count,
+                rejected_values,
                 author_decisions,
                 author_audit_entries,
             )
@@ -368,9 +369,11 @@ class TaskRunner:
                     raise TaskRunnerError(f"源模板完整性检查失败：{integrity_error}") from error
             raise TaskRunnerError(_friendly_error(error)) from error
 
-    async def _resolve_tasks(self, request: JobRequest) -> tuple[tuple[UrlTask, ...], int]:
+    async def _resolve_tasks(
+        self, request: JobRequest
+    ) -> tuple[tuple[UrlTask, ...], int, tuple[str, ...]]:
         if request.tasks:
-            return request.tasks, 0
+            return request.tasks, 0, ()
         assert request.input_path is not None
         read_result = await asyncio.to_thread(
             read_url_input,
@@ -378,26 +381,26 @@ class TaskRunner:
             request.sheet_name,
             dedupe=request.dedupe,
         )
-        return read_result.tasks, read_result.duplicate_or_invalid_count
+        return read_result.tasks, read_result.duplicate_or_invalid_count, read_result.rejected_values
 
-    def _stage_letter(self, request: JobRequest, prepared: PreparedTemplate) -> str | None:
-        """函文件入 staging 并持久化到任务目录；返回安全文件名（无函为 None）。
+    def _stage_letters(self, request: JobRequest, prepared: PreparedTemplate) -> tuple[str, ...]:
+        """函文件入 staging 并持久化到任务目录；返回安全文件名元组（无函为空）。
 
         函文件缺失/读取失败只记警告不阻断导出，保证「不选函文件时行为与
         现状一致」，函不可用退化为现状导出。
         """
 
-        letter_path = request.letter_path
-        if letter_path is None and request.resume_checkpoint_path is not None:
-            letter_path = find_staged_letter(Path(request.resume_checkpoint_path).parent)
-        if letter_path is None:
-            return None
+        letter_paths = tuple(request.letter_paths)
+        if not letter_paths and request.resume_checkpoint_path is not None:
+            letter_paths = find_staged_letters(Path(request.resume_checkpoint_path).parent)
+        if not letter_paths:
+            return ()
         try:
-            persist_letter_file(prepared.job_dir, letter_path)
-            return stage_letter_file(prepared.template_dir, letter_path)
+            persist_letter_files(prepared.job_dir, letter_paths)
+            return stage_letter_files(prepared.template_dir, letter_paths)
         except OSError as error:
-            logger.warning("Unable to stage letter file %s: %s", letter_path, error)
-            return None
+            logger.warning("Unable to stage letter files %s: %s", letter_paths, error)
+            return ()
 
     def _build_rows(
         self,
@@ -418,6 +421,7 @@ class TaskRunner:
         job_id: str,
         label: str,
         rejected_count: int,
+        rejected_values: tuple[str, ...] = (),
         author_decisions: list[AuthorEvidenceDecision] | None = None,
         author_audit_entries: list[dict[str, Any]] | None = None,
     ) -> QualityArtifacts:
@@ -427,6 +431,7 @@ class TaskRunner:
             job_id=job_id,
             label=label,
             rejected_count=rejected_count,
+            rejected_values=rejected_values,
             router=self._platform_router,
             author_decisions=author_decisions,
             author_audit_entries=author_audit_entries,

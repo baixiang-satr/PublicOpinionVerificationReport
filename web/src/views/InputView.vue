@@ -11,7 +11,7 @@ const store = useJobStore()
 
 onMounted(async () => {
   const state = await bridge.letterState()
-  store.letterName = state.name || ''
+  store.letterNames = state.names || []
 })
 
 async function pickLetter() {
@@ -20,13 +20,20 @@ async function pickLetter() {
     if (res.message) ElMessage.warning(res.message)
     return
   }
-  store.letterName = res.name
-  ElMessage.success(`已选择函文档：${res.name}，导出时将自动加入交付包并写入附件列。`)
+  store.letterNames = res.names || []
+  ElMessage.success(
+    `已选择 ${store.letterNames.length} 份函文档，导出时将自动加入交付包并写入附件列。`,
+  )
+}
+
+async function removeLetter(name: string) {
+  const res = await bridge.removeLetterFile(name)
+  store.letterNames = res.names || []
 }
 
 async function clearLetter() {
   await bridge.clearLetterFile()
-  store.letterName = ''
+  store.letterNames = []
 }
 
 async function pickFile() {
@@ -109,19 +116,31 @@ function openAuth() {
     </div>
 
     <div class="card">
-      <h2 class="card-title">函文档（可选）</h2>
+      <h2 class="card-title">函文档（可选，仅 .jpg 图片）</h2>
       <p class="card-desc muted">
-        选择一份「函」文件（如 XX市申请处置的函.docx），导出时自动放入交付包，
-        并把函名追加到每一行附件列末尾；不选择则导出行为与之前完全一致。
+        选择一份或多份「函」图片（.jpg/.jpeg，可多选），导出时自动放入交付包，
+        并把全部函名追加到每一行附件列末尾；不选择则导出行为与之前完全一致。
       </p>
       <div class="file-row">
-        <el-button :icon="FolderOpened" @click="pickLetter">选择函文档…</el-button>
-        <template v-if="store.letterName">
-          <span class="file-path">{{ store.letterName }}</span>
-          <el-button size="small" text type="danger" @click="clearLetter">清除</el-button>
-        </template>
-        <span v-else class="muted">尚未选择函文档</span>
+        <el-button :icon="FolderOpened" @click="pickLetter">选择函文档（可多选）…</el-button>
+        <el-button
+          v-if="store.letterNames.length"
+          size="small"
+          text
+          type="danger"
+          @click="clearLetter"
+        >全部清除</el-button>
       </div>
+      <div v-if="store.letterNames.length" class="letter-list">
+        <el-tag
+          v-for="name in store.letterNames"
+          :key="name"
+          closable
+          class="letter-tag"
+          @close="removeLetter(name)"
+        >{{ name }}</el-tag>
+      </div>
+      <div v-else class="muted file-meta">尚未选择函文档</div>
     </div>
 
     <div class="card" v-if="store.options">
@@ -178,6 +197,17 @@ function openAuth() {
 
 .file-meta {
   margin-top: 8px;
+}
+
+.letter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.letter-tag {
+  max-width: 100%;
 }
 
 .options-form {

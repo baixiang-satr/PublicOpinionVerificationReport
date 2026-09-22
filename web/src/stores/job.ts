@@ -45,8 +45,8 @@ interface JobState {
   urlCount: number
   // U07：选文件时用户对重复 URL 的选择（true=删除重复保留首条，false=全部保留）
   dedupeChoice: boolean
-  // U01：已选「函」文档文件名（空串=未选择）
-  letterName: string
+  // U01：已选「函」文档文件名列表（可多份 .jpg，空数组=未选择）
+  letterNames: string[]
   running: boolean
   started: JobStartedPayload | null
   progress: ProgressPayload
@@ -66,6 +66,8 @@ interface JobState {
   closePrompt: number
   // U04：URL 复验对话框；recheckVersion 每次复验事件自增触发列表刷新
   recheckDialogOpen: boolean
+  // 未收录/待补录清单弹窗开关（ResultView/ExportView 入口共用）
+  manualEntryDialogOpen: boolean
   recheckRunning: boolean
   recheckVersion: number
 }
@@ -79,7 +81,7 @@ export const useJobStore = defineStore('job', {
     inputPath: '',
     urlCount: 0,
     dedupeChoice: false,
-    letterName: '',
+    letterNames: [],
     running: false,
     started: null,
     progress: { ...EMPTY_PROGRESS },
@@ -97,6 +99,7 @@ export const useJobStore = defineStore('job', {
     lastCapture: null,
     closePrompt: 0,
     recheckDialogOpen: false,
+    manualEntryDialogOpen: false,
     recheckRunning: false,
     recheckVersion: 0,
   }),
