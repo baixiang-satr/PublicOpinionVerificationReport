@@ -44,7 +44,7 @@ watch(
     if (!exporting.value || !path) return
     exporting.value = false
     const message = store.lastFinalArchive
-      ? `导出完成。\n\ntemplate.zip 与 template_final.zip 都在同一文件夹：\n${finalDir.value}`
+      ? `导出完成。含全部补录的最终交付包是 template_final.zip；template.zip 是抓取时的初版（不含补录）。\n\n两者都在同一文件夹：\n${finalDir.value}`
       : `template.zip 已生成。\n\n位置：\n${path}`
     await ElMessageBox.alert(message, '导出完成', {
       confirmButtonText: '知道了',
@@ -93,6 +93,9 @@ watch(
         </el-button>
         <el-button :icon="FolderOpened" :disabled="!store.lastArchive" @click="bridge.openOutputDir()">
           打开输出位置
+        </el-button>
+        <el-button :disabled="!store.session" @click="store.manualEntryDialogOpen = true">
+          未收录清单
         </el-button>
       </div>
       <p v-if="store.lastFinalArchive" class="muted archive-path">

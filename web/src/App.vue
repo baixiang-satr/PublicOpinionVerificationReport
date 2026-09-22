@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 
 import AuthManagerDialog from '@/components/AuthManagerDialog.vue'
+import ManualEntryDialog from '@/components/ManualEntryDialog.vue'
 import ReloginDialog from '@/components/ReloginDialog.vue'
 import SheetDialog from '@/components/SheetDialog.vue'
 import StepSidebar from '@/components/StepSidebar.vue'
@@ -90,6 +91,7 @@ watch(
     <ReloginDialog />
     <SheetDialog v-model="store.sheetDialogOpen" :mode="store.sheetDialogMode" />
     <UrlRecheckDialog />
+    <ManualEntryDialog />
   </div>
 </template>
 

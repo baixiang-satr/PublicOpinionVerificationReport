@@ -229,6 +229,18 @@ async function decorate(univerAPI: UniverAPI) {
   }
 }
 
+// Univer 把日期输入存为序列值（1899-12-30 起的天数）；发布时间列还原为
+// YYYY-MM-DD 再提交（直接存数字会在导出解析时失败并静默保留原值）。
+function cellText(cell: unknown, field: string | null): string {
+  const value = (cell as { v?: unknown })?.v
+  if (value == null) return ''
+  if (typeof value === 'number' && field === 'published_at') {
+    const date = new Date(Math.round((value - 25569) * 86400 * 1000))
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10)
+  }
+  return String(value)
+}
+
 // ── 编辑回写 ───────────────────────────────────────────────────────────────
 function listenEdits(univerAPI: UniverAPI) {
   univerAPI.addEvent(univerAPI.Event.CommandExecuted, (event) => {
@@ -246,7 +258,9 @@ function listenEdits(univerAPI: UniverAPI) {
         const payloadRow = model.rowAt(row)
         const column = model.columns[col]
         if (!payloadRow || !column) continue
-        const value = String((cell as { v?: unknown })?.v ?? '')
+        // 纯样式 mutation 不带 v：跳过，避免把已保存的人工值误清空
+        if (cell == null || typeof cell !== 'object' || !('v' in cell)) continue
+        const value = cellText(cell, column.field)
         if (!editable.value || !column.editable || !column.field) {
           revertCell(sheet, model, row, col)
           continue
@@ -282,12 +296,23 @@ async function submitEdit(
   col: number,
   value: string,
 ) {
-  const result = (await bridge.applyEdit(eid, field, value)) as unknown as {
-    ok: boolean
-    row?: EditRowDelta
+  let result: { ok: boolean; message?: string; row?: EditRowDelta }
+  try {
+    result = (await bridge.applyEdit(eid, field, value)) as unknown as {
+      ok: boolean
+      message?: string
+      row?: EditRowDelta
+    }
+  } catch (error) {
+    result = { ok: false, message: String(error) }
   }
   const payloadRow = model.rowAt(row)
-  if (!result.ok || !payloadRow) return
+  if (!result.ok || !payloadRow) {
+    // 保存失败：回滚单元格显示并明确提示（此前静默失败，用户以为已保存）
+    revertCell(sheet, model, row, col)
+    ElMessage.error(result.message || '保存失败，已还原单元格内容。')
+    return
+  }
   payloadRow.cells[columnKey] = value
   if (result.row) {
     payloadRow.missing = result.row.missing

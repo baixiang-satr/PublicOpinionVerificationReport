@@ -437,3 +437,50 @@ def test_pick_input_file(tmp_path: Path, suffix: str) -> None:
     args, kwargs = window.calls[0]
     assert args == (webview.FileDialog.OPEN,)
     assert kwargs["file_types"][0].startswith("URL 文件")
+
+
+def test_session_checkpoint_preferred_over_stale_last_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """会话目录 checkpoint 优先于启动缓存（2026-09 上传 zip 补录导出丢失修复）。"""
+
+    records = [_record(1, "https://example.com/a", "微博博客", RecordStatus.EXPORTED)]
+    job_dir = _make_job(tmp_path, records)
+    stale_dir = tmp_path / "output" / "job-zzz-stale"
+    stale_dir.mkdir(parents=True)
+    CheckpointStore(
+        stale_dir / "job_checkpoint.json", job_id="job-stale", tasks=(records[0].task,)
+    ).save()
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    bridge.jobs.refresh_latest_checkpoint(tmp_path / "output")
+    assert bridge.jobs.last_checkpoint == str(stale_dir / "job_checkpoint.json")
+
+    ok, _ = bridge.jobs.open_session(job_dir)
+    assert ok
+    assert bridge.jobs.last_checkpoint == str(job_dir / "job_checkpoint.json")
+
+    captured: dict[str, object] = {}
+
+    def _fake_start(request):
+        captured["request"] = request
+        return True, ""
+
+    monkeypatch.setattr(bridge.jobs, "start", _fake_start)
+    assert bridge.resume_checkpoint(True)["ok"] is True
+    assert captured["request"].resume_checkpoint_path == job_dir / "job_checkpoint.json"
+    assert bridge.jobs.final_copy_dir == job_dir
+
+
+def test_apply_edit_unknown_field_reports_message(tmp_path: Path) -> None:
+    """保存失败必须带错误回执，前端据以回滚单元格（2026-09 修复）。"""
+
+    records = [_record(1, "https://example.com/a", "微博博客", RecordStatus.NEEDS_REVIEW)]
+    job_dir = _make_job(tmp_path, records)
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    ok, _ = bridge.jobs.open_session(job_dir)
+    assert ok
+
+    result = bridge.apply_edit(1, "not_a_real_field", "x")
+
+    assert result["ok"] is False
+    assert result["message"]

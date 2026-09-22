@@ -60,6 +60,7 @@ _GUARDED_METHODS = (
     "retry_failed",
     "resume_checkpoint",
     "export_zip",
+    "export_manual_entries",
     "start_region_capture",
     "auth_login",
     "start_url_recheck",

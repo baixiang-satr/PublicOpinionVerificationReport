@@ -182,6 +182,11 @@ class JobRunner(AsyncThreadJob):
             self.session = ReviewSession.from_job_dir(job_dir)
         except Exception as error:  # noqa: BLE001
             return False, f"无法打开任务目录：{type(error).__name__}: {error}"
+        # 会话目录即断点目录：上传旧 zip 补录后，工作台「仅重新导出」必须
+        # 读到同一份 checkpoint，否则人工改动会被旧目录的断点整批丢弃。
+        checkpoint = Path(job_dir) / "job_checkpoint.json"
+        if checkpoint.is_file():
+            self.last_checkpoint = str(checkpoint)
         self._sink.emit("session", {})
         return True, ""
 

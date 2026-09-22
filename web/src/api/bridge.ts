@@ -6,6 +6,7 @@ import type {
   BridgeEvent,
   InputFileInfo,
   LicenseInfo,
+  ManualEntryRow,
   ScreenshotPair,
   SheetPayload,
   TaskOptions,
@@ -19,16 +20,19 @@ interface PyWebviewApi {
   license_deactivate(): Promise<LicenseInfo>
   pick_input_file(): Promise<InputFileInfo | null>
   pick_zip_file(): Promise<{ ok: boolean; message: string }>
-  pick_letter_file(): Promise<{ ok: boolean; name: string; message: string }>
+  pick_letter_file(): Promise<{ ok: boolean; names: string[]; message: string }>
+  list_manual_entries(): Promise<{ ok: boolean; rows: ManualEntryRow[]; path: string; message: string }>
+  export_manual_entries(): Promise<{ ok: boolean; message: string }>
+  remove_letter_file(name: string): Promise<{ ok: boolean; names: string[] }>
   clear_letter_file(): Promise<{ ok: boolean }>
-  letter_state(): Promise<{ name: string }>
+  letter_state(): Promise<{ names: string[] }>
   set_options(options: TaskOptions): Promise<{ ok: boolean }>
   start_crawl(input_path: string, dedupe: boolean): Promise<{ ok: boolean; message: string }>
   cancel_job(): Promise<{ ok: boolean }>
   retry_failed(): Promise<{ ok: boolean; message: string }>
   resume_checkpoint(reexport_only: boolean, input_path: string, dedupe: boolean): Promise<{ ok: boolean; message: string }>
   get_sheet_payload(): Promise<SheetPayload[]>
-  apply_edit(eid: number, field: string, value: string): Promise<{ ok: boolean }>
+  apply_edit(eid: number, field: string, value: string): Promise<{ ok: boolean; message?: string }>
   add_manual_row(sheet_name: string): Promise<{ eid: number | null }>
   remove_record(eid: number): Promise<{ ok: boolean }>
   pick_screenshot(eid: number, mode: 'primary' | 'author' | 'attachment'): Promise<{ ok: boolean; name: string }>
@@ -335,6 +339,7 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
             label: '批量抓取',
             archive_path: null,
             final_copy_path: null,
+            manual_entry_path: null,
             cancelled: false,
             ready: 1,
             needs_review: 2,
@@ -361,9 +366,16 @@ export const bridge = {
   pickInputFile: () => call<InputFileInfo | null>('pick_input_file'),
   pickZipFile: () => call<{ ok: boolean; message: string }>('pick_zip_file'),
   pickLetterFile: () =>
-    call<{ ok: boolean; name: string; message: string }>('pick_letter_file'),
+    call<{ ok: boolean; names: string[]; message: string }>('pick_letter_file'),
+  removeLetterFile: (name: string) =>
+    call<{ ok: boolean; names: string[] }>('remove_letter_file', name),
   clearLetterFile: () => call<{ ok: boolean }>('clear_letter_file'),
-  letterState: () => call<{ name: string }>('letter_state'),
+  letterState: () => call<{ names: string[] }>('letter_state'),
+  listManualEntries: () =>
+    call<{ ok: boolean; rows: ManualEntryRow[]; path: string; message: string }>(
+      'list_manual_entries',
+    ),
+  exportManualEntries: () => call<{ ok: boolean; message: string }>('export_manual_entries'),
   setOptions: (o: TaskOptions) => call<{ ok: boolean }>('set_options', o),
   startCrawl: (p: string, dedupe = false) =>
     call<{ ok: boolean; message: string }>('start_crawl', p, dedupe),
@@ -373,7 +385,7 @@ export const bridge = {
     call<{ ok: boolean; message: string }>('resume_checkpoint', reexportOnly, inputPath, dedupe),
   getSheetPayload: () => call<SheetPayload[]>('get_sheet_payload'),
   applyEdit: (eid: number, field: string, value: string) =>
-    call<{ ok: boolean }>('apply_edit', eid, field, value),
+    call<{ ok: boolean; message?: string }>('apply_edit', eid, field, value),
   addManualRow: (sheet: string) => call<{ eid: number | null }>('add_manual_row', sheet),
   removeRecord: (eid: number) => call<{ ok: boolean }>('remove_record', eid),
   pickScreenshot: (eid: number, mode: 'primary' | 'author' | 'attachment') =>

@@ -2,6 +2,14 @@
 
 from src.webui.exit_control import ExitControlMixin
 from src.webui.letter_api import LetterApiMixin
+from src.webui.manual_entry_api import ManualEntryApiMixin
 from src.webui.recheck_api import RecheckApiMixin
+from src.webui.review_api import ReviewApiMixin
 
-__all__ = ["ExitControlMixin", "LetterApiMixin", "RecheckApiMixin"]
+__all__ = [
+    "ExitControlMixin",
+    "LetterApiMixin",
+    "ManualEntryApiMixin",
+    "RecheckApiMixin",
+    "ReviewApiMixin",
+]

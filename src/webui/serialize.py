@@ -88,6 +88,9 @@ def finished_payload(result: JobResult, final_copy: Path | None = None) -> dict:
             else None
         ),
         "final_copy_path": str(final_copy) if final_copy else None,
+        "manual_entry_path": (
+            str(result.manual_entry_path) if result.manual_entry_path else None
+        ),
         "cancelled": result.cancelled,
         "ready": counts.get("exported", 0),
         "needs_review": counts.get("needs_review", 0),

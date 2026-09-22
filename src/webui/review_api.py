@@ -1,0 +1,55 @@
+"""表格数据与人工补录的 js_api mixin（bridge.py 行数受限，逻辑独立成模块）。
+
+宿主类需提供：``self._session()``（当前 ReviewSession 或 None）与
+``self._sink``（事件出口）。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from src.webui.serialize import row_delta, sheet_payload
+
+
+class ReviewApiMixin:
+    _sink: Any = None
+    _session: Any  # 宿主方法：() -> ReviewSession | None
+
+    def get_sheet_payload(self) -> list[dict]:
+        session = self._session()
+        if session is None:
+            return []
+        return sheet_payload(session)
+
+    def apply_edit(self, evidence_id: int, field: str, value: str) -> dict:
+        session = self._session()
+        if session is None:
+            return {"ok": False, "message": "还没有打开的任务。"}
+        try:
+            session.set_field(int(evidence_id), str(field), str(value))
+        except Exception as error:  # noqa: BLE001 - 保存失败必须回执，前端据以回滚单元格
+            return {"ok": False, "message": f"保存失败：{type(error).__name__}: {error}"}
+        return {"ok": True, "row": row_delta(session, int(evidence_id)), "message": ""}
+
+    def add_manual_row(self, sheet_name: str) -> dict:
+        session = self._session()
+        if session is None:
+            return {"eid": None}
+        try:
+            record = session.add_manual_record(str(sheet_name))
+        except KeyError:
+            return {"eid": None}
+        self._sink.emit("session", {})
+        return {"eid": record.task.evidence_id}
+
+    def remove_record(self, evidence_id: int) -> dict:
+        session = self._session()
+        if session is None:
+            return {"ok": False}
+        ok = session.remove_record(int(evidence_id))
+        if ok:
+            self._sink.emit("session", {})
+        return {"ok": ok}
+
+
+__all__ = ["ReviewApiMixin"]

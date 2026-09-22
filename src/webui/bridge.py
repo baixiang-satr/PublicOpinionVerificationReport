@@ -29,19 +29,29 @@ from src.webui.auth_runner import AuthRunner
 from src.webui.image_payload import image_payload
 from src.webui.runner import CaptureRunner, EventSink, JobRunner
 from src.webui.auth_ui import build_auth_list, missing_auth_platforms
-from src.webui.api_mixins import ExitControlMixin, LetterApiMixin, RecheckApiMixin
-from src.webui.license_gate import LicenseApiMixin, apply_license_guard, default_license_manager
-from src.webui.serialize import (
-    row_delta,
-    session_overview,
-    sheet_payload,
+from src.webui.api_mixins import (
+    ExitControlMixin,
+    LetterApiMixin,
+    ManualEntryApiMixin,
+    RecheckApiMixin,
+    ReviewApiMixin,
 )
+from src.webui.license_gate import LicenseApiMixin, apply_license_guard, default_license_manager
+from src.webui.serialize import session_overview
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 _SCREENSHOT_SLOTS = {"primary": "content", "author": "author"}
 
 
-class WebUIBridge(LicenseApiMixin, AuthApiMixin, LetterApiMixin, ExitControlMixin, RecheckApiMixin):
+class WebUIBridge(
+    LicenseApiMixin,
+    AuthApiMixin,
+    LetterApiMixin,
+    ExitControlMixin,
+    RecheckApiMixin,
+    ReviewApiMixin,
+    ManualEntryApiMixin,
+):
     def __init__(
         self,
         base_config: AppConfig,
@@ -56,7 +66,7 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin, LetterApiMixin, ExitControlMixi
         self._window_provider = window_provider
         self.license = license_manager if license_manager is not None else default_license_manager()
         self._input_platform_keys: set[str] = set()
-        self._letter_path: Path | None = None
+        self._letter_paths: tuple[Path, ...] = ()
         self.auth = AuthRunner(
             lambda: self._task_config, self._sink, relevant_keys_getter=lambda: self._input_platform_keys
         )
@@ -179,7 +189,7 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin, LetterApiMixin, ExitControlMixi
                 ),
             }
         request = JobRequest(
-            input_path=Path(input_path), dedupe=dedupe, letter_path=self._letter_path
+            input_path=Path(input_path), dedupe=dedupe, letter_paths=self._letter_paths
         )
         ok, message = self.jobs.start(request)
         return {"ok": ok, "message": message}
@@ -204,6 +214,13 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin, LetterApiMixin, ExitControlMixi
 
     def resume_checkpoint(self, reexport_only: bool, input_path: str = "", dedupe: bool = False) -> dict:
         checkpoint = self.jobs.last_checkpoint
+        # 当前会话（如上传 zip 补录）所在目录的 checkpoint 优先于缓存的
+        # last_checkpoint，避免「仅重新导出」读到其他任务的旧断点。
+        session = self.jobs.session
+        if session is not None:
+            session_checkpoint = Path(session.job_dir) / "job_checkpoint.json"
+            if session_checkpoint.is_file():
+                checkpoint = str(session_checkpoint)
         if not checkpoint:
             return {"ok": False, "message": "没有可用的断点。"}
         checkpoint_path = Path(checkpoint)
@@ -254,40 +271,6 @@ class WebUIBridge(LicenseApiMixin, AuthApiMixin, LetterApiMixin, ExitControlMixi
         self.jobs.final_copy_dir = Path(session.job_dir)
         ok, message = self.jobs.start(request)
         return {"ok": ok, "message": message or "导出任务已开始。"}
-
-    # ── 表格数据与人工补录 ──
-    def get_sheet_payload(self) -> list[dict]:
-        session = self._session()
-        if session is None:
-            return []
-        return sheet_payload(session)
-
-    def apply_edit(self, evidence_id: int, field: str, value: str) -> dict:
-        session = self._session()
-        if session is None:
-            return {"ok": False}
-        session.set_field(int(evidence_id), str(field), str(value))
-        return {"ok": True, "row": row_delta(session, int(evidence_id))}
-
-    def add_manual_row(self, sheet_name: str) -> dict:
-        session = self._session()
-        if session is None:
-            return {"eid": None}
-        try:
-            record = session.add_manual_record(str(sheet_name))
-        except KeyError:
-            return {"eid": None}
-        self._sink.emit("session", {})
-        return {"eid": record.task.evidence_id}
-
-    def remove_record(self, evidence_id: int) -> dict:
-        session = self._session()
-        if session is None:
-            return {"ok": False}
-        ok = session.remove_record(int(evidence_id))
-        if ok:
-            self._sink.emit("session", {})
-        return {"ok": ok}
 
     def pick_screenshot(self, evidence_id: int, mode: str) -> dict:
         session = self._session()

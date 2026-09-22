@@ -48,6 +48,9 @@ const totalAttention = computed(() => {
         >
           预览表格
         </el-button>
+        <el-button size="large" @click="store.manualEntryDialogOpen = true">
+          未收录清单
+        </el-button>
       </div>
       <el-divider />
       <div class="sheet-chips">

@@ -79,6 +79,7 @@ export interface JobFinishedPayload {
   label: string
   archive_path: string | null
   final_copy_path: string | null
+  manual_entry_path: string | null
   cancelled: boolean
   ready: number
   needs_review: number
@@ -86,6 +87,9 @@ export interface JobFinishedPayload {
   cancelled_count: number
   retryable: number
 }
+
+/** 未收录/待补录清单行（pending_manual_entry.csv，中文列名原样透传） */
+export type ManualEntryRow = Record<string, string>
 
 export interface SheetColumn {
   key: string // 模板列字母 A/B/C…
