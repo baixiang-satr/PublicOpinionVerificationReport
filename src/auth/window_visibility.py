@@ -35,16 +35,45 @@ async def reveal_window_once(
     width: int,
     height: int,
 ) -> bool:
-    """Move the already-rendered page on-screen without reopening a browser."""
+    """Move the already-rendered page on-screen without reopening a browser.
+
+    The bounds update is attempted twice: flaky CDP sessions must not cost
+    the operator the whole login window.
+    """
 
     context = getattr(page, "context", None)
     if context is None or not hasattr(context, "new_cdp_session"):
         return False
+    for _attempt in range(2):
+        if await _set_window_bounds(page, context, width=width, height=height):
+            try:
+                await page.bring_to_front()
+            except Exception:
+                pass
+            return True
+    return False
+
+
+async def _set_window_bounds(
+    page: Any,
+    context: Any,
+    *,
+    width: int,
+    height: int,
+) -> bool:
+    """Restore then position the window within one CDP session."""
+
     session = None
     try:
         session = await context.new_cdp_session(page)
         window = await session.send("Browser.getWindowForTarget")
         window_id = int(window["windowId"])
+        # Restore first, then position: some Windows builds drop combined
+        # bounds updates for minimized or off-screen windows.
+        await session.send(
+            "Browser.setWindowBounds",
+            {"windowId": window_id, "bounds": {"windowState": "normal"}},
+        )
         await session.send(
             "Browser.setWindowBounds",
             {
@@ -58,10 +87,6 @@ async def reveal_window_once(
                 },
             },
         )
-        try:
-            await page.bring_to_front()
-        except Exception:
-            pass
         return True
     except Exception:
         return False

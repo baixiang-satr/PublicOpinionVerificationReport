@@ -17,14 +17,14 @@ from src.auth.batch import (
     probe_all_saved as run_probe_all_saved,
 )
 from src.auth.login_evidence import wait_for_login_evidence
+from src.auth.login_window import open_login_browser
+from src.auth.login_window_diagnostics import LoginWindowDiagnostics
 from src.auth.models import AuthProbeResult, AuthStatus
 from src.auth.probe_helpers import (
     ProgressCallback,
-    _activate_login_trigger,
     _barrier_result,
     _close_quietly,
     _fill_phone_without_submitting,
-    _navigate_login,
     _navigate_probe_candidates,
     _publish,
     _result,
@@ -33,7 +33,6 @@ from src.auth.registry import AUTH_POLICIES, auth_policy_for_key
 from src.auth.state_filter import filter_state_for_policy
 from src.auth.store import AuthProfileStore
 from src.auth.validation import validate_candidate
-from src.auth.window_visibility import reveal_window_once, stage_window_offscreen
 from src.config.settings import TaskConfig
 from src.screenshot.browser_options import (
     browser_context_options,
@@ -224,6 +223,7 @@ class AuthManagerService:
         used_saved_state = saved_state is not None
         browser = None
         context = None
+        diagnostics: LoginWindowDiagnostics | None = None
         try:
             from playwright.async_api import async_playwright
 
@@ -235,44 +235,35 @@ class AuthManagerService:
                     background_crawl_browser=False,
                     max_concurrency=1,
                 )
-                launch_options = browser_launch_options(auth_config)
                 if interactive:
-                    # Chromium otherwise paints a visible about:blank window,
-                    # navigates, and resizes again.  Stage that first paint
-                    # outside the desktop and reveal the completed login page
-                    # through CDP exactly once.
-                    launch_options = stage_window_offscreen(
-                        launch_options,
-                        width=auth_config.viewport_width,
-                        height=auth_config.viewport_height,
+                    # One login click creates exactly one browser process on a
+                    # pinned, machine-independent configuration (bundled
+                    # Chromium, software rendering, no stealth injection).
+                    # Off-screen staging, the one-time reveal and the plain
+                    # visible fallback live in src/auth/login_window.py.
+                    diagnostics = LoginWindowDiagnostics(platform_key)
+                    browser, context, page = await open_login_browser(
+                        playwright,
+                        auth_config,
+                        policy.login_url,
+                        open_login_trigger=policy.open_login_trigger,
+                        diagnostics=diagnostics,
                     )
-                # One login click creates exactly one browser process.  Auth
-                # UI does not cycle through Edge/Chrome/Chromium fallbacks,
-                # which previously caused a series of one-second windows.
-                browser = await playwright.chromium.launch(**launch_options)
-                context = await browser.new_context(
-                    **browser_context_options(auth_config, saved_state)
-                )
-                if auth_config.enable_stealth and _STEALTH_SCRIPT_PATH.is_file():
-                    await context.add_init_script(path=str(_STEALTH_SCRIPT_PATH))
-                page = await context.new_page()
+                else:
+                    launch_options = browser_launch_options(auth_config)
+                    browser = await playwright.chromium.launch(**launch_options)
+                    context = await browser.new_context(
+                        **browser_context_options(auth_config, saved_state)
+                    )
+                    if (
+                        auth_config.enable_stealth
+                        and _STEALTH_SCRIPT_PATH.is_file()
+                    ):
+                        await context.add_init_script(
+                            path=str(_STEALTH_SCRIPT_PATH)
+                        )
+                    page = await context.new_page()
                 if interactive:
-                    # A login action opens exactly one page for exactly the
-                    # selected platform.  Content probe URLs are reserved for
-                    # the later, hidden fresh-context validation.
-                    await _navigate_login(page, policy.login_url, auth_config)
-                    if policy.open_login_trigger:
-                        for _attempt in range(12):
-                            if await _activate_login_trigger(page):
-                                break
-                            await page.wait_for_timeout(500)
-                    revealed = await reveal_window_once(
-                        page,
-                        width=auth_config.viewport_width,
-                        height=auth_config.viewport_height,
-                    )
-                    if not revealed and hasattr(context, "new_cdp_session"):
-                        raise RuntimeError("无法稳定显示登录窗口，请重试。")
                     baseline_state = await context.storage_state(indexed_db=True)
                     _publish(
                         on_progress,
@@ -454,6 +445,8 @@ class AuthManagerService:
                 )
                 return validation
             finally:
+                if diagnostics is not None:
+                    diagnostics.log_summary()
                 if context is not None:
                     await _close_quietly(context)
                 if browser is not None:

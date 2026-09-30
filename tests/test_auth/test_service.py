@@ -213,9 +213,10 @@ class FakePage:
 class FakeContext:
     def __init__(self) -> None:
         self.closed = False
+        self.init_scripts: list[dict[str, object]] = []
 
     async def add_init_script(self, **_kwargs: object) -> None:
-        return None
+        self.init_scripts.append(dict(_kwargs))
 
     async def new_page(self) -> FakePage:
         return FakePage()
@@ -248,6 +249,7 @@ class FakeChromium:
 
     async def launch(self, **_kwargs: object) -> FakeBrowser:
         self._runtime.launch_count += 1
+        self._runtime.launch_kwargs.append(dict(_kwargs))
         return self._runtime.browser
 
 
@@ -256,6 +258,7 @@ class FakeRuntime:
         self.browser = browser
         self.chromium = FakeChromium(self)
         self.launch_count = 0
+        self.launch_kwargs: list[dict[str, object]] = []
 
     async def stop(self) -> None:
         return None

@@ -56,7 +56,7 @@ async def test_interactive_login_opens_selected_login_url_before_validation(
             used_saved_state=True,
         )
 
-    monkeypatch.setattr(service_module, "_navigate_login", fake_navigate)
+    monkeypatch.setattr("src.auth.login_window._navigate_login", fake_navigate)
     monkeypatch.setattr(service_module, "wait_for_login_evidence", successful_login)
     monkeypatch.setattr(service_module, "validate_candidate", valid_candidate)
     store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
@@ -95,7 +95,7 @@ async def test_interactive_login_discards_anonymous_baidu_state(
     async def successful_login(*_args: object, **_kwargs: object) -> bool:
         return True
 
-    monkeypatch.setattr(service_module, "_navigate_login", fake_navigate)
+    monkeypatch.setattr("src.auth.login_window._navigate_login", fake_navigate)
     monkeypatch.setattr(service_module, "wait_for_login_evidence", successful_login)
     store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
     store.commit_validated_state(
@@ -147,7 +147,7 @@ async def test_interactive_relogin_starts_clean_and_preserves_old_baidu_session(
     async def unfinished_login(*_args: object, **_kwargs: object) -> bool:
         return False
 
-    monkeypatch.setattr(service_module, "_navigate_login", fake_navigate)
+    monkeypatch.setattr("src.auth.login_window._navigate_login", fake_navigate)
     monkeypatch.setattr(service_module, "wait_for_login_evidence", unfinished_login)
     store = AuthProfileStore(tmp_path / "auth", protector=ReverseProtector())
     store.commit_validated_state(

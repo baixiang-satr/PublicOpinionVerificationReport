@@ -49,6 +49,16 @@ async def _navigate_login(page: Any, url: str, config: TaskConfig) -> Any | None
         await page.wait_for_load_state("domcontentloaded", timeout=5_000)
     except Exception:
         pass
+    # Settle before the window reveal: a half-rendered SPA repaints visibly
+    # once the window is on screen, which reads as flicker to the operator.
+    try:
+        await page.wait_for_load_state("load", timeout=5_000)
+    except Exception:
+        pass
+    try:
+        await page.wait_for_timeout(500)
+    except Exception:
+        pass
     return response
 
 
