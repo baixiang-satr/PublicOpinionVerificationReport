@@ -86,10 +86,11 @@ def test_guarded_operations_blocked_when_unactivated(
         lambda: bridge.retry_failed(),
         lambda: bridge.resume_checkpoint(True),
         lambda: bridge.export_zip(),
-        lambda: bridge.pick_input_file(),
-        lambda: bridge.pick_zip_file(),
+        lambda: bridge.accept_input_file("x.txt"),
+        lambda: bridge.accept_zip_file("x.zip"),
         lambda: bridge.start_region_capture(1, "content"),
         lambda: bridge.auth_login("weibo"),
+        lambda: bridge.auth_import_state("weibo", "state.json"),
     )
     for call in calls:
         result = call()

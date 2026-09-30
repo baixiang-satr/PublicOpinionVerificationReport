@@ -8,7 +8,7 @@
 #   Playwright      — 参考 MediaCrawler 的浏览器自动化方案，用于页面截图
 #   openpyxl        — 仅读取用户提供的普通 XLSX URL 清单
 #   httpx / requests — 参考 MediaCrawler 的 HTTP 客户端方案，用于页面爬取
-#   pywebview       — 桌面壳（内嵌 Vue 3 前端）
+#   FastAPI/Uvicorn — B/S 服务端（REST + WebSocket 事件推送 + 静态托管）
 # =============================================================================
 
 # ── 浏览器自动化 & 截图 ──────────────────────────────────────────────────────
@@ -40,9 +40,12 @@ pywin32>=308; platform_system == "Windows"
 # chardet: 自动检测文件编码（处理用户输入的 TXT/CSV 文件）
 chardet>=5.2.0
 
-# ── 桌面 UI ──────────────────────────────────────────────────────────────────
-# pywebview: 桌面壳（WebView2），前端为 Vue 3 + Element Plus（web/ 目录）
-pywebview>=6.0.0
+# ── Web 服务（B/S）────────────────────────────────────────────────────────
+# FastAPI + Uvicorn：REST 桥方法、WebSocket 事件推送、web/dist 静态托管
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+# python-multipart: FastAPI 处理浏览器文件上传（multipart/form-data）
+python-multipart>=0.0.9
 
 # ── 工具库 ────────────────────────────────────────────────────────────────────
 # python-dotenv: 从 .env 文件加载环境变量，参考 MediaCrawler 使用

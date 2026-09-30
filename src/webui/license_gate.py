@@ -3,7 +3,7 @@
 - ``default_license_manager``：生产环境默认管理器工厂（测试可 monkeypatch 替身）；
 - ``requires_license``：业务操作守卫装饰器，未激活返回 ``LICENSE_REQUIRED``；
 - ``LicenseApiMixin``：``license_status / license_activate / license_deactivate``
-  三个 js_api 方法，由 ``WebUIBridge`` 继承（pywebview 可暴露继承的方法）。
+  三个 js_api 方法，由 ``WebUIBridge`` 继承（REST 层直接暴露继承的方法）。
 """
 
 from __future__ import annotations
@@ -53,16 +53,17 @@ class LicenseApiMixin:
 
 
 _GUARDED_METHODS = (
-    "pick_input_file",
-    "pick_zip_file",
-    "pick_letter_file",
+    "accept_input_file",
+    "accept_zip_file",
+    "accept_letter_files",
     "start_crawl",
     "retry_failed",
     "resume_checkpoint",
     "export_zip",
-    "export_manual_entries",
+    "dump_manual_entries_csv",
     "start_region_capture",
     "auth_login",
+    "auth_import_state",
     "start_url_recheck",
     "remove_records",
 )

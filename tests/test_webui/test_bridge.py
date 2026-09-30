@@ -1,4 +1,4 @@
-"""WebUIBridge 测试：全部离线（假窗口、tmp 目录、无浏览器/外网/Cookie）。"""
+"""WebUIBridge 测试：全部离线（tmp 目录、无浏览器/外网/Cookie）。"""
 from __future__ import annotations
 
 import json
@@ -61,16 +61,6 @@ def _make_job(tmp_path: Path, records: list[RecordResult]) -> Path:
     store.update_many(records)
     store.save()
     return job_dir
-
-
-class _FakeWindow:
-    def __init__(self, picked: Path | None) -> None:
-        self._picked = picked
-        self.calls: list[tuple[tuple, dict]] = []
-
-    def create_file_dialog(self, *args, **kwargs):
-        self.calls.append((args, kwargs))
-        return (str(self._picked),) if self._picked else None
 
 
 def test_bootstrap_and_options(tmp_path: Path) -> None:
@@ -136,21 +126,17 @@ def test_open_session_rejects_bad_dir(tmp_path: Path) -> None:
     assert message
 
 
-def test_pick_screenshot_stages_manual_asset(tmp_path: Path) -> None:
+def test_accept_screenshot_stages_manual_asset(tmp_path: Path) -> None:
     records = [_record(1, "https://example.com/a", "微博博客", RecordStatus.NEEDS_REVIEW)]
     job_dir = _make_job(tmp_path, records)
     image = tmp_path / "shot.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
 
-    bridge = WebUIBridge(
-        _config(tmp_path),
-        EventSink(),
-        window_provider=lambda: _FakeWindow(image),
-    )
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
     ok, _ = bridge.jobs.open_session(job_dir)
     assert ok
 
-    result = bridge.pick_screenshot(1, "primary")
+    result = bridge.accept_screenshot(1, "primary", str(image))
     assert result["ok"] is True
     assert result["name"].startswith("001_")
     assert (job_dir / "manual_assets" / result["name"]).is_file()
@@ -161,13 +147,13 @@ def test_pick_screenshot_stages_manual_asset(tmp_path: Path) -> None:
     assert payload["content"]["name"] == result["name"]
     assert payload["author"] is None
 
-    author = bridge.pick_screenshot(1, "author")
+    author = bridge.accept_screenshot(1, "author", str(image))
     assert author["ok"] is True
     both = bridge.list_screenshots(1)
     assert both["author"] is not None
     assert both["author"]["name"] == author["name"]
 
-    again = bridge.pick_screenshot(1, "attachment")
+    again = bridge.accept_screenshot(1, "attachment", str(image))
     assert again["ok"] is True
     # 附件槽位不影响个人页截图槽位
     still = bridge.list_screenshots(1)
@@ -321,16 +307,14 @@ def test_start_region_capture_author_target_opens_profile_url_directly(
     assert capture.calls[-1]["url"] == "https://www.douyin.com/video/7557"
 
 
-def test_pick_screenshot_cancelled(tmp_path: Path) -> None:
+def test_accept_screenshot_rejects_non_image(tmp_path: Path) -> None:
     records = [_record(1, "https://example.com/a", "微博博客", RecordStatus.NEEDS_REVIEW)]
     job_dir = _make_job(tmp_path, records)
-    bridge = WebUIBridge(
-        _config(tmp_path),
-        EventSink(),
-        window_provider=lambda: _FakeWindow(None),
-    )
+    document = tmp_path / "notes.txt"
+    document.write_text("not an image", encoding="utf-8")
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
     bridge.jobs.open_session(job_dir)
-    assert bridge.pick_screenshot(1, "primary") == {"ok": False, "name": ""}
+    assert bridge.accept_screenshot(1, "primary", str(document)) == {"ok": False, "name": ""}
 
 
 def test_auth_list_and_logout(tmp_path: Path) -> None:
@@ -418,25 +402,19 @@ def test_event_sink_without_window_is_silent() -> None:
 
 
 @pytest.mark.parametrize("suffix", [".txt"])
-def test_pick_input_file(tmp_path: Path, suffix: str) -> None:
+def test_accept_input_file(tmp_path: Path, suffix: str) -> None:
     source = tmp_path / f"urls{suffix}"
     source.write_text("https://example.com/a\nhttps://example.com/b\nnot-a-url\n", encoding="utf-8")
-    window = _FakeWindow(source)
-    bridge = WebUIBridge(
-        _config(tmp_path),
-        EventSink(),
-        window_provider=lambda: window,
-    )
-    info = bridge.pick_input_file()
-    assert info is not None
+    bridge = WebUIBridge(_config(tmp_path), EventSink())
+    info = bridge.accept_input_file(str(source))
     assert info["url_count"] == 2
     assert info["rejected_count"] == 1
-    assert window.calls
-    import webview
-
-    args, kwargs = window.calls[0]
-    assert args == (webview.FileDialog.OPEN,)
-    assert kwargs["file_types"][0].startswith("URL 文件")
+    # 错误文件返回 error 载荷而不是抛异常
+    bad = tmp_path / "bad.xlsx"
+    bad.write_bytes(b"not a real xlsx")
+    error = bridge.accept_input_file(str(bad))
+    assert error["url_count"] == 0
+    assert error["error"]
 
 
 def test_session_checkpoint_preferred_over_stale_last_checkpoint(

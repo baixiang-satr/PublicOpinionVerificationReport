@@ -1,8 +1,8 @@
-"""后台执行器：事件推送（Python→JS）、任务线程、登录态线程。
+"""后台执行器：事件推送（Python→前端）、任务线程、登录态线程。
 
-pywebview 的 js_api 方法在独立线程执行，TaskRunner/AuthManagerService 都是
+桥方法在 HTTP 请求线程执行，TaskRunner/AuthManagerService 都是
 asyncio 协程，因此每个后台任务都在专属线程里跑独立事件循环，通过
-``EventSink`` 用 ``window.evaluate_js`` 把事件推回 Vue 侧。
+``EventSink``（B/S 实现见 ``src/server/events.py``）把事件推回 Vue 侧。
 """
 from __future__ import annotations
 

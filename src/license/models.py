@@ -62,7 +62,7 @@ class LicenseInfo(BaseModel):
     expires_at: str | None = None
 
     def to_payload(self) -> dict:
-        """JSON-safe dict for pywebview js_api（附带 ok 便于前端判断）。"""
+        """JSON-safe dict（附带 ok 便于前端判断）。"""
 
         payload = self.model_dump(mode="json")
         payload["ok"] = self.activated

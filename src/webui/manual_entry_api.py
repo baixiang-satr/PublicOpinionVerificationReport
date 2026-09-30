@@ -1,6 +1,6 @@
 """待补录/未收录清单的 js_api mixin：表格展示数据源 + CSV 导出。
 
-宿主类需提供：``self.jobs``（JobRunner，含 session）、``self._window_provider``。
+宿主类需提供：``self.jobs``（JobRunner，含 session）。
 清单文件为任务目录下的 ``pending_manual_entry.csv``（质量报告产物之一，
 含抓取失败/待补记录与输入阶段被拒链接）。
 
@@ -20,7 +20,6 @@ MANUAL_ENTRY_FILE_NAME = "pending_manual_entry.csv"
 
 class ManualEntryApiMixin:
     jobs: Any = None
-    _window_provider: Any = None
 
     def _manual_entry_csv(self) -> Path | None:
         session = getattr(self.jobs, "session", None)
@@ -99,27 +98,16 @@ class ManualEntryApiMixin:
             "message": "",
         }
 
-    def export_manual_entries(self) -> dict:
-        """把待补录清单（实时过滤已补录完成行）写到用户选择的位置。"""
+    def dump_manual_entries_csv(self, target_path: str) -> dict:
+        """把待补录清单（实时过滤已补录完成行）写到 *target_path*。
 
-        import webview
+        B/S 模式下由 ``GET /api/download/manual-entries`` 写入临时文件后回传下载。
+        """
 
         source = self._manual_entry_csv()
         if source is None:
             return {"ok": False, "message": "当前任务还没有生成清单。"}
-        window = (
-            self._window_provider()
-            if self._window_provider
-            else webview.windows[0]
-        )
-        result = window.create_file_dialog(
-            webview.FileDialog.SAVE,
-            save_filename=MANUAL_ENTRY_FILE_NAME,
-            file_types=("CSV 表格 (*.csv)",),
-        )
-        if not result:
-            return {"ok": False, "message": ""}
-        target = Path(result if isinstance(result, str) else result[0])
+        target = Path(target_path)
         if target.suffix.lower() != ".csv":
             target = target.with_suffix(".csv")
         try:

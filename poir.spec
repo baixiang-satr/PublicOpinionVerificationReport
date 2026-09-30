@@ -9,7 +9,6 @@ from PyInstaller.utils.hooks import collect_all
 datas = [("src/libs/stealth.min.js", "src/libs")]
 binaries = []
 hiddenimports = [
-    "clr",
     "tkinter",
     "_tkinter",
     "win32timezone",
@@ -31,7 +30,7 @@ for _module in (
 ):
     hiddenimports.append(f"src.crawler.platforms.{_module}")
 
-for _package in ("playwright", "webview"):
+for _package in ("playwright", "uvicorn", "fastapi", "websockets"):
     _datas, _binaries, _hidden = collect_all(_package)
     datas += _datas
     binaries += _binaries

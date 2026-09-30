@@ -1,4 +1,4 @@
-"""Desktop application entry point."""
+"""Application entry point: starts the B/S web server (port 6667 by default)."""
 
 from __future__ import annotations
 
@@ -24,25 +24,14 @@ def main() -> int:
     from src.utils.crash_log import install as install_crash_logging
 
     install_crash_logging()
-    # Must happen before importing pywebview/WebView2; otherwise Windows may
-    # bitmap-scale the 1280px web surface and crop the right/bottom edge on
-    # 125%/150% displays.
-    from src.webui.dpi import enable_windows_dpi_awareness
-
-    enable_windows_dpi_awareness()
     if "--ocr-worker" in sys.argv[1:]:
         # 打包后 OCR 子进程复用本 exe（见 src/ocr/client.py）
         from src.ocr.worker_main import main as ocr_worker_main
 
         return ocr_worker_main()
-    try:
-        from src.webui.app import run_app
-    except ImportError as error:
-        if error.name and error.name.startswith("webview"):
-            print("缺少 pywebview，请先运行：pip install -r requirements.txt", file=sys.stderr)
-            return 2
-        raise
-    return run_app()
+    from src.server.run import run_server
+
+    return run_server()
 
 
 if __name__ == "__main__":

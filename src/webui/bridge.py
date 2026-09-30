@@ -1,37 +1,33 @@
-"""pywebview js_api 桥：Vue 前端可调用的全部 Python 方法。
+"""业务桥：前端可调用的全部 Python 方法（B/S 下经 FastAPI REST 暴露）。
 
-方法的返回值必须是 JSON 可序列化结构；文件选择等原生对话框通过注入的
-``window_provider`` 获取当前 pywebview 窗口（测试时注入假窗口）。
+方法的返回值必须是 JSON 可序列化结构；文件选择由浏览器上传后经
+``FileIntakeApiMixin`` 的 accept_* 方法接收暂存路径，不再使用原生对话框。
 """
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
-import os
 from pathlib import Path
-import shutil
-import webbrowser
 
 from src.auth.login_evidence import state_has_authenticated_session
 from src.auth.registry import auth_policy_for_url
 from src.config.settings import AppConfig, TaskConfig
 from src.crawler.author_profile_urls import is_author_profile_url
-from src.input.reader import InputReadError, describe_input, read_url_input
+from src.input.reader import InputReadError, read_url_input
 from src.license.manager import LicenseManager
 from src.services import job_records, recovery_mirror
 from src.services.checkpoint_store import CheckpointStore
 from src.services.models import JobRequest
 from src.services.review_session import ReviewSession
-from src.services.zip_import import TemplateZipImportError, TemplateZipImporter
-from src.utils.file_utils import require_safe_file_name
 from src.webui.auth_api import AuthApiMixin
 from src.webui.auth_runner import AuthRunner
 from src.webui.image_payload import image_payload
 from src.webui.runner import CaptureRunner, EventSink, JobRunner
 from src.webui.auth_ui import build_auth_list, missing_auth_platforms
 from src.webui.api_mixins import (
-    ExitControlMixin,
+    FileIntakeApiMixin,
+    InvalidUrlApiMixin,
     LetterApiMixin,
+    LlmSettingsApiMixin,
     ManualEntryApiMixin,
     RecheckApiMixin,
     ReviewApiMixin,
@@ -39,31 +35,28 @@ from src.webui.api_mixins import (
 from src.webui.license_gate import LicenseApiMixin, apply_license_guard, default_license_manager
 from src.webui.serialize import session_overview
 
-_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-_SCREENSHOT_SLOTS = {"primary": "content", "author": "author"}
-
 
 class WebUIBridge(
     LicenseApiMixin,
     AuthApiMixin,
+    FileIntakeApiMixin,
+    InvalidUrlApiMixin,
     LetterApiMixin,
-    ExitControlMixin,
     RecheckApiMixin,
     ReviewApiMixin,
     ManualEntryApiMixin,
+    LlmSettingsApiMixin,
 ):
     def __init__(
         self,
         base_config: AppConfig,
         sink: EventSink | None = None,
         *,
-        window_provider=None,
         license_manager: LicenseManager | None = None,
     ) -> None:
         self._base_config = base_config
         self._task_config: TaskConfig = base_config.task
         self._sink = sink or EventSink()
-        self._window_provider = window_provider
         self.license = license_manager if license_manager is not None else default_license_manager()
         self._input_platform_keys: set[str] = set()
         self._letter_paths: tuple[Path, ...] = ()
@@ -110,57 +103,7 @@ class WebUIBridge(
             return {"ok": False, "message": f"参数无效：{error}"}
         return {"ok": True}
 
-    # ── 文件对话框 ──
-    def _pick_file(self, file_types: tuple[str, ...], *, directory: bool = False) -> Path | None:
-        import webview
-
-        window = (
-            self._window_provider()
-            if self._window_provider
-            else webview.windows[0]
-        )
-        # pywebview expects FileDialog enum/int values (OPEN=10,
-        # FOLDER=20). Passing the strings "open"/"folder" falls through every
-        # WinForms branch, leaving its internal file_path variable unbound.
-        dialog_type = (
-            webview.FileDialog.FOLDER
-            if directory
-            else webview.FileDialog.OPEN
-        )
-        result = window.create_file_dialog(
-            dialog_type,
-            file_types=() if directory else file_types,
-        )
-        if not result:
-            return None
-        return Path(result[0] if isinstance(result, (list, tuple)) else result)
-
-    def pick_input_file(self) -> dict | None:
-        path = self._pick_file(("URL 文件 (*.txt;*.csv;*.xlsx)", "全部文件 (*.*)"))
-        if path is None:
-            return None
-        try:
-            result = read_url_input(path)
-        except InputReadError as error:
-            return {"path": str(path), "url_count": 0, "rejected_count": 0, "error": str(error)}
-        self._input_platform_keys = {
-            policy.platform_key
-            for task in result.tasks
-            if (policy := auth_policy_for_url(task.normalized_url)) is not None
-        }
-        return describe_input(result)
-
-    def pick_zip_file(self) -> dict:
-        path = self._pick_file(("template 交付包 (*.zip)", "全部文件 (*.*)"))
-        if path is None:
-            return {"ok": False, "message": ""}
-        importer = TemplateZipImporter(Path(self._base_config.template.output_dir))
-        try:
-            job_dir = importer.import_zip(path)
-        except TemplateZipImportError as error:
-            return {"ok": False, "message": str(error)}
-        return self._open_job(job_dir)
-
+    # ── 任务目录 ──
     def _open_job(self, job_dir: Path) -> dict:
         ok, message = self.jobs.open_session(job_dir)
         return {"ok": ok, "message": message}
@@ -272,35 +215,6 @@ class WebUIBridge(
         ok, message = self.jobs.start(request)
         return {"ok": ok, "message": message or "导出任务已开始。"}
 
-    def pick_screenshot(self, evidence_id: int, mode: str) -> dict:
-        session = self._session()
-        if session is None:
-            return {"ok": False, "name": ""}
-        path = self._pick_file(("图片文件 (*.png;*.jpg;*.jpeg;*.bmp;*.webp)", "全部文件 (*.*)"))
-        if path is None or path.suffix.lower() not in _IMAGE_SUFFIXES:
-            return {"ok": False, "name": ""}
-        eid = int(evidence_id)
-        assets_dir = session.manual_assets_dir()
-        assets_dir.mkdir(parents=True, exist_ok=True)
-        name = _screenshot_asset_name(assets_dir, eid, mode, path.suffix.lower())
-        shutil.copy2(path, assets_dir / name)
-        recovery_mirror.mirror_file(
-            session.job_dir.name,
-            assets_dir / name,
-            subdir=recovery_mirror.ASSETS_DIR_NAME,
-        )
-        if mode == "primary":
-            session.set_primary_screenshot(eid, name)
-        elif mode == "author":
-            session.set_author_screenshot(eid, name)
-        else:
-            override = session.get_override(eid)
-            names = list(override.attachment_names) if override else []
-            if name not in names:
-                names.append(name)
-            session.set_attachments(eid, names)
-        return {"ok": True, "name": name}
-
     def list_screenshots(self, evidence_id: int) -> dict:
         """内容页/个人页两张截图的预览载荷；缺失的槽位为 None。"""
 
@@ -406,19 +320,6 @@ class WebUIBridge(
         except Exception:  # noqa: BLE001 — 登录态不可用时拒绝游客截图
             return None
 
-    # ── 系统动作 ──
-    def open_url(self, url: str) -> dict:
-        url = str(url)
-        if url.startswith(("http://", "https://")):
-            webbrowser.open(url)
-        return {"ok": True}
-
-    def open_output_dir(self) -> dict:
-        target = self.jobs.last_deliver_dir or Path(self._base_config.template.output_dir)
-        target.mkdir(parents=True, exist_ok=True)
-        os.startfile(str(target))  # type: ignore[attr-defined]  # Windows
-        return {"ok": True}
-
     # ── 登录态 ──
     def auth_list(self) -> list[dict]:
         return build_auth_list(self.auth.store(), self._input_platform_keys)
@@ -451,31 +352,3 @@ class WebUIBridge(
 
 
 apply_license_guard(WebUIBridge)  # 未激活时拦截业务入口，见 license_gate.py
-
-
-def _screenshot_asset_name(
-    assets_dir: Path,
-    evidence_id: int,
-    mode: str,
-    suffix: str,
-) -> str:
-    """标准化人工截图命名：与框选截图同一套规则。
-
-    - 内容页 / 个人页槽位：``001_content.jpg`` / ``001_author.png``，
-      同一槽位重复上传直接覆盖（不同后缀的旧文件一并清理）；
-    - 附件槽位可多张：``001_attachment_20260730_153000.png``，同秒冲突加序号。
-    """
-
-    slot = _SCREENSHOT_SLOTS.get(mode)
-    if slot is not None:
-        for stale in assets_dir.glob(f"{evidence_id:03d}_{slot}.*"):
-            if stale.suffix.lower() != suffix:
-                stale.unlink(missing_ok=True)
-        return require_safe_file_name(f"{evidence_id:03d}_{slot}{suffix}")
-    stem = f"{evidence_id:03d}_attachment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    candidate = require_safe_file_name(f"{stem}{suffix}")
-    counter = 1
-    while (assets_dir / candidate).exists():
-        counter += 1
-        candidate = require_safe_file_name(f"{stem}_{counter}{suffix}")
-    return candidate

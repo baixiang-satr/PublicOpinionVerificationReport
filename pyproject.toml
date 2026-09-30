@@ -8,7 +8,7 @@
 [project]
 name = "public-opinion-verification-report"
 version = "0.2.0"
-description = "舆情验证报告桌面工具 —— 批量采集网页并交付固定 template.zip"
+description = "舆情验证报告 B/S 工具 —— 批量采集网页并交付固定 template.zip"
 authors = [
     { name = "developer" },
 ]
@@ -24,7 +24,9 @@ dependencies = [
     "openpyxl>=3.1.2",
     "pywin32>=308; platform_system == 'Windows'",
     "chardet>=5.2.0",
-    "pywebview>=6.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
     "python-dotenv>=1.0.1",
     "pydantic>=2.0.0",
     "typer>=0.12.0",
