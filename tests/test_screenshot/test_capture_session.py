@@ -128,6 +128,22 @@ async def test_kuaishou_author_context_can_force_desktop_user_agent(
 
 
 @pytest.mark.asyncio
+async def test_capture_context_keeps_fixed_viewport_geometry(
+    tmp_path: Path,
+) -> None:
+    """框选会话与自动爬取共用同一渲染几何，各机版式一致。"""
+
+    browser = FakeBrowser()
+    session = _session(tmp_path, browser)
+
+    context = await session.context_for("douyin", None)
+
+    assert context.options["viewport"] == {"width": 1440, "height": 900}
+    assert context.options["device_scale_factor"] == 1
+    assert "no_viewport" not in context.options
+
+
+@pytest.mark.asyncio
 async def test_browse_page_reused_until_closed(tmp_path: Path) -> None:
     browser = FakeBrowser()
     session = _session(tmp_path, browser)

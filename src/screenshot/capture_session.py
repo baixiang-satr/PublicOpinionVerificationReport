@@ -24,6 +24,7 @@ from src.screenshot.browser_options import (
     STEALTH_SCRIPT_PATH,
     browser_context_options,
     browser_launch_options,
+    fixed_window_geometry_args,
     launch_headed_with_fallback,
 )
 from src.screenshot.browser_runtime import close_quietly
@@ -75,7 +76,13 @@ class CaptureSession:
             background_crawl_browser=False,
         )
         launch_options = browser_launch_options(config)
-        launch_options["args"] = [*launch_options.get("args", ()), "--start-maximized"]
+        # Fixed window geometry instead of ``--start-maximized``: a maximized
+        # window makes the CSS viewport depend on each machine's resolution
+        # and OS display scaling, so evidence layouts differ between machines.
+        launch_options["args"] = [
+            *launch_options.get("args", ()),
+            *fixed_window_geometry_args(config),
+        ]
         try:
             self._browser = await launch_headed_with_fallback(
                 self._playwright,
@@ -110,10 +117,9 @@ class CaptureSession:
             storage_state,
             platform_key=None if key == GUEST_KEY or force_desktop else key,
         )
-        # The page must fill the whole maximized window, not a fixed viewport.
-        options.pop("viewport", None)
-        options.pop("device_scale_factor", None)
-        options["no_viewport"] = True
+        # Keep the fixed 1440x900 viewport + device_scale_factor=1 from the
+        # shared options (no ``no_viewport``): the page must render at the
+        # same CSS geometry as the automatic crawl capture on every machine.
         context = await self._browser.new_context(**options)
         if config.enable_stealth and STEALTH_SCRIPT_PATH.is_file():
             await context.add_init_script(path=str(STEALTH_SCRIPT_PATH))

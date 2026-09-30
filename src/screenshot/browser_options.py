@@ -57,6 +57,23 @@ ANTI_DETECTION_ARGS = (
 )
 
 
+def fixed_window_geometry_args(config: TaskConfig) -> tuple[str, str]:
+    """Launch args pinning the window to the configured viewport at scale 1.
+
+    ``--window-size`` is interpreted in physical pixels on Windows: on a
+    125%/150% display the window content area would shrink below the fixed
+    viewport and PrintWindow evidence captures come out cropped/shifted.
+    ``--force-device-scale-factor=1`` keeps DIP == physical pixel so every
+    machine lays pages out identically (same approach as
+    ``interactive_login_launch_options``).
+    """
+
+    return (
+        f"--window-size={config.viewport_width},{config.viewport_height}",
+        "--force-device-scale-factor=1",
+    )
+
+
 def browser_launch_options(config: TaskConfig) -> dict[str, Any]:
     launch_args = [*ANTI_DETECTION_ARGS, *config.extra_chromium_args]
     if not config.headless:
@@ -67,7 +84,12 @@ def browser_launch_options(config: TaskConfig) -> dict[str, Any]:
             launch_args.extend(
                 (
                     "--window-position=-32000,-32000",
-                    f"--window-size={config.viewport_width},{config.viewport_height}",
+                    *fixed_window_geometry_args(config),
+                    # Suppress the "Restore pages?" infobar after an unclean
+                    # shutdown: it pushes page content down inside the
+                    # captured window and ruins evidence framing.
+                    "--hide-crash-restore-bubble",
+                    "--disable-session-crashed-bubble",
                 )
             )
     options: dict[str, Any] = {
@@ -79,6 +101,37 @@ def browser_launch_options(config: TaskConfig) -> dict[str, Any]:
     if config.proxy_url:
         options["proxy"] = {"server": config.proxy_url}
         logger.info("Browser configured with proxy: %s", mask_proxy(config.proxy_url))
+    return options
+
+
+def interactive_login_launch_options(config: TaskConfig) -> dict[str, Any]:
+    """Launch options for the human-operated interactive login window.
+
+    Pinned to the bundled Chromium (no ``channel``) so every machine runs
+    the byte-identical browser shipped in ``ms-playwright/``;
+    ``browser_channel``/``POR_BROWSER_CHANNEL`` only steer the crawl and
+    screenshot browsers.  Software rendering stays on: login pages never
+    need proprietary video decode, and dropping the GPU removes the
+    driver-dependent white-flash repaint reported on some machines.
+    ``--force-device-scale-factor=1`` matches the fixed context
+    ``device_scale_factor`` so 125%/150% displays lay out like 100% ones.
+    """
+
+    launch_args = [
+        *ANTI_DETECTION_ARGS,
+        *config.extra_chromium_args,
+        "--force-device-scale-factor=1",
+    ]
+    options: dict[str, Any] = {
+        "headless": False,
+        "args": launch_args,
+    }
+    if config.proxy_url:
+        options["proxy"] = {"server": config.proxy_url}
+        logger.info(
+            "Interactive login browser configured with proxy: %s",
+            mask_proxy(config.proxy_url),
+        )
     return options
 
 
@@ -109,10 +162,24 @@ async def launch_headed_with_fallback(
         if channel:
             options["channel"] = channel
         try:
-            return await playwright.chromium.launch(**options)
+            browser = await playwright.chromium.launch(**options)
         except Exception as error:  # noqa: BLE001 — 尝试下一个候选
             last_error = error
             logger.warning("Headed launch with channel=%s failed: %s", channel, error)
+            continue
+        # Record the channel that actually won: cross-machine evidence
+        # differences are otherwise impossible to attribute (Edge vs Chrome
+        # vs bundled Chromium render different chrome/UA).
+        try:
+            version = browser.version
+        except Exception:  # noqa: BLE001 — 版本探测失败不阻断启动
+            version = "unknown"
+        logger.info(
+            "Headed browser launched: channel=%s version=%s",
+            channel or "chromium(bundled)",
+            version,
+        )
+        return browser
     raise RuntimeError(
         "Unable to launch a headed browser with any channel candidate."
     ) from last_error
