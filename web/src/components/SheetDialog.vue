@@ -181,7 +181,7 @@ async function buildGrid() {
       UniverSheetsDataValidationPreset({ showEditOnDropdown: false }),
       UniverSheetsHyperLinkPreset({
         urlHandler: {
-          navigateToOtherWebsite: (url: string) => void bridge.openUrl(url),
+          navigateToOtherWebsite: (url: string) => window.open(url, '_blank'),
         },
       }),
     ],
@@ -552,18 +552,36 @@ async function captureRegion(target: 'content' | 'author') {
   ElMessage.warning(result.message || '无法打开截图窗口。')
 }
 
+const imageFileInput = ref<HTMLInputElement | null>(null)
+let pendingImagePick: { eid: number; target: 'content' | 'author' } | null = null
+
 async function pickLocalImage(eid: number, target: 'content' | 'author') {
   const label = target === 'content' ? '内容页' : '个人页'
   try {
     await ElMessageBox.confirm(
-      `该行没有链接，无法打开页面截图。是否从本地选择${label}截图图片？`,
+      `该行没有链接，无法打开页面截图。是否从本地上传${label}截图图片？`,
       '没有链接',
       { confirmButtonText: '选择图片…', cancelButtonText: '取消', type: 'info' },
     )
   } catch {
     return
   }
-  const { ok, name } = await bridge.pickScreenshot(eid, target === 'content' ? 'primary' : 'author')
+  pendingImagePick = { eid, target }
+  imageFileInput.value?.click()
+}
+
+async function onImageFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许再次选择同一文件
+  const pending = pendingImagePick
+  pendingImagePick = null
+  if (!file || !pending) return
+  const { ok, name } = await bridge.uploadScreenshot(
+    pending.eid,
+    pending.target === 'content' ? 'primary' : 'author',
+    file,
+  )
   if (!ok) return
   ElMessage.success(`已保存截图 ${name}`)
   await refreshRows()
@@ -646,6 +664,13 @@ watch(visible, async (open) => {
     <div v-loading="loading" class="grid-wrap" @pointermove="onGridPointerMove" @pointerleave="hideHoverTip">
       <div ref="containerRef" class="grid-container"></div>
     </div>
+    <input
+      ref="imageFileInput"
+      type="file"
+      accept="image/*"
+      class="hidden-file-input"
+      @change="onImageFileChange"
+    />
     <teleport to="body">
       <div
         v-if="hoverTip"

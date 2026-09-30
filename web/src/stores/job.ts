@@ -6,9 +6,11 @@ import type {
   AuthReloginPayload,
   BridgeEvent,
   CaptureEventPayload,
+  InvalidUrlCandidateRow,
   JobFinishedPayload,
   JobStartedPayload,
   LicenseInfo,
+  LlmTestPayload,
   LogPayload,
   ProgressPayload,
   SessionOverview,
@@ -42,6 +44,8 @@ interface JobState {
   options: TaskOptions | null
   license: LicenseInfo | null
   inputPath: string
+  // 上传文件的展示名（inputPath 是服务器暂存路径，不适合直接展示）
+  inputName: string
   urlCount: number
   // U07：选文件时用户对重复 URL 的选择（true=删除重复保留首条，false=全部保留）
   dedupeChoice: boolean
@@ -62,14 +66,19 @@ interface JobState {
   sheetDialogOpen: boolean
   sheetDialogMode: 'preview' | 'edit'
   lastCapture: CaptureEventPayload | null
-  // U02：后端否决窗口关闭后自增，App.vue 监听弹出三态确认框
-  closePrompt: number
   // U04：URL 复验对话框；recheckVersion 每次复验事件自增触发列表刷新
   recheckDialogOpen: boolean
   // 未收录/待补录清单弹窗开关（ResultView/ExportView 入口共用）
   manualEntryDialogOpen: boolean
   recheckRunning: boolean
   recheckVersion: number
+  // URL 失效候选确认弹窗：抓取完成（非取消）且有待决策候选时自动弹出
+  invalidCandidates: InvalidUrlCandidateRow[]
+  invalidDialogOpen: boolean
+  // 大模型设置弹窗；llmTesting/llmTestResult 由 llm_test 事件驱动
+  llmSettingsOpen: boolean
+  llmTesting: boolean
+  llmTestResult: LlmTestPayload | null
 }
 
 export const useJobStore = defineStore('job', {
@@ -79,6 +88,7 @@ export const useJobStore = defineStore('job', {
     options: null,
     license: null,
     inputPath: '',
+    inputName: '',
     urlCount: 0,
     dedupeChoice: false,
     letterNames: [],
@@ -97,11 +107,15 @@ export const useJobStore = defineStore('job', {
     sheetDialogOpen: false,
     sheetDialogMode: 'preview',
     lastCapture: null,
-    closePrompt: 0,
     recheckDialogOpen: false,
     manualEntryDialogOpen: false,
     recheckRunning: false,
     recheckVersion: 0,
+    invalidCandidates: [],
+    invalidDialogOpen: false,
+    llmSettingsOpen: false,
+    llmTesting: false,
+    llmTestResult: null,
   }),
   getters: {
     canGoNext(state): boolean {
@@ -184,15 +198,16 @@ export const useJobStore = defineStore('job', {
         case 'capture':
           this.onCaptureEvent(payload as unknown as CaptureEventPayload)
           break
-        case 'app_closing':
-          this.closePrompt += 1
-          break
         case 'url_recheck':
           this.recheckVersion += 1
           break
         case 'url_recheck_done':
           this.recheckRunning = false
           this.recheckVersion += 1
+          break
+        case 'llm_test':
+          this.llmTesting = false
+          this.llmTestResult = payload as unknown as LlmTestPayload
           break
       }
     },
@@ -204,8 +219,23 @@ export const useJobStore = defineStore('job', {
       this.lastFinalArchive = result.final_copy_path ?? this.lastFinalArchive
       this.statusText = result.cancelled ? '任务已取消' : '任务完成'
       void this.refreshSession()
+      if (!result.cancelled) {
+        // 抓取全部完成才弹失效确认；取消时不弹
+        void this.checkInvalidUrlCandidates()
+      }
       if (!result.cancelled && this.step === 2) {
         this.goTo(3)
+      }
+    },
+    async checkInvalidUrlCandidates() {
+      try {
+        const res = await bridge.listInvalidUrlCandidates()
+        if (res.ok && res.rows.length) {
+          this.invalidCandidates = res.rows
+          this.invalidDialogOpen = true
+        }
+      } catch {
+        // 失效候选拉取失败静默降级：不影响抓取结果查看
       }
     },
     onAuthEvent(platform: AuthPlatform) {

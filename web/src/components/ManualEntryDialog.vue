@@ -55,9 +55,13 @@ watch(
 async function doExport() {
   exporting.value = true
   try {
-    const res = await bridge.exportManualEntries()
-    if (res.ok) ElMessage.success(res.message || '清单已导出。')
-    else if (res.message) ElMessage.warning(res.message)
+    const res = await bridge.listManualEntries()
+    if (!res.ok) {
+      ElMessage.warning(res.message || '当前任务还没有生成清单。')
+      return
+    }
+    bridge.downloadManualEntries()
+    ElMessage.success('清单已开始下载，请在浏览器下载记录中查看。')
   } finally {
     exporting.value = false
   }

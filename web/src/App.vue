@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import AuthManagerDialog from '@/components/AuthManagerDialog.vue'
+import InvalidUrlConfirmDialog from '@/components/InvalidUrlConfirmDialog.vue'
+import LlmSettingsDialog from '@/components/LlmSettingsDialog.vue'
 import ManualEntryDialog from '@/components/ManualEntryDialog.vue'
 import ReloginDialog from '@/components/ReloginDialog.vue'
 import SheetDialog from '@/components/SheetDialog.vue'
 import StepSidebar from '@/components/StepSidebar.vue'
 import UrlRecheckDialog from '@/components/UrlRecheckDialog.vue'
-import { bridge } from '@/api/bridge'
 import { STEPS, useJobStore } from '@/stores/job'
 
 import ActivationView from '@/views/ActivationView.vue'
@@ -29,31 +29,6 @@ function onResize() {
 }
 onMounted(() => window.addEventListener('resize', onResize))
 onBeforeUnmount(() => window.removeEventListener('resize', onResize))
-
-// U02：窗口关闭被后端否决后弹出三态确认（最小化 / 直接退出 / 取消）
-watch(
-  () => store.closePrompt,
-  async () => {
-    try {
-      await ElMessageBox.confirm(
-        store.running
-          ? '抓取任务仍在运行。选择「最小化到任务栏」任务会在后台继续；选择「直接退出」将中断任务。'
-          : '要退出舆情验证报告工作台吗？',
-        '关闭确认',
-        {
-          confirmButtonText: '最小化到任务栏',
-          cancelButtonText: '直接退出',
-          distinguishCancelAndClose: true,
-          type: 'warning',
-        },
-      )
-      await bridge.minimizeWindow()
-    } catch (action) {
-      // cancel=直接退出；close（点 X / Esc）=取消，什么也不做
-      if (action === 'cancel') await bridge.confirmExit()
-    }
-  },
-)
 </script>
 
 <template>
@@ -88,9 +63,11 @@ watch(
       </footer>
     </main>
     <AuthManagerDialog v-model="store.authDialogOpen" />
+    <LlmSettingsDialog v-model="store.llmSettingsOpen" />
     <ReloginDialog />
     <SheetDialog v-model="store.sheetDialogOpen" :mode="store.sheetDialogMode" />
     <UrlRecheckDialog />
+    <InvalidUrlConfirmDialog />
     <ManualEntryDialog />
   </div>
 </template>

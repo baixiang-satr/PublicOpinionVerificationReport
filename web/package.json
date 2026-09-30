@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.3.0",
   "type": "module",
-  "description": "舆情验证报告工具 — Vue 3 + Element Plus 前端（pywebview 桌面壳）",
+  "description": "舆情验证报告工具 — Vue 3 + Element Plus 前端（B/S，FastAPI 托管）",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

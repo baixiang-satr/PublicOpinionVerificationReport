@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 第 3 步：抓取结果 — 汇总 + 「预览表格」按钮弹出 WPS 风格表格。
+// 抓取结果 — 汇总 + 「预览表格」按钮弹出 WPS 风格表格。
 import { Grid } from '@element-plus/icons-vue'
 import { computed } from 'vue'
 
@@ -16,7 +16,7 @@ const totalAttention = computed(() => {
 
 <template>
   <section>
-    <h1 class="page-title">第 3 步 · 抓取结果</h1>
+    <h1 class="page-title">抓取结果</h1>
     <p class="page-subtitle muted">
       结果已经按 template 的 8 张工作表排好：列名、顺序与最终交付表完全一致。
     </p>

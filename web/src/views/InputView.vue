@@ -1,21 +1,31 @@
 <script setup lang="ts">
-// 第 1 步：选择 URL 文件 + 函文档 + 运行参数 + 登录态管理入口。
-import { FolderOpened, Lock } from '@element-plus/icons-vue'
+// 选择 URL 文件 + 函文档 + 运行参数 + 登录态管理入口。
+import { FolderOpened, Lock, MagicStick } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 
 import { bridge } from '@/api/bridge'
 import { useJobStore } from '@/stores/job'
 
 const store = useJobStore()
+const urlFileInput = ref<HTMLInputElement | null>(null)
+const letterFileInput = ref<HTMLInputElement | null>(null)
 
 onMounted(async () => {
   const state = await bridge.letterState()
   store.letterNames = state.names || []
 })
 
-async function pickLetter() {
-  const res = await bridge.pickLetterFile()
+function pickLetter() {
+  letterFileInput.value?.click()
+}
+
+async function onLetterChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = [...(input.files ?? [])]
+  input.value = '' // 允许再次选择同一文件
+  if (!files.length) return
+  const res = await bridge.uploadLetterFiles(files)
   if (!res.ok) {
     if (res.message) ElMessage.warning(res.message)
     return
@@ -36,20 +46,27 @@ async function clearLetter() {
   store.letterNames = []
 }
 
-async function pickFile() {
-  const info = await bridge.pickInputFile()
-  if (!info) return
+function pickFile() {
+  urlFileInput.value?.click()
+}
+
+async function onUrlFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许再次选择同一文件
+  if (!file) return
+  const info = await bridge.uploadInputFile(file)
   // 许可证守卫拦截：后端返回 {ok:false, code:'LICENSE_REQUIRED', message}
-  const blocked = info as { ok?: boolean; message?: string }
-  if (blocked.ok === false) {
-    ElMessage.warning(blocked.message || '软件未激活，请先完成授权激活。')
+  if (info.ok === false) {
+    ElMessage.warning(info.message || '软件未激活，请先完成授权激活。')
     return
   }
-  store.inputPath = info.path
+  store.inputPath = info.path // 服务器暂存路径，start_crawl/resume_checkpoint 使用
+  store.inputName = file.name
   store.urlCount = info.url_count
   store.dedupeChoice = false
-  if ((info as { error?: string }).error) {
-    ElMessage.warning((info as { error?: string }).error ?? '文件读取失败。')
+  if (info.error) {
+    ElMessage.warning(info.error ?? '文件读取失败。')
     return
   }
   if (info.url_count === 0) {
@@ -92,7 +109,7 @@ function openAuth() {
 
 <template>
   <section>
-    <h1 class="page-title">第 1 步 · 选择 URL 文件并确认参数</h1>
+    <h1 class="page-title">选择 URL 文件并确认参数</h1>
     <p class="page-subtitle muted">
       文件里只要出现 http(s) 链接即可；如有重复链接，选择文件后会提示是否删除重复。
     </p>
@@ -107,7 +124,14 @@ function openAuth() {
       <p class="card-desc muted">支持 TXT / CSV / XLSX，自动提取其中的 http(s) 链接。</p>
       <div class="file-row">
         <el-button :icon="FolderOpened" @click="pickFile">选择文件…</el-button>
-        <span v-if="store.inputPath" class="file-path">{{ store.inputPath }}</span>
+        <input
+          ref="urlFileInput"
+          type="file"
+          accept=".txt,.csv,.xlsx"
+          class="hidden-file-input"
+          @change="onUrlFileChange"
+        />
+        <span v-if="store.inputName" class="file-path">{{ store.inputName }}</span>
         <span v-else class="muted">尚未选择文件</span>
       </div>
       <div v-if="store.urlCount > 0" class="muted file-meta">
@@ -123,6 +147,14 @@ function openAuth() {
       </p>
       <div class="file-row">
         <el-button :icon="FolderOpened" @click="pickLetter">选择函文档（可多选）…</el-button>
+        <input
+          ref="letterFileInput"
+          type="file"
+          accept=".jpg,.jpeg"
+          multiple
+          class="hidden-file-input"
+          @change="onLetterChange"
+        />
         <el-button
           v-if="store.letterNames.length"
           size="small"
@@ -176,6 +208,7 @@ function openAuth() {
       </el-form>
       <div class="auth-row">
         <el-button :icon="Lock" @click="openAuth">管理平台登录态…</el-button>
+        <el-button :icon="MagicStick" @click="store.llmSettingsOpen = true">大模型设置…</el-button>
         <span class="muted">未保存有效登录态的平台不会开始抓取。</span>
       </div>
     </div>

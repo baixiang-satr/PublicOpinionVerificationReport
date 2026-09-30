@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 第 4 步：采集与补录 — 说明 + 「打开补录表格」按钮弹出可编辑 WPS 风格表格。
+// 采集与补录 — 说明 + 「打开补录表格」按钮弹出可编辑 WPS 风格表格。
 import { EditPen, Grid } from '@element-plus/icons-vue'
 import { computed } from 'vue'
 
@@ -11,7 +11,7 @@ const sheets = computed(() => (store.session?.sheets ?? []).filter((s) => s.tota
 
 <template>
   <section>
-    <h1 class="page-title">第 4 步 · 采集与补录</h1>
+    <h1 class="page-title">采集与补录</h1>
     <p class="page-subtitle muted">
       表格和 template 一模一样：红色空格是必补项，下拉选项与模板完全相同，修改会自动保存。
     </p>

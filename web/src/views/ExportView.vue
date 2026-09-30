@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 第 5 步：预览与导出 — 检查清单 + 预览表格 + 一键导出 template.zip。
-import { FolderOpened, Grid, Download } from '@element-plus/icons-vue'
+// 预览与导出 — 检查清单 + 预览表格 + 一键导出 template.zip。
+import { Grid, Download } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 
@@ -65,7 +65,7 @@ watch(
 
 <template>
   <section>
-    <h1 class="page-title">第 5 步 · 预览与导出</h1>
+    <h1 class="page-title">预览与导出</h1>
     <p class="page-subtitle muted">
       预览就是最终 template.xlsx 的样子（含你的全部人工补录）。确认无误后点「导出
       template.zip」。
@@ -91,8 +91,8 @@ watch(
         >
           预览表格
         </el-button>
-        <el-button :icon="FolderOpened" :disabled="!store.lastArchive" @click="bridge.openOutputDir()">
-          打开输出位置
+        <el-button :icon="Download" :disabled="!store.lastArchive" @click="bridge.downloadJobZip()">
+          下载 template.zip
         </el-button>
         <el-button :disabled="!store.session" @click="store.manualEntryDialogOpen = true">
           未收录清单

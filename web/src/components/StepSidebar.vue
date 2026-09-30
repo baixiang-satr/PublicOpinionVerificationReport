@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// 竖向节点步骤条：窄条、不占篇幅；窄屏时折叠为顶部横向紧凑步骤。
-import { computed } from 'vue'
+// 竖向节点步骤条：默认收缩为窄条（仅序号），鼠标悬停展开；窄屏时折叠为顶部横向紧凑步骤。
+import { computed, ref } from 'vue'
 
 interface StepItem {
   title: string
@@ -16,6 +16,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{ select: [index: number] }>()
 
+// 默认收缩：只显示 1-6 序号；鼠标移入侧栏时展开为完整步骤条
+const collapsed = ref(true)
+
 const items = computed(() =>
   props.steps.map((step, index) => ({
     ...step,
@@ -28,10 +31,16 @@ const items = computed(() =>
 </script>
 
 <template>
-  <aside v-if="!horizontal" class="sidebar">
+  <aside
+    v-if="!horizontal"
+    class="sidebar"
+    :class="{ collapsed }"
+    @mouseenter="collapsed = false"
+    @mouseleave="collapsed = true"
+  >
     <div class="brand">
       <span class="brand-mark">舆</span>
-      <span class="brand-name">舆情验证</span>
+      <span class="brand-name">网安见微·智舆</span>
     </div>
     <el-steps direction="vertical" :active="active" class="steps">
       <el-step
@@ -54,7 +63,7 @@ const items = computed(() =>
   </aside>
 
   <header v-else class="topbar">
-    <span class="brand-name">舆情验证</span>
+    <span class="brand-name">网安见微·智舆</span>
     <el-steps :active="active" align-center class="steps-h">
       <el-step
         v-for="item in items"
@@ -79,6 +88,33 @@ const items = computed(() =>
   padding: 10px 10px;
   /* 内容正常情况下放得下，不出滚动条；窗口过矮时才滚动 */
   overflow-y: auto;
+  transition: width 0.18s ease;
+}
+
+/* 收缩态：只留序号图标与品牌角标，文字全部隐藏 */
+.sidebar.collapsed {
+  width: var(--poir-sidebar-w-collapsed);
+}
+
+.sidebar.collapsed .brand {
+  justify-content: center;
+  padding: 0 0 10px;
+}
+
+.sidebar.collapsed .brand-name {
+  display: none;
+}
+
+.sidebar.collapsed :deep(.el-step) {
+  margin-bottom: 14px;
+}
+
+.sidebar.collapsed :deep(.el-step__head) {
+  margin: 0 auto;
+}
+
+.sidebar.collapsed :deep(.el-step__main) {
+  display: none;
 }
 
 .brand {

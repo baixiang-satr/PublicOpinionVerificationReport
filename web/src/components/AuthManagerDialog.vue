@@ -103,6 +103,31 @@ async function logout(platform: AuthPlatform) {
   await store.refreshAuth()
   ElMessage.success(`已退出「${platform.name}」。`)
 }
+
+// ── 登录态导入（服务器部署的远程登录路径）──
+const stateFileInput = ref<HTMLInputElement | null>(null)
+let pendingImportKey = ''
+
+function importState(platform: AuthPlatform) {
+  pendingImportKey = platform.key
+  stateFileInput.value?.click()
+}
+
+async function onStateFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许再次选择同一文件
+  const key = pendingImportKey
+  pendingImportKey = ''
+  if (!file || !key) return
+  const result = await bridge.uploadAuthState(key, file)
+  if (result.ok) {
+    ElMessage.success(result.message || '登录态已导入。')
+    await store.refreshAuth()
+  } else {
+    ElMessage.warning(result.message || '登录态导入失败。')
+  }
+}
 </script>
 
 <template>
@@ -120,6 +145,9 @@ async function logout(platform: AuthPlatform) {
       开始抓取前，请确保“本次 URL 涉及的平台”全部显示“登录态有效”。
       打开本窗口会自动复验本次涉及的平台；验证卡住时可随时“取消”后重试。
       请逐个平台点击“登录 / 更新”；在网站完成登录后，请回到这里点击“完成登录并保存”。
+      服务部署在其他机器上时，登录窗口会弹在服务器端——请改用「导入登录态」：
+      在你自己的浏览器登录该平台后，用浏览器扩展（如 Cookie-Editor / EditThisCookie）
+      或 Playwright 导出登录态 JSON（含 cookies 列表），上传即可，随后可点「验证」在线复核。
     </div>
 
     <div class="platform-list">
@@ -151,6 +179,7 @@ async function logout(platform: AuthPlatform) {
           <el-button size="small" type="primary" :loading="isBusy(platform.key)" :disabled="operationActive && !isBusy(platform.key)" @click="login(platform)">
             登录 / 更新
           </el-button>
+          <el-button size="small" :disabled="operationActive" @click="importState(platform)">导入登录态</el-button>
           <el-button size="small" plain type="danger" :disabled="operationActive" @click="logout(platform)">退出登录</el-button>
           </template>
         </div>
@@ -189,6 +218,9 @@ async function logout(platform: AuthPlatform) {
           >
             登录 / 更新
           </el-button>
+          <el-button size="small" :disabled="operationActive" @click="importState(platform)">
+            导入登录态
+          </el-button>
           <el-button size="small" plain type="danger" :disabled="operationActive" @click="logout(platform)">
             退出登录
           </el-button>
@@ -204,6 +236,13 @@ async function logout(platform: AuthPlatform) {
         <el-button :disabled="hasWaitingUser" @click="visible = false">完成</el-button>
       </div>
     </template>
+    <input
+      ref="stateFileInput"
+      type="file"
+      accept=".json,application/json"
+      class="hidden-file-input"
+      @change="onStateFileChange"
+    />
   </el-dialog>
 </template>
 

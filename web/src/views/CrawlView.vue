@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 第 2 步：抓取执行 — 进度、取消、高级操作（重试/断点/仅重新导出）、运行日志。
+// 抓取执行 — 进度、取消、高级操作（重试/断点/仅重新导出）、运行日志。
 import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -74,7 +74,7 @@ watch(
 
 <template>
   <section>
-    <h1 class="page-title">第 2 步 · 抓取执行</h1>
+    <h1 class="page-title">抓取执行</h1>
     <p class="page-subtitle muted">
       抓取过程全自动进行，你可以随时取消；取消不会生成不完整的压缩包。
     </p>

@@ -1,81 +1,92 @@
-// pywebview js_api 封装。浏览器 dev 环境（无 pywebview）时使用本地 mock，
-// 方便 `npm run dev` 直接开发 UI。
+// B/S 传输层：默认同源 HTTP（POST /api/{method}；事件走 WS /ws/events，见 events.ts）。
+// 连不上后端时回退本地 mock，方便 `npm run dev` 纯前端开发。
 import type {
   AuthPlatform,
   Bootstrap,
   BridgeEvent,
   InputFileInfo,
   LicenseInfo,
+  LlmSavePayload,
+  LlmSettingsPayload,
   ManualEntryRow,
   ScreenshotPair,
   SheetPayload,
   TaskOptions,
   UrlRecheckRow,
+  InvalidUrlCandidateRow,
 } from '@/types'
-
-interface PyWebviewApi {
-  get_bootstrap(): Promise<Bootstrap>
-  license_status(): Promise<LicenseInfo>
-  license_activate(code: string): Promise<LicenseInfo>
-  license_deactivate(): Promise<LicenseInfo>
-  pick_input_file(): Promise<InputFileInfo | null>
-  pick_zip_file(): Promise<{ ok: boolean; message: string }>
-  pick_letter_file(): Promise<{ ok: boolean; names: string[]; message: string }>
-  list_manual_entries(): Promise<{ ok: boolean; rows: ManualEntryRow[]; path: string; message: string }>
-  export_manual_entries(): Promise<{ ok: boolean; message: string }>
-  remove_letter_file(name: string): Promise<{ ok: boolean; names: string[] }>
-  clear_letter_file(): Promise<{ ok: boolean }>
-  letter_state(): Promise<{ names: string[] }>
-  set_options(options: TaskOptions): Promise<{ ok: boolean }>
-  start_crawl(input_path: string, dedupe: boolean): Promise<{ ok: boolean; message: string }>
-  cancel_job(): Promise<{ ok: boolean }>
-  retry_failed(): Promise<{ ok: boolean; message: string }>
-  resume_checkpoint(reexport_only: boolean, input_path: string, dedupe: boolean): Promise<{ ok: boolean; message: string }>
-  get_sheet_payload(): Promise<SheetPayload[]>
-  apply_edit(eid: number, field: string, value: string): Promise<{ ok: boolean; message?: string }>
-  add_manual_row(sheet_name: string): Promise<{ eid: number | null }>
-  remove_record(eid: number): Promise<{ ok: boolean }>
-  pick_screenshot(eid: number, mode: 'primary' | 'author' | 'attachment'): Promise<{ ok: boolean; name: string }>
-  list_screenshots(eid: number): Promise<ScreenshotPair>
-  start_region_capture(eid: number, target: 'content' | 'author'): Promise<{ ok: boolean; code?: string; message: string }>
-  open_url(url: string): Promise<{ ok: boolean }>
-  open_output_dir(): Promise<{ ok: boolean }>
-  confirm_exit(): Promise<{ ok: boolean }>
-  minimize_window(): Promise<{ ok: boolean }>
-  list_url_recheck(): Promise<{ ok: boolean; rows: UrlRecheckRow[]; running: boolean }>
-  start_url_recheck(): Promise<{ ok: boolean; message: string }>
-  cancel_url_recheck(): Promise<{ ok: boolean }>
-  remove_records(eids: number[]): Promise<{ ok: boolean; removed: number }>
-  export_zip(): Promise<{ ok: boolean; message: string }>
-  auth_list(): Promise<AuthPlatform[]>
-  auth_probe_all(): Promise<{ ok: boolean }>
-  auth_probe_relevant(): Promise<{ ok: boolean; message: string }>
-  auth_login_all(): Promise<{ ok: boolean; message: string }>
-  auth_probe(key: string): Promise<{ ok: boolean; message: string }>
-  auth_login(key: string): Promise<{ ok: boolean; message: string }>
-  auth_confirm(key: string): Promise<{ ok: boolean; message: string }>
-  auth_cancel(key: string): Promise<{ ok: boolean; message: string }>
-  auth_resume_login(key: string, action: string): Promise<{ ok: boolean; message: string }>
-  auth_logout(key: string): Promise<{ ok: boolean }>
-}
 
 declare global {
   interface Window {
-    pywebview?: { api: PyWebviewApi }
     __poir_event?: (event: BridgeEvent) => void
   }
 }
 
-export function hasBridge(): boolean {
-  return typeof window !== 'undefined' && !!window.pywebview?.api
+type Transport = 'http' | 'mock'
+let transportPromise: Promise<Transport> | null = null
+
+/** 探测后端：同源请求一个轻量接口，失败即回退 mock（结果进程级缓存）。 */
+export function detectTransport(): Promise<Transport> {
+  if (!transportPromise) {
+    transportPromise = (async (): Promise<Transport> => {
+      try {
+        const resp = await fetch('/api/letter_state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{"args":[]}',
+          signal: AbortSignal.timeout(3000),
+        })
+        return resp.ok ? 'http' : 'mock'
+      } catch {
+        return 'mock'
+      }
+    })()
+  }
+  return transportPromise
 }
 
-async function call<T>(method: keyof PyWebviewApi, ...args: unknown[]): Promise<T> {
-  const result = hasBridge()
-    ? await (window.pywebview!.api as unknown as Record<string, (...a: unknown[]) => Promise<T>>)[method](
-        ...args,
-      )
-    : await mockCall<T>(method as string, ...args)
+async function errorMessage(resp: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await resp.json()) as { message?: string }
+    if (body?.message) return body.message
+  } catch {
+    /* 非 JSON 错误页 */
+  }
+  return fallback
+}
+
+async function httpCall<T>(method: string, args: unknown[]): Promise<T> {
+  const resp = await fetch(`/api/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ args }),
+  })
+  if (!resp.ok) {
+    throw new Error(await errorMessage(resp, `接口 ${method} 失败（${resp.status}）`))
+  }
+  return (await resp.json()) as T
+}
+
+/** multipart 上传；field 为 FastAPI 的表单字段名（单文件 file / 多文件 files）。 */
+async function uploadFiles<T>(
+  path: string,
+  field: string,
+  files: File[],
+  params?: Record<string, string>,
+): Promise<T> {
+  const form = new FormData()
+  for (const file of files) form.append(field, file, file.name)
+  const qs = params ? `?${new URLSearchParams(params).toString()}` : ''
+  const resp = await fetch(`${path}${qs}`, { method: 'POST', body: form })
+  if (!resp.ok) throw new Error(await errorMessage(resp, `上传失败（${resp.status}）`))
+  return (await resp.json()) as T
+}
+
+async function call<T>(method: string, ...args: unknown[]): Promise<T> {
+  const result =
+    (await detectTransport()) === 'http'
+      ? await httpCall<T>(method, args)
+      : await mockCall<T>(method as string, ...args)
   // 业务方法被许可证守卫拦截时广播事件，由 store 刷新授权状态并切到激活页
   if (result && typeof result === 'object' && (result as { code?: string }).code === 'LICENSE_REQUIRED') {
     window.dispatchEvent(new CustomEvent('poir-license-required'))
@@ -123,6 +134,16 @@ const mockAuthPlatforms: AuthPlatform[] = [
     relevant: true,
   },
 ]
+
+const mockLlmSettings: LlmSettingsPayload = {
+  enabled: true,
+  base_url: 'https://api.openai.com/v1',
+  model: 'deepseek-chat',
+  timeout_seconds: 30,
+  max_input_chars: 6000,
+  has_api_key: false,
+  api_key_masked: '',
+}
 
 function updateMockAuth(key: string, patch: Partial<AuthPlatform>) {
   const platform = mockAuthPlatforms.find((item) => item.key === key)
@@ -308,8 +329,33 @@ function mockCall<T>(method: string, ...args: unknown[]): Promise<T> {
       return respond({ ok: true, message: '' })
     case 'auth_resume_login':
       return respond({ ok: true, message: '' })
+    case 'get_llm_settings':
+      return respond({ ok: true, settings: { ...mockLlmSettings } })
+    case 'save_llm_settings': {
+      const [payload] = args as [LlmSavePayload]
+      Object.assign(mockLlmSettings, payload, {
+        has_api_key: Boolean(payload.api_key) || mockLlmSettings.has_api_key,
+        api_key_masked: payload.api_key ? 'sk-d…1234' : mockLlmSettings.api_key_masked,
+      })
+      return respond({ ok: true, settings: { ...mockLlmSettings } })
+    }
+    case 'test_llm_connection': {
+      window.setTimeout(
+        () =>
+          window.__poir_event?.({
+            type: 'llm_test',
+            payload: { ok: true, message: '连接成功，模型响应正常。', latency_ms: 620, reply: '正常' },
+          }),
+        400,
+      )
+      return respond({ ok: true, message: '正在测试连接…' })
+    }
     case 'list_screenshots':
       return respond({ content: null, author: null })
+    case 'list_invalid_url_candidates':
+      return respond({ ok: true, rows: [] })
+    case 'keep_invalid_url_candidates':
+      return respond({ ok: true, kept: 0 })
     case 'start_region_capture':
       return respond({ ok: true, message: '' })
     case 'start_crawl': {
@@ -363,10 +409,48 @@ export const bridge = {
   licenseStatus: () => call<LicenseInfo>('license_status'),
   licenseActivate: (code: string) => call<LicenseInfo>('license_activate', code),
   licenseDeactivate: () => call<LicenseInfo>('license_deactivate'),
-  pickInputFile: () => call<InputFileInfo | null>('pick_input_file'),
-  pickZipFile: () => call<{ ok: boolean; message: string }>('pick_zip_file'),
-  pickLetterFile: () =>
-    call<{ ok: boolean; names: string[]; message: string }>('pick_letter_file'),
+  // ── 浏览器上传（B/S 替代原生文件对话框）──
+  uploadInputFile: async (file: File): Promise<InputFileInfo & { ok?: boolean; message?: string; error?: string }> => {
+    if ((await detectTransport()) === 'mock')
+      return { path: `D:/demo/${file.name}`, url_count: 3, rejected_count: 0 }
+    return uploadFiles('/api/upload/input', 'file', [file])
+  },
+  uploadZipFile: async (file: File): Promise<{ ok: boolean; message: string }> => {
+    if ((await detectTransport()) === 'mock') return { ok: true, message: '' }
+    return uploadFiles('/api/upload/zip', 'file', [file])
+  },
+  uploadLetterFiles: async (
+    files: File[],
+  ): Promise<{ ok: boolean; names: string[]; message: string }> => {
+    if ((await detectTransport()) === 'mock')
+      return { ok: true, names: files.map((f) => f.name), message: '' }
+    return uploadFiles('/api/upload/letter', 'files', files)
+  },
+  uploadScreenshot: async (
+    eid: number,
+    mode: 'primary' | 'author' | 'attachment',
+    file: File,
+  ): Promise<{ ok: boolean; name: string }> => {
+    if ((await detectTransport()) === 'mock') return { ok: true, name: file.name }
+    return uploadFiles('/api/upload/screenshot', 'file', [file], {
+      evidence_id: String(eid),
+      mode,
+    })
+  },
+  uploadAuthState: async (
+    key: string,
+    file: File,
+  ): Promise<{ ok: boolean; message: string }> => {
+    if ((await detectTransport()) === 'mock') return { ok: true, message: '' }
+    return uploadFiles('/api/upload/auth-state', 'file', [file], { platform: key })
+  },
+  // ── 浏览器下载（B/S 替代「打开输出目录 / SAVE 对话框」）──
+  downloadJobZip: () => {
+    window.location.href = '/api/download/job-zip'
+  },
+  downloadManualEntries: () => {
+    window.location.href = '/api/download/manual-entries'
+  },
   removeLetterFile: (name: string) =>
     call<{ ok: boolean; names: string[] }>('remove_letter_file', name),
   clearLetterFile: () => call<{ ok: boolean }>('clear_letter_file'),
@@ -379,7 +463,6 @@ export const bridge = {
       message: string
       completed_count?: number
     }>('list_manual_entries'),
-  exportManualEntries: () => call<{ ok: boolean; message: string }>('export_manual_entries'),
   setOptions: (o: TaskOptions) => call<{ ok: boolean }>('set_options', o),
   startCrawl: (p: string, dedupe = false) =>
     call<{ ok: boolean; message: string }>('start_crawl', p, dedupe),
@@ -392,21 +475,19 @@ export const bridge = {
     call<{ ok: boolean; message?: string }>('apply_edit', eid, field, value),
   addManualRow: (sheet: string) => call<{ eid: number | null }>('add_manual_row', sheet),
   removeRecord: (eid: number) => call<{ ok: boolean }>('remove_record', eid),
-  pickScreenshot: (eid: number, mode: 'primary' | 'author' | 'attachment') =>
-    call<{ ok: boolean; name: string }>('pick_screenshot', eid, mode),
   listScreenshots: (eid: number) => call<ScreenshotPair>('list_screenshots', eid),
   startRegionCapture: (eid: number, target: 'content' | 'author') =>
     call<{ ok: boolean; code?: string; message: string }>('start_region_capture', eid, target),
-  openUrl: (url: string) => call<{ ok: boolean }>('open_url', url),
-  openOutputDir: () => call<{ ok: boolean }>('open_output_dir'),
-  confirmExit: () => call<{ ok: boolean }>('confirm_exit'),
-  minimizeWindow: () => call<{ ok: boolean }>('minimize_window'),
   listUrlRecheck: () =>
     call<{ ok: boolean; rows: UrlRecheckRow[]; running: boolean }>('list_url_recheck'),
   startUrlRecheck: () => call<{ ok: boolean; message: string }>('start_url_recheck'),
   cancelUrlRecheck: () => call<{ ok: boolean }>('cancel_url_recheck'),
   removeRecords: (eids: number[]) =>
     call<{ ok: boolean; removed: number }>('remove_records', eids),
+  listInvalidUrlCandidates: () =>
+    call<{ ok: boolean; rows: InvalidUrlCandidateRow[] }>('list_invalid_url_candidates'),
+  keepInvalidUrlCandidates: (eids: number[]) =>
+    call<{ ok: boolean; kept: number }>('keep_invalid_url_candidates', eids),
   exportZip: () => call<{ ok: boolean; message: string }>('export_zip'),
   authList: () => call<AuthPlatform[]>('auth_list'),
   authProbeAll: () => call<{ ok: boolean }>('auth_probe_all'),
@@ -419,6 +500,13 @@ export const bridge = {
   authResumeLogin: (key: string, action: 'skip' | 'retry') =>
     call<{ ok: boolean; message: string }>('auth_resume_login', key, action),
   authLogout: (key: string) => call<{ ok: boolean }>('auth_logout', key),
+  getLlmSettings: () => call<{ ok: boolean; settings: LlmSettingsPayload }>('get_llm_settings'),
+  saveLlmSettings: (payload: LlmSavePayload) =>
+    call<{ ok: boolean; message?: string; settings?: LlmSettingsPayload }>(
+      'save_llm_settings',
+      payload,
+    ),
+  testLlmConnection: () => call<{ ok: boolean; message: string }>('test_llm_connection'),
 }
 
 export { mockLogs }

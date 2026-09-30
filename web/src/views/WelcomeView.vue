@@ -2,14 +2,24 @@
 // 欢迎页：两种开始方式（新建 / 上传 zip 补录）。
 import { Upload, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { ref } from 'vue'
 
 import { bridge } from '@/api/bridge'
 import { useJobStore } from '@/stores/job'
 
 const store = useJobStore()
+const zipFileInput = ref<HTMLInputElement | null>(null)
 
-async function importZip() {
-  const result = await bridge.pickZipFile()
+function importZip() {
+  zipFileInput.value?.click()
+}
+
+async function onZipChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许再次选择同一文件
+  if (!file) return
+  const result = await bridge.uploadZipFile(file)
   if (result.ok) {
     await store.refreshSession()
     ElMessage.success('template.zip 已导入，可以直接补录。')
@@ -22,7 +32,7 @@ async function importZip() {
 
 <template>
   <section>
-    <h1 class="page-title">欢迎使用舆情验证报告工具</h1>
+    <h1 class="page-title">欢迎使用网安见微·智舆</h1>
     <p class="page-subtitle muted">
       批量读取网页，自动整理证据，生成固定格式的 template.zip 交付包。
     </p>
@@ -47,6 +57,13 @@ async function importZip() {
           把之前生成的 template.zip 直接传上来，在原有内容基础上继续人工补录、补截图，再重新导出。
         </span>
       </button>
+      <input
+        ref="zipFileInput"
+        type="file"
+        accept=".zip"
+        class="hidden-file-input"
+        @change="onZipChange"
+      />
     </div>
   </section>
 </template>

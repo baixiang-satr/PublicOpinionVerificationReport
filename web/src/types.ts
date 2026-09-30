@@ -158,6 +158,33 @@ export interface CaptureEventPayload {
   message: string
 }
 
+// ── 大模型设置 ─────────────────────────────────────────────────
+export interface LlmSettingsPayload {
+  enabled: boolean
+  base_url: string
+  model: string
+  timeout_seconds: number
+  max_input_chars: number
+  has_api_key: boolean
+  api_key_masked: string
+}
+
+export interface LlmSavePayload {
+  enabled: boolean
+  base_url: string
+  model: string
+  timeout_seconds: number
+  max_input_chars: number
+  api_key: string
+}
+
+export interface LlmTestPayload {
+  ok: boolean
+  message: string
+  latency_ms: number
+  reply: string
+}
+
 export type BridgeEventType =
   | 'started'
   | 'progress'
@@ -168,9 +195,9 @@ export type BridgeEventType =
   | 'auth'
   | 'auth_relogin'
   | 'capture'
-  | 'app_closing'
   | 'url_recheck'
   | 'url_recheck_done'
+  | 'llm_test'
 
 export interface AuthReloginPayload {
   key: string
@@ -211,4 +238,13 @@ export interface UrlRecheckDonePayload {
   cancelled: boolean
   done: number
   total: number
+}
+
+// ── URL 失效候选确认弹窗（抓取中判定 + 用户决策留痕）────────────────
+export interface InvalidUrlCandidateRow {
+  eid: number
+  url: string
+  code: string
+  message: string
+  checked_at: string
 }

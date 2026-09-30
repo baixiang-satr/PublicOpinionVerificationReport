@@ -5,7 +5,8 @@
   --poir-border: #e4e7ed;
   --poir-text: #303133;
   --poir-muted: #909399;
-  --poir-sidebar-w: 148px;
+  --poir-sidebar-w: 160px;
+  --poir-sidebar-w-collapsed: 60px;
   --poir-radius: 8px;
 }
 
@@ -105,6 +106,11 @@ body {
   cursor: pointer;
   text-decoration: underline;
   word-break: break-all;
+}
+
+/* B/S 文件上传：隐藏的原生 file input（按钮触发 click） */
+.hidden-file-input {
+  display: none;
 }
 
 /* ── 自适应：窄屏（移动端）── */
