@@ -1,6 +1,9 @@
 """window_capture：标题 token 定位窗口、标签激活兜底、前台恢复与落盘。"""
 
+import asyncio
 from pathlib import Path
+import threading
+import time
 
 import pytest
 from PIL import Image
@@ -152,6 +155,45 @@ async def test_missing_window_raises_and_restores_title(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_captures_are_serialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同窗口多标签并行抓拍必须串行，否则互切活动标签会截错 URL。"""
+    events: list[str] = []
+    guard = threading.Lock()
+
+    def _slow_print(hwnd: int) -> Image.Image:
+        with guard:
+            events.append("start")
+        time.sleep(0.05)
+        with guard:
+            events.append("end")
+        return _frame()
+
+    monkeypatch.setattr(window_capture, "_find_window_by_title", lambda token: 4321)
+    monkeypatch.setattr(window_capture, "_print_window", _slow_print)
+    monkeypatch.setattr(window_capture, "TAB_STRIP_REPAINT_SECONDS", 0)
+
+    await asyncio.gather(
+        window_capture.capture_browser_window(
+            FakeWindowPage("页面甲"),
+            tmp_path / "a.jpg",
+            TaskConfig(),
+        ),
+        window_capture.capture_browser_window(
+            FakeWindowPage("页面乙"),
+            tmp_path / "b.jpg",
+            TaskConfig(),
+        ),
+    )
+
+    assert events == ["start", "end", "start", "end"]
+    assert (tmp_path / "a.jpg").is_file()
+    assert (tmp_path / "b.jpg").is_file()
+
+
+@pytest.mark.asyncio
 async def test_print_failure_propagates_and_restores_title(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -172,3 +214,46 @@ async def test_print_failure_propagates_and_restores_title(
 
     assert page.titles[-1] == "原页面标题"
     assert not list(tmp_path.iterdir())
+
+
+class GeometryAwarePage(FakeWindowPage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.probe_calls = 0
+
+    async def evaluate(self, script: str, *args: object) -> object:
+        if "innerWidth" in script:
+            self.probe_calls += 1
+            return {
+                "innerWidth": 1440,
+                "innerHeight": 900,
+                "devicePixelRatio": 1,
+            }
+        return await super().evaluate(script, *args)
+
+
+@pytest.mark.asyncio
+async def test_geometry_probe_runs_once_per_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    window_os: dict[str, object],
+) -> None:
+    """渲染几何自检每进程一次，后续抓拍不重复探测。"""
+
+    monkeypatch.setattr(window_capture, "_geometry_probe_done", False)
+    page = GeometryAwarePage()
+
+    await window_capture.capture_browser_window(
+        page,
+        tmp_path / "g1.jpg",
+        TaskConfig(screenshot_format="jpeg"),
+    )
+    await window_capture.capture_browser_window(
+        page,
+        tmp_path / "g2.jpg",
+        TaskConfig(screenshot_format="jpeg"),
+    )
+
+    assert page.probe_calls == 1
+    assert (tmp_path / "g1.jpg").is_file()
+    assert (tmp_path / "g2.jpg").is_file()

@@ -25,13 +25,14 @@ class _Sink:
 class _FakeStore:
     def __init__(self) -> None:
         self.status = AuthStatus.UNKNOWN
+        self.statuses: dict[str, AuthStatus] = {}
 
     def profile_for(self, platform_key: str) -> AuthProfile:
         return AuthProfile(
             profile_id=f"{platform_key}-primary",
             platform_key=platform_key,
             auth_scope=platform_key,
-            status=self.status,
+            status=self.statuses.get(platform_key, self.status),
         )
 
 
@@ -133,7 +134,8 @@ async def test_relogin_serializes_platforms() -> None:
         for _ in range(2):
             while not auth.running:
                 await asyncio.sleep(0.01)
-            store.status = AuthStatus.VALID
+            # 只把当前开窗的平台刷回 VALID；另一平台仍未登录。
+            store.statuses[auth.starts[-1]] = AuthStatus.VALID
             auth.running = False
             await asyncio.sleep(0.01)
 
@@ -188,3 +190,37 @@ async def test_relogin_cancel_event_stops_waiting() -> None:
     assert await coordinator.relogin("weibo", "新浪微博", cancel) is False
     await driver
     assert auth.cancel_count >= 1
+
+
+async def test_relogin_short_circuits_when_profile_already_valid() -> None:
+    """URL 并行下排队进锁时档案已被先前重登刷回 VALID → 不再弹窗。"""
+    sink, store = _Sink(), _FakeStore()
+    store.status = AuthStatus.VALID
+    auth = _FakeAuthRunner(store)
+    coordinator = CrawlReloginCoordinator(sink, auth)
+
+    assert await coordinator.relogin("douyin", "抖音", asyncio.Event()) is True
+
+    assert auth.starts == []
+    assert sink.phases() == ["done"]
+
+
+async def test_relogin_parallel_same_platform_opens_window_once() -> None:
+    """同平台多条 URL 同时判定登录失效：只开一次登录窗，其余短路放行。"""
+    sink, store = _Sink(), _FakeStore()
+    auth = _FakeAuthRunner(store)
+    coordinator = CrawlReloginCoordinator(sink, auth)
+
+    async def complete_login() -> None:
+        while not auth.running:
+            await asyncio.sleep(0.01)
+        store.statuses["douyin"] = AuthStatus.VALID
+        auth.running = False
+
+    driver = asyncio.create_task(complete_login())
+    results = await asyncio.gather(
+        *(coordinator.relogin("douyin", "抖音", asyncio.Event()) for _ in range(3))
+    )
+    await driver
+    assert results == [True, True, True]
+    assert auth.starts == ["douyin"]

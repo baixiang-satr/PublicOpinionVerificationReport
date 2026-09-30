@@ -43,6 +43,13 @@ class CrawlReloginCoordinator:
         with self._flag_lock:
             return self._decisions.pop(platform_key, None)
 
+    def _already_valid(self, platform_key: str) -> bool:
+        try:
+            profile = self._auth.store().profile_for(platform_key)
+        except Exception:  # noqa: BLE001 - 读取失败按未恢复处理，走正常弹窗
+            return False
+        return profile.status == AuthStatus.VALID
+
     def _emit(self, platform_key: str, display_name: str, phase: str, message: str) -> None:
         self._sink.emit(
             "auth_relogin",
@@ -73,6 +80,16 @@ class CrawlReloginCoordinator:
         """Open the platform login window; True once a VALID state is saved."""
 
         async with self._serialize:
+            # URL 级并行下同平台多条 URL 可能同时判定登录失效；排队进入
+            # 时先前的重登往往已把档案刷回 VALID，直接放行不再重复弹窗。
+            if self._already_valid(platform_key):
+                self._emit(
+                    platform_key,
+                    display_name,
+                    "done",
+                    f"{display_name} 登录态已恢复，无需重复登录。",
+                )
+                return True
             while not cancel_event.is_set():
                 self._consume(platform_key)
                 ok, message = self._auth.start("login", platform_key)

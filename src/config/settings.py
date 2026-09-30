@@ -48,6 +48,9 @@ class TaskConfig:
 
     # ── Core crawling ─────────────────────────────────────────────────
     max_concurrency: int = 3
+    # 同一平台内并行抓取的 URL 数；1 = 恢复旧的逐条串行行为。
+    # 全局并发仍受 max_concurrency 浏览器槽位限制，同主机导航间隔不变。
+    platform_url_concurrency: int = 3
     page_timeout_seconds: int = 30
     page_processing_timeout_seconds: float = 240.0
     max_retries: int = 2
@@ -58,9 +61,12 @@ class TaskConfig:
     # ── Screenshot ────────────────────────────────────────────────────
     screenshot_format: str = "jpeg"
     full_page_screenshot: bool = True
-    max_full_page_screenshot_height: int = 4_096
+    # 文字类平台整页长图的高度上限（扩窗抓取的视口像素封顶，防无尽流页面）。
+    max_full_page_screenshot_height: int = 20_000
     screenshot_jpeg_quality: int = 90
     long_page_jpeg_quality: int = 82
+    # 整页长图的单张字节预算：质量/缩放阶梯自适应压缩到该值以内。
+    long_screenshot_max_bytes: int = 1_000_000
 
     # ── OCR image inputs ──────────────────────────────────────────────
     # Page images are temporary OCR inputs only; final output contains at
@@ -159,6 +165,8 @@ class TaskConfig:
     def __post_init__(self) -> None:
         if not 1 <= self.max_concurrency <= 10:
             raise ValueError("max_concurrency must be between 1 and 10.")
+        if not 1 <= self.platform_url_concurrency <= 10:
+            raise ValueError("platform_url_concurrency must be between 1 and 10.")
         if (
             self.page_timeout_seconds <= 0
             or self.page_processing_timeout_seconds <= 0
@@ -179,6 +187,10 @@ class TaskConfig:
             raise ValueError(
                 "JPEG qualities must satisfy 1 <= long_page_jpeg_quality "
                 "<= screenshot_jpeg_quality <= 100."
+            )
+        if not 100_000 <= self.long_screenshot_max_bytes <= 20_000_000:
+            raise ValueError(
+                "long_screenshot_max_bytes must be between 100000 and 20000000."
             )
         if self.max_images_per_record < 0 or self.max_image_bytes <= 0:
             raise ValueError("Image limits must be non-negative and positive respectively.")
@@ -229,6 +241,12 @@ class AppConfig:
 
         task = TaskConfig(
             max_concurrency=int(os.getenv("POR_MAX_CONCURRENCY", defaults.task.max_concurrency)),
+            platform_url_concurrency=int(
+                os.getenv(
+                    "POR_PLATFORM_URL_CONCURRENCY",
+                    defaults.task.platform_url_concurrency,
+                )
+            ),
             page_timeout_seconds=int(os.getenv("POR_PAGE_TIMEOUT_SECONDS", defaults.task.page_timeout_seconds)),
             page_processing_timeout_seconds=float(
                 os.getenv(
@@ -259,6 +277,12 @@ class AppConfig:
             ),
             long_page_jpeg_quality=int(
                 os.getenv("POR_LONG_PAGE_JPEG_QUALITY", defaults.task.long_page_jpeg_quality)
+            ),
+            long_screenshot_max_bytes=int(
+                os.getenv(
+                    "POR_LONG_SCREENSHOT_MAX_BYTES",
+                    defaults.task.long_screenshot_max_bytes,
+                )
             ),
             headless=False,
             background_crawl_browser=_bool_env(

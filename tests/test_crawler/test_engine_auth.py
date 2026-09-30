@@ -147,6 +147,8 @@ async def test_auth_failure_pauses_remaining_tasks_for_same_platform(tmp_path: P
             max_retries=0,
             min_host_interval_seconds=0,
             page_stabilize_milliseconds=0,
+            # 串行模式：验证“首条失败后后续 URL 不再访问”的暂停语义。
+            platform_url_concurrency=1,
         ),
         browser_pool=pool,
         parser=StubParser(),
