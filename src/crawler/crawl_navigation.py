@@ -137,6 +137,7 @@ async def navigate_with_fallback(
                         barrier.code,
                         barrier.message,
                         retryable=barrier.retryable,
+                        evidence=barrier.evidence,
                     ),
                     barrier.status,
                 )
@@ -193,6 +194,7 @@ def _check_response(status_code: int | None) -> None:
                 barrier.code,
                 barrier.message,
                 barrier.retryable,
+                evidence=barrier.evidence,
             ),
             barrier.status,
         )

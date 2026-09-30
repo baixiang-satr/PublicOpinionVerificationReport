@@ -36,6 +36,7 @@ from src.export.staging_assets import cleanup_staging_assets
 from src.export.template_manager import PreparedTemplate, TemplateManager
 from src.input.reader import InputReadError, read_url_input
 from src.screenshot.author_evidence import AuthorEvidenceDecision
+from src.screenshot.capture_diagnostics import persist_capture_environment_async
 from src.services.export_flow import (
     audit_and_archive_author_evidence,
     build_export_rows,
@@ -49,6 +50,7 @@ from src.services.models import (
     RunnerCallbacks,
 )
 from src.services.checkpoint_store import CheckpointStore
+from src.services.invalid_urls import report_invalid_candidates, track_engines
 from src.services.override_flow import OverrideFlowError, apply_job_overrides
 from src.services.progress_tracker import _call, _ProgressTracker
 from src.services.retained_records import prepare_retained_records
@@ -112,6 +114,8 @@ class TaskRunner:
                 job_id=job_id,
                 tasks=tasks,
             )
+            # 落盘截图环境诊断（缩放/显示器/视口配置），供它机排障。
+            await persist_capture_environment_async(prepared.job_dir, config=self._config.task)
             if cancellation.is_set():
                 checkpoint.save()
                 return self._cancelled_result(
@@ -156,7 +160,7 @@ class TaskRunner:
                         "INFO",
                         f"旧版模式将在任务结束时保存综合登录态：{login_state}",
                     )
-            engine = self._engine_factory(self._config.task)
+            tracked_engines, engine_factory = track_engines(self._engine_factory)
 
             def on_result(record: RecordResult) -> None:
                 tracker.on_record(record)
@@ -179,7 +183,7 @@ class TaskRunner:
                     f"仅抓取其余 {len(pending_tasks)} 条。",
                 )
             records = (
-                await engine.run(
+                await engine_factory(self._config.task).run(
                     pending_tasks,
                     prepared.template_dir,
                     on_event=tracker.on_task_event,
@@ -210,13 +214,21 @@ class TaskRunner:
                 await retry_failed_records_headed(
                     records,
                     task_config=self._config.task,
-                    engine_factory=self._engine_factory,
+                    engine_factory=engine_factory,
                     output_dir=prepared.template_dir,
                     on_event=tracker.on_task_event,
                     on_result=on_result,
                     cancel_event=cancellation,
                     log=lambda level, message: self._log(callbacks, level, message),
                 )
+
+            # 失效候选落盘（规则确证 + LLM 逐字引用确证），供完成后弹窗确认。
+            report_invalid_candidates(
+                prepared.job_dir,
+                tracked_engines,
+                records,
+                lambda level, message: self._log(callbacks, level, message),
+            )
 
             try:
                 override_count, staged_count = apply_job_overrides(

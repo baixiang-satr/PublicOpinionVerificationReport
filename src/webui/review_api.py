@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.services.invalid_urls import InvalidUrlStore
 from src.services.manual_edit import validate_manual_edit
 from src.webui.serialize import row_delta, sheet_payload
 
@@ -57,6 +58,8 @@ class ReviewApiMixin:
             return {"ok": False}
         ok = session.remove_record(int(evidence_id))
         if ok:
+            # 单条删除同样联动清理失效候选，防止已删记录留在确认弹窗。
+            InvalidUrlStore(session.job_dir).prune(set(session.evidence_ids()))
             self._sink.emit("session", {})
         return {"ok": ok}
 

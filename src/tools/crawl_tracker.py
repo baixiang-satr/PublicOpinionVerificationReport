@@ -55,6 +55,7 @@ _FAILURE_ADVICE: dict[str, str] = {
     "HTTP_5XX": "目标服务器暂时不可用（HTTP 5xx），可稍后重试。",
     # 内容不可用
     "CONTENT_UNAVAILABLE": "平台明确提示内容不存在、已删除或已下线，请核对原始 URL。",
+    "CONTENT_DELETED_LLM": "大模型从页面原文逐字引用确认内容已删除/不存在，请核对原始 URL；任务完成后可在确认弹窗中选择删除。",
     "CONTENT_REDIRECTED_TO_HOME": "内容链接被重定向到平台首页，原内容可能已失效或被删除。",
     # JavaScript
     "JAVASCRIPT_RENDER_BLOCKED": (

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import datetime
-import logging
 from pathlib import Path
 import random
 from typing import Any
@@ -17,15 +16,18 @@ from src.crawler.content_parser import ContentParser
 from src.crawler.crawl_navigation import CrawlFailure, navigate_with_fallback
 from src.crawler.engine_events import emit_event
 from src.crawler.field_quality import missing_required_fields
+from src.crawler.llm_deletion import InvalidUrlCandidate, LlmDeletionJudge
+from src.crawler.llm_fallback import LlmFallback
 from src.crawler.ocr_pipeline import OcrPipeline
 from src.crawler.optional_assets import (
     author_screenshot_required_unmet,
     collect_optional_assets,
 )
+from src.crawler.platform_queue import run_platform_queue
 from src.crawler.platform_router import PlatformRouter
 from src.crawler.platform_scheduler import PlatformTaskScheduler
 from src.crawler.rate_limiter import HostRateLimiter, wait_with_cancellation
-from src.crawler.relogin import ReloginHandler, heal_or_relogin, relogin_after_auth_failure
+from src.crawler.relogin import ReloginHandler
 from src.domain.models import (
     PageData,
     RecordResult,
@@ -40,7 +42,11 @@ from src.screenshot.browser import BrowserPool
 from src.screenshot.page_shooter import PageShooter, PageScreenshotError
 from src.utils.time_utils import DEFAULT_TIMEZONE
 
-logger = logging.getLogger(__name__)
+#: 规则已确证内容失效的错误码：直接收集为失效候选，不发起 LLM 请求。
+_RULE_CONFIRMED_DELETION_CODES = frozenset(
+    {"CONTENT_UNAVAILABLE", "CONTENT_NOT_FOUND", "CONTENT_REDIRECTED_TO_HOME"}
+)
+
 class CrawlEngine:
     def __init__(
         self,
@@ -55,9 +61,16 @@ class CrawlEngine:
         ocr_pipeline: OcrPipeline | None = None,
         auth_store: AuthProfileStore | None = None,
         relogin_handler: ReloginHandler | None = None,
+        llm_fallback: LlmFallback | None = None,
+        deletion_judge: LlmDeletionJudge | None = None,
     ) -> None:
         self._config = config
         self._relogin_handler = relogin_handler
+        self._llm_fallback = llm_fallback or LlmFallback(config)
+        self._deletion_judge = deletion_judge or LlmDeletionJudge(config)
+        #: 抓取中判定的失效候选（规则确证 + LLM 逐字引用确证），由
+        #: TaskRunner 在任务完成后持久化到任务目录。
+        self.invalid_candidates: list[InvalidUrlCandidate] = []
         self._auth_store = auth_store
         if self._auth_store is None and config.auth_store_dir is not None:
             self._auth_store = AuthProfileStore(config.auth_store_dir)
@@ -96,13 +109,18 @@ class CrawlEngine:
             )
             jobs = [
                 asyncio.create_task(
-                    self._process_platform_queue(
+                    run_platform_queue(
                         queue,
                         Path(output_dir),
-                        on_event,
-                        on_result,
-                        cancellation,
-                        auth_preflight,
+                        config=self._config,
+                        scheduler=self._scheduler,
+                        process=self._process,
+                        relogin_handler=self._relogin_handler,
+                        browser_pool=self._browser_pool,
+                        on_event=on_event,
+                        on_result=on_result,
+                        cancel_event=cancellation,
+                        auth_preflight=auth_preflight,
                     ),
                     name=f"crawl-platform-{queue_key}",
                 )
@@ -126,110 +144,6 @@ class CrawlEngine:
                 await self._browser_pool.close_for_cancellation()
             else:
                 await self._browser_pool.close()
-
-    async def _process_platform_queue(
-        self,
-        tasks: list[UrlTask],
-        output_dir: Path,
-        on_event: Callable[[TaskEvent], None] | None,
-        on_result: Callable[[RecordResult], None] | None,
-        cancel_event: asyncio.Event,
-        auth_preflight: dict[str, bool],
-    ) -> list[RecordResult]:
-        results: list[RecordResult] = []
-        known_block = self._scheduler.known_auth_block(tasks[0])
-        if known_block is not None:
-            # A stored EXPIRED marker may be stale; give the preserved state
-            # one probe, then offer an interactive re-login before pausing.
-            blocked_platform = self._scheduler.blocked_auth_platform(tasks[0])
-            if blocked_platform is not None and await heal_or_relogin(
-                self._relogin_handler, self._browser_pool, blocked_platform,
-                auth_preflight, cancel_event,
-            ):
-                logger.info(
-                    "Auth profile for %s restored before crawl; platform not paused.",
-                    blocked_platform,
-                )
-                known_block = None
-        if known_block is not None:
-            for task in tasks:
-                results.append(
-                    self._publish_paused_result(
-                        task,
-                        known_block,
-                        on_event,
-                        on_result,
-                    )
-                )
-            return results
-
-        paused_by: RecordResult | None = None
-        for task in tasks:
-            if cancel_event.is_set():
-                results.append(
-                    self._publish_synthetic_result(
-                        self._scheduler.cancelled_result(task),
-                        on_event,
-                        on_result,
-                    )
-                )
-                continue
-            if paused_by is not None:
-                result = self._publish_paused_result(
-                    task,
-                    (
-                        f"同平台记录 #{paused_by.task.evidence_id:03d} 检测到登录或验证屏障；"
-                        "已暂停该平台剩余 URL，请在“管理平台登录态”中复验后重试。"
-                    ),
-                    on_event,
-                    on_result,
-                )
-            else:
-                result = await self._process(
-                    task,
-                    output_dir,
-                    on_event,
-                    on_result,
-                    cancel_event,
-                )
-                if await relogin_after_auth_failure(
-                    self._relogin_handler, task, result, cancel_event
-                ):
-                    result = await self._process(task, output_dir, on_event, on_result, cancel_event)
-                if self._scheduler.should_pause_after(result):
-                    paused_by = result
-            results.append(result)
-        return results
-
-    def _publish_synthetic_result(
-        self,
-        result: RecordResult,
-        on_event: Callable[[TaskEvent], None] | None,
-        on_result: Callable[[RecordResult], None] | None,
-    ) -> RecordResult:
-        now = _now()
-        result.started_at = now
-        result.finished_at = now
-        emit_event(result, "finish", result.status.value, on_event)
-        if on_result is not None:
-            try:
-                on_result(result)
-            except Exception:
-                pass
-        return result
-
-    def _publish_paused_result(
-        self,
-        task: UrlTask,
-        message: str,
-        on_event: Callable[[TaskEvent], None] | None,
-        on_result: Callable[[RecordResult], None] | None,
-    ) -> RecordResult:
-        return self._publish_synthetic_result(
-            self._scheduler.auth_paused_result(task, message),
-            on_event,
-            on_result,
-        )
 
     async def _process(
         self,
@@ -258,6 +172,12 @@ class CrawlEngine:
                         )
                         continue
                     result.status = failure.status
+                    if failure.error.code in _RULE_CONFIRMED_DELETION_CODES:
+                        self._record_invalid_candidate(
+                            result.task,
+                            failure.error.code,
+                            failure.error.evidence or failure.error.message,
+                        )
                     break
         except asyncio.CancelledError:
             result.status = RecordStatus.CANCELLED
@@ -426,6 +346,35 @@ class CrawlEngine:
                             retryable=True,
                         )
                     )
+                # 大模型兜底：标题/作者/发布时间缺失时从原文补全（默认
+                # 关闭；在「大模型设置」中启用并填齐 Key 后生效）。
+                await self._llm_fallback.fill_missing_fields(
+                    extracted,
+                    cancel_event,
+                )
+                # 大模型失效判定：仅规则未确证的灰区页面（正文极短/空壳，
+                # 疑似软 404）触发；引文须逐字命中原文才采信，设置未启用或
+                # 判定失败一律静默保持原状态。
+                deleted_quote = await self._deletion_judge.detect_deleted_quote(
+                    extracted,
+                    cancel_event,
+                )
+                if deleted_quote is not None:
+                    self._record_invalid_candidate(
+                        result.task,
+                        "CONTENT_DELETED_LLM",
+                        deleted_quote,
+                    )
+                    raise CrawlFailure(
+                        TaskError(
+                            "access",
+                            "CONTENT_DELETED_LLM",
+                            f"大模型从页面原文逐字引用确认内容已删除：{deleted_quote}",
+                            retryable=False,
+                            evidence=deleted_quote,
+                        ),
+                        RecordStatus.FAILED,
+                    )
                 if not extracted.title and not extracted.content_text:
                     raise CrawlFailure(
                         TaskError(
@@ -462,6 +411,27 @@ class CrawlEngine:
                 TaskError("navigation", code, str(error) or "页面处理超过硬超时", retryable=not processing_timeout),
                 RecordStatus.FAILED,
             ) from error
+
+    def _record_invalid_candidate(
+        self,
+        task: UrlTask,
+        code: str,
+        citation: str,
+    ) -> None:
+        """收集失效候选（按 evidence_id 幂等替换，保留最新判定引文）。"""
+
+        candidate = InvalidUrlCandidate(
+            evidence_id=task.evidence_id,
+            url=task.normalized_url,
+            code=code,
+            citation=citation,
+        )
+        self.invalid_candidates = [
+            item
+            for item in self.invalid_candidates
+            if item.evidence_id != candidate.evidence_id
+        ]
+        self.invalid_candidates.append(candidate)
 
     async def _collect_optional_assets(
         self,

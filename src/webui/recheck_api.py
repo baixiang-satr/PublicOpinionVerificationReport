@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.services.invalid_urls import DECISION_DELETED, InvalidUrlStore
 from src.services.url_recheck import UrlRecheckStore
 from src.webui.recheck_runner import RecheckRunner
 
@@ -54,12 +55,23 @@ class RecheckApiMixin:
         return {"ok": True}
 
     def remove_records(self, evidence_ids: Any) -> dict:
-        """批量删除记录（逐条走 ReviewSession.remove_record 的资产清理）。"""
+        """批量删除记录（逐条走 ReviewSession.remove_record 的资产清理）。
+
+        联动清理复验/失效候选持久化状态；失效候选的删除决策连同引文快照
+        记入 ``invalid_url_decisions.json`` 留痕。
+        """
 
         session = self._session()
         if session is None:
             return {"ok": False, "removed": 0}
+        urls = {
+            record.task.evidence_id: (
+                record.page.final_url or record.task.original_url or ""
+            ).strip()
+            for record in session.records()
+        }
         removed = 0
+        removed_ids: list[int] = []
         for raw in evidence_ids or []:
             try:
                 evidence_id = int(raw)
@@ -67,8 +79,17 @@ class RecheckApiMixin:
                 continue
             if session.remove_record(evidence_id):
                 removed += 1
+                removed_ids.append(evidence_id)
         if removed:
-            UrlRecheckStore(session.job_dir).prune(set(session.evidence_ids()))
+            keep = set(session.evidence_ids())
+            UrlRecheckStore(session.job_dir).prune(keep)
+            invalid = InvalidUrlStore(session.job_dir)
+            invalid.record_decisions(
+                removed_ids,
+                DECISION_DELETED,
+                lambda eid: urls.get(eid, ""),
+            )
+            invalid.prune(keep)
             self._sink.emit("session", {})
         return {"ok": True, "removed": removed}
 

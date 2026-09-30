@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from src.crawler.structured_data import payload_has_content
 from src.domain.models import RecordStatus
 from src.tools.page_access_guards import (
-    content_unavailable_confirmed,
+    content_unavailable_marker,
     looks_like_barrier_only_page,
 )
 
@@ -49,6 +49,8 @@ class AccessBarrier:
     status: RecordStatus
     manual_recoverable: bool = False
     retryable: bool = False
+    # 判定依据引文（删除文案 marker / 状态码描述），供失效候选留痕。
+    evidence: str = ""
 
 
 # ── 验证码 URL 特征 ────────────────────────────────────────────────────
@@ -183,6 +185,7 @@ def inspect_http_response(status_code: int | None) -> AccessBarrier | None:
             "CONTENT_NOT_FOUND",
             "页面返回 HTTP 404，内容可能不存在、已删除或 URL 无效。",
             RecordStatus.FAILED,
+            evidence="HTTP 404",
         )
     if status_code == 429:
         return AccessBarrier(
@@ -230,6 +233,7 @@ async def inspect_page_access(
             "CONTENT_REDIRECTED_TO_HOME",
             "内容链接被重定向到平台首页；请提供仍然有效的真实内容 URL。",
             RecordStatus.NEEDS_REVIEW,
+            evidence=f"内容被重定向到平台首页：{final_url}",
         )
 
     title, body = await _read_page_snapshot(page)
@@ -256,14 +260,16 @@ async def inspect_page_access(
             "页面要求 JavaScript 但正文未渲染；可增加稳定等待后重试。",
             RecordStatus.NEEDS_REVIEW,
         )
-    # 删除确证收口在 content_unavailable_confirmed（标题子串/文首命中/短正文
+    # 删除确证收口在 content_unavailable_marker（标题子串/文首命中/短正文
     # 三规则）；真实页面评论区/推荐流深处顺带出现的"已删除"字样不会误判。
-    if content_unavailable_confirmed(title, body):
+    unavailable_marker = content_unavailable_marker(title, body)
+    if unavailable_marker is not None:
         return AccessBarrier(
             AccessKind.CONTENT_UNAVAILABLE,
             "CONTENT_UNAVAILABLE",
             "平台明确提示内容不存在、已删除、已下线或暂无查看权限；请核对原始 URL。",
             RecordStatus.FAILED,
+            evidence=unavailable_marker,
         )
     if _looks_like_json(body) and not _json_has_extractable_content(body):
         return AccessBarrier(

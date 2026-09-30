@@ -109,39 +109,48 @@ def looks_like_barrier_only_page(title: str, body: str, kind: str) -> bool:
 _EXACT_UNAVAILABLE_TITLES = frozenset({"404"})
 
 
-def content_unavailable_confirmed(title: str, body: str) -> bool:
-    """确证"内容已删除/不存在"：三规则任一命中。
+def content_unavailable_marker(title: str, body: str) -> str | None:
+    """确证"内容已删除/不存在"时返回命中的删除文案 marker，否则 None。
 
-    真实平台删除错误页带完整站点框架（导航/页脚/推荐流），正文远超 800
-    字、标题是平台名（如"微博"），旧的"精确标题或短正文"守卫必然漏判
-    （2026-08-12 实测 10 条已删微博全判 valid）。规则：
-
-    1. 标题子串命中删除文案（含历史精确标题）→ 确证；
-    2. 正文前 400 可见字符内命中 → 确证（错误页提示位于页面顶部）；
-    3. 正文不足 800 可见字符且全文含删除文案 → 确证（原纯错误页规则）。
+    判定规则与三规则收口完全一致（标题子串/文首命中/短正文纯错误页），
+    返回值供失效候选的"判定依据引文"留痕使用。
     """
 
     normalized_title = title.strip().casefold()
     # 裸 "404" 这类极短标题本身就是确定性错误页信号，无需正文佐证。
     if normalized_title in _EXACT_UNAVAILABLE_TITLES:
-        return True
+        return normalized_title
     normalized = f"{title}\n{body}".casefold()
     if not any(marker in normalized for marker in UNAVAILABLE_TEXT_MARKERS):
-        return False
-    if any(marker in normalized_title for marker in UNAVAILABLE_TEXT_MARKERS):
-        return True
+        return None
+    for marker in UNAVAILABLE_TEXT_MARKERS:
+        if marker in normalized_title:
+            return marker
     visible = "".join(body.split())
-    if any(marker in visible[:_BODY_HEAD_VISIBLE_CHARS] for marker in UNAVAILABLE_TEXT_MARKERS):
-        return True
+    for marker in UNAVAILABLE_TEXT_MARKERS:
+        if marker in visible[:_BODY_HEAD_VISIBLE_CHARS]:
+            return marker
     # 含空格的文案（"404 not found"）在去除空白后不可逆，补一轮原始文首窗口。
     head_raw = body[:_BODY_HEAD_VISIBLE_CHARS].casefold()
-    if any(marker in head_raw for marker in UNAVAILABLE_TEXT_MARKERS):
-        return True
-    return 0 < len(visible) < _BARRIER_ONLY_MAX_VISIBLE_CHARS
+    for marker in UNAVAILABLE_TEXT_MARKERS:
+        if marker in head_raw:
+            return marker
+    if 0 < len(visible) < _BARRIER_ONLY_MAX_VISIBLE_CHARS:
+        for marker in UNAVAILABLE_TEXT_MARKERS:
+            if marker in normalized:
+                return marker
+    return None
+
+
+def content_unavailable_confirmed(title: str, body: str) -> bool:
+    """确证"内容已删除/不存在"：三规则任一命中（见 content_unavailable_marker）。"""
+
+    return content_unavailable_marker(title, body) is not None
 
 
 __all__ = [
     "UNAVAILABLE_TEXT_MARKERS",
     "content_unavailable_confirmed",
+    "content_unavailable_marker",
     "looks_like_barrier_only_page",
 ]

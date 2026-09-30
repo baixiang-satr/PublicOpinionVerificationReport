@@ -138,6 +138,8 @@ class TaskError:
     code: str
     message: str
     retryable: bool = False
+    # 判定依据引文（删除文案 marker / 状态码描述），供失效候选留痕。
+    evidence: str = ""
 
 
 @dataclass
