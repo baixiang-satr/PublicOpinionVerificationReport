@@ -1,6 +1,8 @@
 # 舆情验证报告工具
 
-本项目是一个 Windows 本地桌面工具：导入网页 URL，采集页面基础信息，并为每条记录输出内容页截图和可取得时的作者主页截图，最后生成固定格式的 `template.zip`。
+本项目是 B/S 架构的网页工具：本机或服务器上运行后端（FastAPI，默认端口 **16667**），
+浏览器打开即用。导入网页 URL，采集页面基础信息，并为每条记录输出内容页截图和
+可取得时的作者主页截图，最后生成固定格式的 `template.zip`。
 
 T01 至 T08 已完成：模板契约、URL 导入、页面采集、平台路由、截图与附件、固定模板导出、端到端任务编排、桌面界面和发布检查均已接通并通过自动化验证。
 
@@ -31,7 +33,7 @@ T01 至 T08 已完成：模板契约、URL 导入、页面采集、平台路由�
 
 ## 运行工具
 
-安装依赖和浏览器后启动桌面界面：
+安装依赖和浏览器后启动服务，再用浏览器访问 `http://127.0.0.1:16667/`：
 
 ```powershell
 pip install -r requirements.txt
@@ -39,7 +41,16 @@ python -m playwright install chromium
 python -m src.main
 ```
 
-界面按“选择 URL 文件、检查设置、开始生成”三步操作。成功后会显示 `output/<任务编号>/template.zip` 的绝对路径；同目录还会生成质量报告和待人工补录清单。取消或没有可映射记录时不会生成空包。
+启动后会自动打开浏览器；服务器部署时以 `POIR_HOST=0.0.0.0` 运行，操作端浏览器访问
+`http://<服务器IP>:16667/`。端口可用 `POIR_PORT` 覆盖（注意 Chrome/Edge 封锁
+6665-6669 区段端口，不要使用 6667）。
+
+界面按“选择 URL 文件、检查设置、开始生成”三步操作，文件经浏览器上传到服务端处理。
+成功后会显示 `output/<任务编号>/template.zip` 并可直接下载；同目录还会生成质量报告和
+待人工补录清单。取消或没有可映射记录时不会生成空包。
+
+服务器部署（无显示环境）时，平台登录改用「导入登录态」：在本机浏览器登录平台后导出
+登录态 JSON（含 cookies 列表），在登录态管理中心逐平台上传，服务端加密存储并可在线复验。
 
 ## 处理流程
 
@@ -65,8 +76,9 @@ src/
 ├── screenshot/             # 浏览器池、页面/主页截图、临时 OCR 图片
 ├── export/                 # 模板副本、行映射、Excel COM、校验和打包
 ├── services/               # 端到端任务编排
+├── server/                 # FastAPI B/S 服务：REST 桥、WS 事件、上传/下载
 ├── tools/                  # 受限页诊断与可视人工接力
-├── webui/                  # pywebview 桌面壳、js_api 桥与后台 worker
+├── webui/                  # 业务桥（REST 暴露）、后台 worker 与事件推送
 └── utils/                  # 文件、时间、日志和 URL 工具
 
 web/                        # Vue 3 + Element Plus 前端（Univer 表格），npm run build 产出 dist
@@ -115,7 +127,7 @@ cd web && npm run build && cd ..
 python tools/build_release.py
 ```
 
-产物 `dist/舆情验证报告工具/` 包含 exe、固定模板、前端、Playwright 浏览器与《使用说明.txt》，整包压缩拷贝即可，目标电脑无需安装 Python、Node.js 或浏览器（需 Win10/11 64 位与系统自带 WebView2）。
+产物 `dist/舆情验证报告工具/` 包含 exe、固定模板、前端、Playwright 浏览器与《使用说明.txt》，整包压缩拷贝即可，目标电脑无需安装 Python、Node.js 或浏览器（需 Win10/11 64 位；运行 exe 后用浏览器访问提示的地址）。
 
 ## 参考项目取舍
 

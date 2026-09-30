@@ -4,7 +4,7 @@
 
 ## 维护约定
 
-- **编号**：新条目按 `U<序号>` 递增（当前已用至 U07），不复用已删除条目的编号。
+- **编号**：新条目按 `U<序号>` 递增（当前已用至 U09），不复用已删除条目的编号。
 - **状态标记**：`[ ]` 未开始 / `[~]` 进行中 / `[x]` 已完成。完成时必须在「当前状态」日期区记录完成日期与验证方式。
 - **条目结构**：每条含**背景与现状**（附代码依据）、**决策**（已拍板的方案）、**涉及模块**、**验收标准**，可直接作为实现任务卡。
 - **排期**：条目按优先级从高到低排列；实现时整条完成后独立验证，不把未完成的下游功能当作验收前提。
@@ -19,6 +19,8 @@
 - [x] U06：自动截图附带最终 URL（内容页 + 个人主页）——2026-08-11 完成初版注入横幅，因个人页 URL 失真同日改为全屏截图；2026-08-12 用户要求后台无感，最终改为 PrintWindow 直抓浏览器窗口（含地址栏 URL，窗口离屏亦可截）；`tests/test_screenshot/test_window_capture.py`、`test_url_ocr_filter.py` 通过
 - [x] U07：重复 URL 选文件即提示（删除重复 / 全部保留）——2026-08-11 完成；`tests/test_input/` 去重保留首条/全部保留/重复检测用例通过
 - [x] U08：复验失效判定修正 + 失效行高亮 + 微博删除页连锁修复（查看者主页截图）——2026-08-12 完成；`tests/test_tools/test_page_access_guards.py` 等 10 个新用例 + 全量 723 通过（10 条已删微博的端到端复验/高亮/一键删除与活页回归待人工实测）
+- [x] U09：登录窗口固定内置 Chromium + 防闪烁稳定化——2026-09-30 完成；`tests/test_auth/` 45 例通过（含新 `test_login_window.py` 5 例）；微信公众号 90s 静置刷新计数冒烟（`tools/smoke_login_window_stability.py`）与双机实测待人工
+- [x] U10：文字类平台内容页整页长图截图（自动+补录）——2026-09-30 完成；`tests/test_screenshot/test_long_capture.py`/`test_long_capture_ui.py`/`test_capture_config.py` + `tests/test_crawler/test_ocr_pipeline.py` 共 47 新用例，全量 877 通过（7 平台真机长图冒烟待人工）
 
 ---
 
@@ -62,13 +64,13 @@
 
 **背景与现状**：
 
-- `src/webui/app.py` 的 `run_app()` 直接 `webview.start()`，点窗口关闭即退出并在 finally 中执行 `bridge.capture.shutdown()`（关闭常驻截图浏览器、写回登录态）。
+- B/S 改造（2026-09-30）：pywebview 桌面壳已完全移除，`python -m src.main` 启动 FastAPI + Uvicorn（默认 127.0.0.1:16667，`POIR_HOST`/`POIR_PORT` 可覆盖）并自动打开浏览器；桥方法经 `POST /api/{method}` 暴露，文件选择改浏览器上传/下载，事件走 `WS /ws/events`。
 - 误点关闭会直接中断正在进行的抓取/补录工作。
 
 **决策**（2026-08-10 与用户确认）：
 
 - 点击关闭时弹窗询问「直接退出 / 最小化到任务栏」，按用户指令行事。
-- 最小化形态为**任务栏最小化**，不做系统托盘（pywebview 无托盘能力，避免引入 pystray 等额外依赖）。
+- 关闭行为：浏览器标签页关闭不影响后台任务；停止服务用 Ctrl+C（shutdown 时执行 `bridge.capture.shutdown()`，关闭常驻截图浏览器、写回登录态）。
 
 **方案要点**：
 
@@ -291,3 +293,62 @@
 - 真机验证（2026-08-12 已完成）：`output/test-tmp/probe_recheck_diag.py` 以生产 `_probe` 路径实测 2 条被删微博均判 `invalid CONTENT_UNAVAILABLE`。
 - 实测（待人工确认界面侧）：重开 `output/20260812-095449-e62d7372` **重新点「开始复验」**（对话框默认展示持久化的旧结果，必须重跑才覆盖）→ 10 条应全部「已失效」+ 整行淡红 → 一键删除 → 重新导出 zip 不含这些行。
 - 实测回归：活着的微博复验判「有效」，文首规则不误伤真实页面（**待人工实测**）。
+
+## U09 登录窗口固定内置 Chromium 与防闪烁稳定化
+
+**优先级**：高（微信公众号登录窗口一直闪，完全无法扫码登录；不同电脑闪的程度不同，2026-09-30 用户实测确认的功能性 BUG）
+
+**背景与现状**：
+
+- 症状：登录态管理 → 单平台「登录 / 更新」，窗口白屏抖动重绘 + 页面不停自动刷新，微信公众号最严重；两台电脑程度不同。
+- 代码核查：app 内无任何主动 reload 页面的逻辑（全库无 `reload` 调用），刷新循环来自页面自身 JS 对运行环境的反应。三个叠加根因：
+  1. 交互登录窗口注入了 `stealth.min.js` 反检测脚本（人工登录官方域名无收益，且最可疑为刷新循环诱因）；
+  2. 有头模式为抖音视频解码移除了 `--disable-gpu`（`browser_options.py`），GPU/驱动差异导致白屏抖动——登录窗口并不需要视频解码；
+  3. 窗口尺寸与 125%/150% DPI 缩放机器不对齐（context 固定 `device_scale_factor=1` 但窗口未固定）。
+
+**决策**（2026-09-30 与用户确认）：
+
+- 登录窗口固定使用随包内置 Chromium（用户已选）：`browser_channel`/`POR_BROWSER_CHANNEL` 只对抓取/截图浏览器生效；抓取/截图浏览器的 msedge 优先链不动（视频解码仍需要）。
+- 交互登录窗口不再注入 stealth.min.js。
+- 登录窗口恢复软件渲染并固定 `--force-device-scale-factor=1`。
+- 不改登录证据判定逻辑、不改各平台 login_url（除非诊断日志证明需要）。
+
+**方案要点**：
+
+1. `browser_options.py` 新增 `interactive_login_launch_options`：无 channel、保留 `--disable-gpu`、追加 `--force-device-scale-factor=1`、代理透传。
+2. 新建 `src/auth/login_window.py`（`open_login_browser`）：离屏预置 + 一次性 reveal；CDP reveal 失败时丢弃离屏窗口并重开为普通可见窗口（不再抛错阻断登录）；不注入 stealth。
+3. 新建 `src/auth/login_window_diagnostics.py`：主框架导航 / pageerror / console error 计数与 reveal 后窗口 bounds 日志（区分刷新循环与纯重绘闪烁）。
+4. `window_visibility.reveal_window_once` 加固：先 `windowState:normal` 再定位，失败重试 1 次；`_navigate_login` 增加 `load` + 500ms 稳定等待再 reveal。
+5. `service.py` interactive 分支切换到 `open_login_browser`；probe finally 输出诊断汇总。
+
+**涉及模块**：`src/screenshot/browser_options.py`、`src/auth/login_window.py`（新建）、`src/auth/login_window_diagnostics.py`（新建）、`src/auth/service.py`、`src/auth/window_visibility.py`、`src/auth/probe_helpers.py`、`tests/test_auth/test_login_window.py`（新建）、`tests/test_auth/test_window_visibility.py`、`tests/test_auth/test_login_flow.py`、`tests/test_auth/test_service.py`、`tools/smoke_login_window_stability.py`（新建）。
+
+**验收标准**：
+
+- `tests/test_auth` 45 例全绿（含新登录窗口用例 5 例）；全量单测无回归。
+- 真机冒烟（**待人工**）：`python tools/smoke_login_window_stability.py` 打开微信公众号登录页静置 90s，主框架导航 ≤2 次、窗口可见可扫码。
+- 双机实测（**待人工**）：两台「闪的程度不同」的电脑均完成微信公众号扫码登录；回归抖音登录弹窗、淘宝短信登录正常。
+
+## U10 文字类平台内容页整页长图截图
+
+**优先级**：高（视口截图只留首屏，长文证据不完整，2026-09-30 用户明确要求）
+
+**背景与现状**：
+
+- 自动截图（`PageShooter.capture_named`）与补录截图（`RegionCaptureService`）都只截当前视口；微信公众号/头条等长文正文大部分留在屏外。
+- U06 证据铁律：截图必须与最终 URL 同框（真实浏览器地址栏），纯 `page.screenshot(full_page=True)` 丢失浏览器镀铬不可用。
+
+**决策**（2026-09-30 与用户确认）：
+
+- 长图平台=7 个核心文字平台：wechat_official/baijiahao/toutiao/netease_news/sohu_news/ifeng_news/weibo；视频类（图文视频表 10 平台）、其余平台与**作者主页截图**一律不变。
+- 方案=**扩窗 + PrintWindow**：定位 HWND 后有界滚动触发懒加载 → 量文档高（封顶 `max_full_page_screenshot_height`，默认 20000）→ SetWindowPos 撑高窗口 → 等重排/图片加载 → PrintWindow 一次抓全（真实标签栏+地址栏在图顶部）→ 恢复原窗口几何。长图失败回退普通视口抓窗。
+- 单张 ≤1MB（`long_screenshot_max_bytes`，默认 1_000_000）：长图统一 JPEG，质量阶梯（`long_page_jpeg_quality`=82 起，−8 至 ≥40 末档）→ 宽度缩放阶梯（1.0/0.85/0.7），全超则写最小一档。
+- 补录工具条新增「截取长图」按钮，仅长图平台显示（`platform_key` 门控）；失败不终结会话，工具条亮回可重试。
+- 超高截图字段恢复 OCR 只识别顶部 4096px（`_TALL_SCREENSHOT_OCR_CROP`），防 RapidOCR 对上万像素长图性能崩塌。
+
+**涉及模块**：`src/screenshot/long_capture.py`（新建：平台集合/扩窗抓取/预算编码/补录处理）、`window_capture.py`（`long_page` 参数）、`page_shooter.py`（`capture()` 门控 + 长图强制 .jpg）、`region_capture.py`+`region_capture_toolbar.py`+`region_capture_helpers.py`（按钮与路由，RegionCaptureResult/confirm 迁入 helpers）、`src/config/settings.py`（默认值 4096→20000 + 新配置）、`src/crawler/ocr_pipeline.py`（顶部裁剪）。
+
+**验收标准**：
+
+- 47 个新用例全绿，全量 877 通过；release-check-ok。
+- 真机冒烟（**待人工**）：公众号长文（懒加载图全入图）/微博/头条各一条——地址栏 URL 正确、文件 ≤1MB、内容完整可读；抖音/B站视频与微博主页截图回归不变；补录按钮按平台显隐。

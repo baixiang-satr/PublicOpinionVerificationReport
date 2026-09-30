@@ -30,7 +30,7 @@
 | 固定模板写入 | Office Open XML 直接操作（`OoxmlTemplateWriter`），回退至 Windows Excel COM 自动化（`pywin32`） | 基准文件优先通过直接修改 OOXML 压缩包内的 XML 写入，保留全部结构；若源模板为受保护的旧式 OLE 格式则自动回退至 Excel COM。 |
 | 用户输入 Excel | `openpyxl` | 只读取用户提供的标准 `.xlsx`，不用于写出固定模板。 |
 | 打包 | Python `zipfile`，显式写入归档名 | 可精确控制 ZIP 必须具有 `template/` 顶层目录，避免平台相关的压缩路径差异。 |
-| GUI 后台执行 | pywebview 桌面壳 + 专属线程运行独立 asyncio 事件循环，事件经 `EventSink` 推送 JS | 前端为 Vue 3 + Element Plus，Python 能力经 js_api 桥暴露，UI 线程永不阻塞。 |
+| GUI 后台执行 | FastAPI + Uvicorn B/S 服务（默认端口 16667）+ 专属线程运行独立 asyncio 事件循环，事件经 WebSocket 推送 | 前端为 Vue 3 + Element Plus，Python 能力经 REST 桥暴露，文件经浏览器上传/下载，UI 线程永不阻塞。 |
 
 `requirements.txt` 中保留 Windows 条件依赖：`pywin32>=308; platform_system == 'Windows'`，作为旧式 OLE 模板的降级回退。默认导出路径使用 `OoxmlTemplateWriter` 直接操作 Office Open XML。现有 `openpyxl` 保留给输入文件读取，导出模板时禁止调用它。
 
@@ -61,7 +61,7 @@ flowchart LR
     I --> J["ExcelTemplateWriter\nExcel COM 写入与验证"]
     J --> K["PackageValidator\n引用完整性、ZIP 清单"]
     K --> L["template.zip"]
-    C --> M["pywebview + Vue GUI\n进度、日志、错误、重试"]
+    C --> M["FastAPI + Vue B/S 界面\n进度、日志、错误、重试"]
 ```
 
 运行态数据与交付物分离：标题、作者主页 URL、HTTP 状态码、重定向链和错误信息完整保存在内存结果、任务日志及 GUI 结果表中；只有模板允许的字段和实际存在的附件进入 `template.zip`。
@@ -255,9 +255,14 @@ src/
 │   ├── ooxml_writer.py           # Office Open XML 直接写入（默认路径）
 │   ├── package_validator.py      # Excel 附件引用与目录清单校验
 │   └── packager.py               # 固定 template.zip 打包
+├── server/
+│   ├── app.py                  # FastAPI 应用工厂：REST 桥、上传/下载、静态托管
+│   ├── events.py               # WebSocket 事件广播（/ws/events）
+│   ├── uploads.py              # 浏览器上传暂存（output/_uploads）
+│   └── run.py                  # uvicorn 启动入口（默认 16667）+ 自动开浏览器
 ├── webui/
-│   ├── app.py                  # pywebview 窗口入口（内置 HTTP 服务加载 dist）
-│   ├── bridge.py               # js_api：文件对话框、任务、补录、登录态
+│   ├── bridge.py               # 业务桥：任务、补录、登录态（REST 暴露）
+│   ├── intake_api.py           # 浏览器上传接收（accept_* 方法）
 │   ├── runner.py               # 后台线程 + asyncio 循环、EventSink 事件推送
 │   └── serialize.py            # ReviewSession/事件 -> JSON 载荷
 └── utils/
@@ -453,7 +458,7 @@ SHEET_LAYOUTS = {
 
 ### 8.1 线程模型
 
-界面为 Vue 3 + Element Plus 单页应用，运行在 pywebview（WebView2）窗口中，表格预览与人工补录使用 Univer 电子表格弹窗（WPS 交互，链接可点击跳转）。Python 侧 `WebUIBridge` 作为 js_api 暴露全部能力；`JobRunner`/`AuthRunner` 在专属守护线程中创建 asyncio 事件循环并运行 `TaskRunner.run()`/`AuthManagerService`，通过 `EventSink`（`window.evaluate_js`）向 Vue 推送不可变事件对象：
+界面为 Vue 3 + Element Plus 单页应用，由 FastAPI 静态托管（``web/dist``），浏览器访问，表格预览与人工补录使用 Univer 电子表格弹窗（WPS 交互，链接可点击跳转）。Python 侧 `WebUIBridge` 的全部公开方法经 `POST /api/{method}` 暴露，文件选择走浏览器上传（`POST /api/upload/{kind}`）与下载（`GET /api/download/*`）；`JobRunner`/`AuthRunner` 在专属守护线程中创建 asyncio 事件循环并运行 `TaskRunner.run()`/`AuthManagerService`，事件经 WebSocket（`/ws/events`）向 Vue 推送不可变事件对象：
 
 - `started(JobSummary)`
 - `progress(ProgressSnapshot)`

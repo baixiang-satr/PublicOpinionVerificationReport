@@ -35,7 +35,8 @@ playwright install chromium
 | `export/` | 模板复制、行映射、OOXML/Excel COM 写入、资产校验、ZIP | 重新抓取网页。 |
 | `services/` | 协调完整任务、发布进度事件、处理取消、人工补录持久化与合并 | 具体页面 DOM 选择器。 |
 | `tools/` | 识别受限页、内容失效和错误响应，提供有界人工处理等待 | 隐匿自动化、破解验证码或绕过权限。 |
-| `webui/` | pywebview 桌面壳：js_api 桥、后台任务/登录态线程、事件推送 | 页面 DOM 选择器、模板写入。 |
+| `webui/` | 业务桥（REST 暴露）：后台任务/登录态线程、事件推送 | 页面 DOM 选择器、模板写入。 |
+| `server/` | FastAPI B/S 服务：REST 桥、上传/下载、WebSocket 事件广播、静态托管（默认端口 16667） | 抓取/导出业务逻辑（一律走 WebUIBridge）。 |
 | `web/` | Vue 3 + Element Plus 前端（Univer 表格弹窗），构建产物 `web/dist` | 任何抓取/导出逻辑（一律走 js_api）。 |
 
 ## 模板开发流程
