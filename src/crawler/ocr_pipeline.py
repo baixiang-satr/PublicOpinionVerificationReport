@@ -62,7 +62,12 @@ class OcrPipeline:
                 summary_max_chars=self._config.summary_max_chars,
             )
             return []
-        result = await self._recognize([screenshot], cancel_event)
+        source = _crop_tall_screenshot(screenshot)
+        try:
+            result = await self._recognize([source], cancel_event)
+        finally:
+            if source != screenshot:
+                source.unlink(missing_ok=True)
         if result.status == OcrStatus.SUCCESS and result.text:
             recover_fields_from_ocr_text(
                 page,
@@ -97,6 +102,33 @@ class OcrPipeline:
             )
         except OcrCancelled as error:
             raise asyncio.CancelledError from error
+
+
+#: 整页长图只取顶部供 OCR：标题/作者/时间字段集中在文章顶部，
+#: 对上万像素的长图整图识别会显著拖慢 RapidOCR 子进程。
+_TALL_SCREENSHOT_OCR_CROP = 4_096
+
+
+def _crop_tall_screenshot(screenshot: Path) -> Path:
+    """超高长图裁顶部临时图供 OCR；不超过阈值或探测失败返回原图。"""
+
+    try:
+        from PIL import Image
+
+        with Image.open(screenshot) as opened:
+            if opened.height <= _TALL_SCREENSHOT_OCR_CROP:
+                return screenshot
+            top = opened.convert("RGB").crop(
+                (0, 0, opened.width, _TALL_SCREENSHOT_OCR_CROP)
+            )
+    except Exception:  # noqa: BLE001 - 探测失败按原图识别
+        return screenshot
+    temp_path = screenshot.with_name(f"{screenshot.stem}.ocr-top.jpg")
+    try:
+        top.save(str(temp_path), format="JPEG", quality=85)
+    finally:
+        top.close()
+    return temp_path
 
 
 def _ocr_errors(

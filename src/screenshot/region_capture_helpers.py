@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.config.settings import TaskConfig
 from src.crawler.navigation import navigate_page, stabilize_rendered_page
+from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
 from src.screenshot.region_capture_scripts import SELECTION_HTML
 from src.utils.file_utils import require_safe_file_name
 
@@ -28,6 +29,13 @@ _MIN_REGION_PX = 8
 
 #: 框选预览图最长边：多屏 4K 冻结图原尺寸内嵌会让 WebView2 内存暴涨。
 _PREVIEW_MAX_EDGE = 1920
+
+
+@dataclass(frozen=True)
+class RegionCaptureResult:
+    status: str  # "saved" | "cancelled" | "error"
+    name: str = ""
+    message: str = ""
 
 
 @dataclass
@@ -192,6 +200,44 @@ def _save_region(
             region.save(str(output), format="PNG")
     finally:
         region.close()
+
+
+async def confirm_region_capture(
+    state: _CaptureState,
+    data: dict[str, Any],
+    config: TaskConfig,
+    *,
+    evidence_id: int,
+    target: str,
+    assets_dir: Path,
+) -> RegionCaptureResult | None:
+    """保存框选确认的区域；选区无效/空白时重置选区页并返回 None。"""
+
+    clip = _clip_from_payload(data)
+    if clip is None or state.image is None:
+        await _reset_selection(state, "选区太小或无效，请重新框选。")
+        return None
+    clip = _scale_clip(clip, state.image_scale)
+    name = _capture_name(evidence_id, target, config.screenshot_format)
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    output = assets_dir / name
+    try:
+        _save_region(config, state.image, clip, output)
+    except Exception as error:  # noqa: BLE001 — 统一回吐给 UI
+        output.unlink(missing_ok=True)
+        return RegionCaptureResult(
+            status="error",
+            message=f"截图失败：{type(error).__name__}: {error}",
+        )
+    try:
+        blank = is_visually_blank(output)
+    except UnreadableImageError:
+        blank = True
+    if blank:
+        output.unlink(missing_ok=True)
+        await _reset_selection(state, "截到的区域是空白，请重新框选。")
+        return None
+    return RegionCaptureResult(status="saved", name=name)
 
 
 def _scale_clip(clip: dict[str, int], factor: float) -> dict[str, int]:

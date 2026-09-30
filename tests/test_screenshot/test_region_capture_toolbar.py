@@ -7,7 +7,7 @@ import tkinter
 
 import pytest
 
-from src.screenshot.region_capture_toolbar import NativeCaptureToolbar
+from src.screenshot.region_capture_toolbar import NativeCaptureToolbar, open_capture_toolbar
 
 
 class _ExplodingTk:
@@ -77,3 +77,79 @@ def test_toolbar_opens_and_closes_cleanly_on_real_tk() -> None:
         assert not toolbar._thread.is_alive()
     finally:
         loop.close()
+
+
+def test_toolbar_accepts_show_long_flag() -> None:
+    """文字类平台补录：构造参数带 show_long，工厂透传到工具条实例。"""
+
+    loop = asyncio.new_event_loop()
+    try:
+        toolbar = NativeCaptureToolbar(
+            loop,
+            lambda _payload: None,
+            evidence_id=3,
+            target="content",
+            show_long=True,
+        )
+        assert toolbar._show_long is True
+    finally:
+        loop.close()
+
+
+def test_open_capture_toolbar_forwards_show_long() -> None:
+    recorded: dict[str, object] = {}
+
+    class _Toolbar:
+        def start(self) -> None:
+            return None
+
+    def _factory(
+        _loop: asyncio.AbstractEventLoop,
+        _on_action: object,
+        **kwargs: object,
+    ) -> _Toolbar:
+        recorded.update(kwargs)
+        return _Toolbar()
+
+    loop = asyncio.new_event_loop()
+    try:
+        open_capture_toolbar(
+            _factory,
+            loop,
+            lambda _payload: None,
+            evidence_id=4,
+            target="author",
+            show_long=True,
+        )
+    finally:
+        loop.close()
+    assert recorded == {"evidence_id": 4, "target": "author", "show_long": True}
+
+
+def test_open_capture_toolbar_show_long_defaults_off() -> None:
+    recorded: dict[str, object] = {}
+
+    class _Toolbar:
+        def start(self) -> None:
+            return None
+
+    def _factory(
+        _loop: asyncio.AbstractEventLoop,
+        _on_action: object,
+        **kwargs: object,
+    ) -> _Toolbar:
+        recorded.update(kwargs)
+        return _Toolbar()
+
+    loop = asyncio.new_event_loop()
+    try:
+        open_capture_toolbar(
+            _factory,
+            loop,
+            lambda _payload: None,
+            evidence_id=5,
+            target="content",
+        )
+    finally:
+        loop.close()
+    assert recorded["show_long"] is False

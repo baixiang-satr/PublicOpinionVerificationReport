@@ -25,11 +25,13 @@ class NativeCaptureToolbar:
         *,
         evidence_id: int,
         target: str,
+        show_long: bool = False,
     ) -> None:
         self._loop = loop
         self._on_action = on_action
         self._evidence_id = evidence_id
         self._target = target
+        self._show_long = show_long
         self._commands: SimpleQueue[tuple[str, str | None]] = SimpleQueue()
         self._ready = Event()
         self._closed = Event()
@@ -106,27 +108,41 @@ class NativeCaptureToolbar:
             frame = ttk.Frame(root, padding=(12, 9))
             frame.grid(row=0, column=0, sticky="nsew")
             status = ttk.Label(frame, text=default_text)
-            status.grid(row=0, column=0, columnspan=2, padx=(0, 4), pady=(0, 7))
+            columns = 3 if self._show_long else 2
+            status.grid(row=0, column=0, columnspan=columns, padx=(0, 4), pady=(0, 7))
             start = ttk.Button(frame, text="开始框选")
             cancel = ttk.Button(frame, text="取消截图")
+            long_button = ttk.Button(frame, text="截取长图") if self._show_long else None
             start.grid(row=1, column=0, sticky="ew", padx=(0, 6))
-            cancel.grid(row=1, column=1, sticky="ew")
+            if long_button is not None:
+                long_button.grid(row=1, column=1, sticky="ew", padx=(0, 6))
+            cancel.grid(row=1, column=columns - 1, sticky="ew")
+
+            buttons = [b for b in (start, long_button, cancel) if b is not None]
 
             def arm() -> None:
-                start.state(["disabled"])
-                cancel.state(["disabled"])
+                for button in buttons:
+                    button.state(["disabled"])
                 status.configure(text="正在冻结当前屏幕…")
                 root.withdraw()
                 self._emit("arm")
 
+            def long_capture() -> None:
+                for button in buttons:
+                    button.state(["disabled"])
+                status.configure(text="正在截取整页长图…")
+                self._emit("long")
+
             def quit_capture() -> None:
-                start.state(["disabled"])
-                cancel.state(["disabled"])
+                for button in buttons:
+                    button.state(["disabled"])
                 status.configure(text="正在关闭…")
                 self._emit("cancel")
 
             start.configure(command=arm)
             cancel.configure(command=quit_capture)
+            if long_button is not None:
+                long_button.configure(command=long_capture)
             root.update_idletasks()
             width = max(390, root.winfo_reqwidth())
             height = root.winfo_reqheight()
@@ -141,8 +157,8 @@ class NativeCaptureToolbar:
                             root.withdraw()
                         elif command == "show":
                             status.configure(text=message or default_text)
-                            start.state(["!disabled"])
-                            cancel.state(["!disabled"])
+                            for button in buttons:
+                                button.state(["!disabled"])
                             root.deiconify()
                             root.attributes("-topmost", True)
                         elif command == "close":
@@ -173,6 +189,7 @@ def open_capture_toolbar(
     *,
     evidence_id: int,
     target: str,
+    show_long: bool = False,
 ) -> Any:
     """Construct and synchronously wait for a native control to be usable."""
 
@@ -181,6 +198,7 @@ def open_capture_toolbar(
         on_action,
         evidence_id=evidence_id,
         target=target,
+        show_long=show_long,
     )
     toolbar.start()
     return toolbar

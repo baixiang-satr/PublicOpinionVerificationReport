@@ -5,29 +5,33 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.config.settings import TaskConfig
 from src.screenshot.browser_options import STEALTH_SCRIPT_PATH, browser_context_options, browser_launch_options
+from src.screenshot.browser_options import fixed_window_geometry_args
 from src.screenshot.capture_session import GUEST_KEY, CaptureSession
-from src.screenshot.image_checks import UnreadableImageError, is_visually_blank
+from src.screenshot.long_capture import handle_manual_long_capture, is_long_page_platform
 from src.screenshot.page_layout import align_page_for_capture
 from src.screenshot.page_shooter import wait_for_capture_ready
 from src.screenshot.region_capture_helpers import (
-    _capture_name,
+    RegionCaptureResult,
     _CaptureState,
-    _clip_from_payload,
     _grab_full_screen,
     _live_pages,
-    _reset_selection,
-    _save_region,
-    _scale_clip,
     _selection_html,
+    confirm_region_capture,
     navigate_and_stabilize,
     uses_desktop_profile_context,
     wait_for_capture_result,
+)
+from src.screenshot.region_capture_helpers import (  # noqa: F401  # 测试套件转出口
+    _capture_name,
+    _clip_from_payload,
+    _save_region,
+    _scale_clip,
 )
 from src.screenshot.region_page_tracker import (
     track_active_browse_page as _track_active_browse_page,
@@ -57,13 +61,6 @@ __all__ = [
 
 CAPTURE_TARGETS = ("content", "author")
 _ARM_DELAY_SECONDS = 0.35
-
-
-@dataclass(frozen=True)
-class RegionCaptureResult:
-    status: str  # "saved" | "cancelled" | "error"
-    name: str = ""
-    message: str = ""
 
 
 class RegionCaptureService:
@@ -202,6 +199,7 @@ class RegionCaptureService:
                 _on_toolbar_action,
                 evidence_id=evidence_id,
                 target=target,
+                show_long=is_long_page_platform(platform_key),
             )
             await navigate_and_stabilize(page, url, self._config, cancel_event)
             return await wait_for_capture_result(
@@ -246,7 +244,11 @@ class RegionCaptureService:
             background_crawl_browser=False,
         )
         launch_options = browser_launch_options(config)
-        launch_options["args"] = [*launch_options.get("args", ()), "--start-maximized"]
+        # Fixed window geometry (see CaptureSession.ensure_browser).
+        launch_options["args"] = [
+            *launch_options.get("args", ()),
+            *fixed_window_geometry_args(config),
+        ]
         context_options = browser_context_options(
             config, storage_state,
             platform_key=(
@@ -254,10 +256,6 @@ class RegionCaptureService:
                 else platform_key
             ),
         )
-        # The page must fill the whole maximized window, not a fixed viewport.
-        context_options.pop("viewport", None)
-        context_options.pop("device_scale_factor", None)
-        context_options["no_viewport"] = True
 
         playwright = await async_playwright().start()
         browser = None
@@ -332,6 +330,7 @@ class RegionCaptureService:
                     _on_toolbar_action,
                     evidence_id=evidence_id,
                     target=target,
+                    show_long=is_long_page_platform(platform_key),
                 )
                 await navigate_and_stabilize(page, url, config, cancel_event)
                 return await wait_for_capture_result(
@@ -377,31 +376,32 @@ class RegionCaptureService:
         if action == "abort":
             await self._abort_selection(state, finish)
             return
+        if action == "long":
+            result = await handle_manual_long_capture(
+                page,
+                self._config,
+                evidence_id=evidence_id,
+                target=target,
+                assets_dir=Path(assets_dir),
+                focus_texts=state.focus_texts,
+            )
+            if result.status == "saved":
+                finish(result)
+            elif state.toolbar is not None:
+                state.toolbar.show(result.message or "长图截图失败，请重试。")
+            return
         if action != "confirm":
             return
-        clip = _clip_from_payload(data)
-        if clip is None or state.image is None:
-            await _reset_selection(state, "选区太小或无效，请重新框选。")
-            return
-        clip = _scale_clip(clip, state.image_scale)
-        name = _capture_name(evidence_id, target, self._config.screenshot_format)
-        assets_dir.mkdir(parents=True, exist_ok=True)
-        output = assets_dir / name
-        try:
-            _save_region(self._config, state.image, clip, output)
-        except Exception as error:  # noqa: BLE001 — 统一回吐给 UI
-            output.unlink(missing_ok=True)
-            finish(RegionCaptureResult(status="error", message=f"截图失败：{type(error).__name__}: {error}"))
-            return
-        try:
-            blank = is_visually_blank(output)
-        except UnreadableImageError:
-            blank = True
-        if blank:
-            output.unlink(missing_ok=True)
-            await _reset_selection(state, "截到的区域是空白，请重新框选。")
-            return
-        finish(RegionCaptureResult(status="saved", name=name))
+        result = await confirm_region_capture(
+            state,
+            data,
+            self._config,
+            evidence_id=evidence_id,
+            target=target,
+            assets_dir=Path(assets_dir),
+        )
+        if result is not None:
+            finish(result)
 
     async def _arm(
         self,

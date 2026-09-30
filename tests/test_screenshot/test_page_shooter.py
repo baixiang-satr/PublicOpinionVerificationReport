@@ -94,12 +94,21 @@ def _save_like_window_capture(output_path: Path, config: TaskConfig) -> None:
 
 @pytest.fixture
 def window_shot(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Replace the OS-level window capture with a deterministic striped image."""
+    """Replace the OS-level window capture with a deterministic striped image.
+
+    ``shot:long`` marks captures requested in long-page mode.
+    """
 
     calls: list[str] = []
 
-    async def _capture(page: object, output_path: Path, config: TaskConfig) -> None:
-        calls.append("shot")
+    async def _capture(
+        page: object,
+        output_path: Path,
+        config: TaskConfig,
+        *,
+        long_page: bool = False,
+    ) -> None:
+        calls.append("shot:long" if long_page else "shot")
         _save_like_window_capture(output_path, config)
 
     monkeypatch.setattr(page_shooter_module, "capture_browser_window", _capture)
@@ -138,6 +147,66 @@ async def test_capture_saves_png_when_configured(
 
     assert path.name == "002.png"
     assert path.read_bytes().startswith(b"\x89PNG")
+
+
+@pytest.mark.asyncio
+async def test_text_platform_content_capture_uses_long_page(
+    tmp_path: Path,
+    window_shot: list[str],
+) -> None:
+    page = FakeScreenshotPage()
+    page.url = "https://weibo.com/1234567890/AbCdEfGh"  # type: ignore[attr-defined]
+
+    path = await PageShooter(TaskConfig()).capture(page, 3, tmp_path)
+
+    assert path.name == "003.jpg"
+    assert window_shot == ["shot:long"]
+
+
+@pytest.mark.asyncio
+async def test_long_page_capture_forces_jpeg_under_png_config(
+    tmp_path: Path,
+    window_shot: list[str],
+) -> None:
+    page = FakeScreenshotPage()
+    page.url = "https://mp.weixin.qq.com/s/abc123"  # type: ignore[attr-defined]
+
+    path = await PageShooter(TaskConfig(screenshot_format="png")).capture(
+        page,
+        4,
+        tmp_path,
+    )
+
+    assert path.name == "004.jpg"
+    assert window_shot == ["shot:long"]
+
+
+@pytest.mark.asyncio
+async def test_video_platform_content_capture_stays_viewport(
+    tmp_path: Path,
+    window_shot: list[str],
+) -> None:
+    page = FakeScreenshotPage()
+    page.url = "https://www.douyin.com/video/7300000000000000001"  # type: ignore[attr-defined]
+
+    await PageShooter(TaskConfig()).capture(page, 5, tmp_path)
+
+    assert window_shot == ["shot"]
+
+
+@pytest.mark.asyncio
+async def test_capture_named_author_path_stays_viewport_on_text_platform(
+    tmp_path: Path,
+    window_shot: list[str],
+) -> None:
+    # 作者主页截图（author_shooter 的 capture_named 直调）不进入长图分支。
+    page = FakeScreenshotPage()
+    page.url = "https://weibo.com/1234567890/AbCdEfGh"  # type: ignore[attr-defined]
+
+    path = await PageShooter(TaskConfig()).capture_named(page, "003主页", tmp_path)
+
+    assert path.name == "003主页.jpg"
+    assert window_shot == ["shot"]
 
 
 @pytest.mark.asyncio
@@ -301,7 +370,13 @@ async def test_screenshot_rejects_near_uniform_window(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _blank(page: object, output_path: Path, config: TaskConfig) -> None:
+    async def _blank(
+        page: object,
+        output_path: Path,
+        config: TaskConfig,
+        *,
+        long_page: bool = False,
+    ) -> None:
         image = Image.new("RGB", (1_440, 1_020), "#f4f5f6")
         try:
             image.convert("RGB").save(str(output_path), format="JPEG", quality=90)
@@ -322,7 +397,13 @@ async def test_capture_failure_leaves_no_partial_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _boom(page: object, output_path: Path, config: TaskConfig) -> None:
+    async def _boom(
+        page: object,
+        output_path: Path,
+        config: TaskConfig,
+        *,
+        long_page: bool = False,
+    ) -> None:
         raise RuntimeError("grab failed")
 
     monkeypatch.setattr(page_shooter_module, "capture_browser_window", _boom)

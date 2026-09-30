@@ -20,6 +20,7 @@ from src.screenshot.capture_ready import (
     hide_obstructive_login_overlays,
     wait_for_capture_ready,
 )
+from src.screenshot.long_capture import is_long_page_platform
 from src.screenshot.page_layout import (
     align_page_for_capture,
 )
@@ -49,6 +50,7 @@ class PageShooter:
             output_dir,
             cancel_event,
             definition=definition,
+            allow_long_page=True,
         )
 
     async def capture_named(
@@ -62,6 +64,7 @@ class PageShooter:
         focus_selectors: tuple[str, ...] = (),
         focus_texts: tuple[str, ...] = (),
         require_alignment: bool = True,
+        allow_long_page: bool = False,
     ) -> Path:
         """直抓浏览器窗口（含地址栏 URL，窗口无需前台可见）。
 
@@ -71,17 +74,28 @@ class PageShooter:
         进入证据图，窗口被遮挡/离屏（background_crawl_browser）也能截，
         用户无感。``require_alignment`` 为 False 时，对齐失败不再报错而
         直接截取当前视口（仅限身份已核验的作者主页等场景作为兜底）。
+        ``allow_long_page`` 为 True（内容页入口）且平台属于文字类集合时，
+        扩窗截取整页长图并统一落 JPEG（尺寸预算驱动）；作者主页等
+        capture_named 直调方默认 False，行为不变。
         """
         _raise_if_cancelled(cancel_event)
-        extension = "jpg" if self._config.screenshot_format == "jpeg" else "png"
+        if definition is None:
+            definition = find_platform(str(getattr(page, "url", "") or ""))
+        long_page = allow_long_page and is_long_page_platform(
+            getattr(definition, "key", None)
+        )
+        # 长图统一 JPEG（1MB 尺寸预算）；其余截图维持配置格式。
+        extension = (
+            "jpg"
+            if (long_page or self._config.screenshot_format == "jpeg")
+            else "png"
+        )
         try:
             file_name = require_safe_file_name(f"{file_stem}.{extension}")
         except UnsafeFileNameError as error:
             raise PageScreenshotError(str(error)) from error
         output_path = Path(output_dir).resolve() / file_name
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        if definition is None:
-            definition = find_platform(str(getattr(page, "url", "") or ""))
         await wait_for_capture_ready(
             page,
             definition,
@@ -161,8 +175,14 @@ class PageShooter:
                         "Target content could not be framed completely in the viewport."
                     )
         # 对齐完成后直抓窗口：地址栏 URL 即最终 URL，可溯源且不可篡改。
+        # 文字类平台内容页（long_page）先扩窗到整页再抓，产出长图。
         try:
-            await capture_browser_window(page, output_path, self._config)
+            await capture_browser_window(
+                page,
+                output_path,
+                self._config,
+                long_page=long_page,
+            )
         except Exception as error:
             output_path.unlink(missing_ok=True)
             raise PageScreenshotError(f"Unable to capture screenshot: {error}") from error
