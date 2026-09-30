@@ -38,8 +38,10 @@ class ManualOverride:
     updated_at: datetime | None = None
 
     def is_empty(self) -> bool:
+        # 空串值也是有效人工意图（显式清空字段，导出为空单元格）；
+        # 仅当完全没有字段键/截图/备注时才视为空 override。
         return (
-            not any(str(value).strip() for value in self.values.values())
+            not self.values
             and not self.primary_screenshot_name
             and not self.author_screenshot_name
             and not self.attachment_names

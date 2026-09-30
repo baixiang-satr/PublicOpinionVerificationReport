@@ -258,9 +258,13 @@ function listenEdits(univerAPI: UniverAPI) {
         const payloadRow = model.rowAt(row)
         const column = model.columns[col]
         if (!payloadRow || !column) continue
-        // 纯样式 mutation 不带 v：跳过，避免把已保存的人工值误清空
-        if (cell == null || typeof cell !== 'object' || !('v' in cell)) continue
-        const value = cellText(cell, column.field)
+        // 纯样式 mutation（带 s 不带 v）：跳过，避免把已保存的人工值误清空；
+        // Delete 清空派发的 null-cell（generateNullCellValue）必须继续提交空串
+        const cellObject = (cell ?? null) as Record<string, unknown> | null
+        const hasValue = cellObject !== null && 'v' in cellObject
+        const hasStyle = cellObject !== null && 's' in cellObject
+        if (!hasValue && hasStyle) continue
+        const value = hasValue ? cellText(cellObject, column.field) : ''
         if (!editable.value || !column.editable || !column.field) {
           revertCell(sheet, model, row, col)
           continue
@@ -276,8 +280,11 @@ function revertCell(sheet: FWorksheet, model: SheetModel, row: number, col: numb
   const column = model.columns[col]
   if (!payloadRow || !column) return
   applying = true
-  sheet.getRange(row, col).setValue(buildCell(payloadRow, column))
-  applying = false
+  try {
+    sheet.getRange(row, col).setValue(buildCell(payloadRow, column))
+  } finally {
+    applying = false
+  }
 }
 
 interface EditRowDelta {
@@ -310,7 +317,10 @@ async function submitEdit(
   if (!result.ok || !payloadRow) {
     // 保存失败：回滚单元格显示并明确提示（此前静默失败，用户以为已保存）
     revertCell(sheet, model, row, col)
-    ElMessage.error(result.message || '保存失败，已还原单元格内容。')
+    ElMessage.error({
+      message: result.message || '保存失败，已还原单元格内容。',
+      duration: 5000,
+    })
     return
   }
   payloadRow.cells[columnKey] = value
@@ -320,13 +330,16 @@ async function submitEdit(
     payloadRow.status_text = result.row.status_text
   }
   applying = true
-  const column = model.columns[col]
-  sheet.getRange(row, col).setValue(buildCell(payloadRow, column))
-  for (const extraKey of [STATUS_COL, MISSING_COL]) {
-    const extraCol = model.columns.findIndex((c) => c.key === extraKey)
-    if (extraCol >= 0) sheet.getRange(row, extraCol).setValue(buildCell(payloadRow, model.columns[extraCol]))
+  try {
+    const column = model.columns[col]
+    sheet.getRange(row, col).setValue(buildCell(payloadRow, column))
+    for (const extraKey of [STATUS_COL, MISSING_COL]) {
+      const extraCol = model.columns.findIndex((c) => c.key === extraKey)
+      if (extraCol >= 0) sheet.getRange(row, extraCol).setValue(buildCell(payloadRow, model.columns[extraCol]))
+    }
+  } finally {
+    applying = false
   }
-  applying = false
   emit('changed')
 }
 

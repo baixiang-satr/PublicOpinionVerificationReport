@@ -37,12 +37,27 @@ def test_override_store_round_trip(tmp_path: Path) -> None:
 def test_override_store_drops_empty_overrides(tmp_path: Path) -> None:
     store = ManualOverrideStore(tmp_path)
     store.set_field(1, "title", "有内容")
-    store.set_field(2, "title", "   ")  # blank clears the field
+    store.set_field(2, "title", "   ")  # 空串=显式清空，override 保留
 
     loaded = ManualOverrideStore(tmp_path).load()
 
     assert loaded.get(1) is not None
-    assert loaded.get(2) is None
+    cleared = loaded.get(2)
+    assert cleared is not None
+    assert cleared.values["title"] == ""
+    assert not cleared.is_empty()  # 空串也是有效人工意图
+
+
+def test_override_store_blank_enum_field_reverts_override(tmp_path: Path) -> None:
+    """枚举列（文本类型/发布平台）不允许空：清空=删除人工值回退自动识别值。"""
+
+    store = ManualOverrideStore(tmp_path)
+    store.set_field(1, "text_type", "正文")
+    store.set_field(1, "text_type", "")
+
+    assert store.get(1) is None  # 枚举键被移除后整个 override 为空
+    loaded = ManualOverrideStore(tmp_path).load()
+    assert loaded.get(1) is None
 
 
 def test_override_store_rejects_unknown_field(tmp_path: Path) -> None:
@@ -104,10 +119,12 @@ def test_manual_override_is_empty_logic() -> None:
     override = ManualOverride(evidence_id=1)
     assert override.is_empty()
     override.set_value("title", "  ")
-    assert override.is_empty()
+    assert not override.is_empty()  # 有键即人工意图（空白=显式清空）
     override.author_screenshot_name = "001_author.png"
     assert not override.is_empty()
     override.author_screenshot_name = None
-    assert override.is_empty()
+    assert not override.is_empty()
+    override.clear_value("title")
+    assert override.is_empty()  # 键清空且无截图/备注才是空 override
     override.set_value("title", "实际标题")
     assert not override.is_empty()

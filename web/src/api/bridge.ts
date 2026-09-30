@@ -372,9 +372,13 @@ export const bridge = {
   clearLetterFile: () => call<{ ok: boolean }>('clear_letter_file'),
   letterState: () => call<{ names: string[] }>('letter_state'),
   listManualEntries: () =>
-    call<{ ok: boolean; rows: ManualEntryRow[]; path: string; message: string }>(
-      'list_manual_entries',
-    ),
+    call<{
+      ok: boolean
+      rows: ManualEntryRow[]
+      path: string
+      message: string
+      completed_count?: number
+    }>('list_manual_entries'),
   exportManualEntries: () => call<{ ok: boolean; message: string }>('export_manual_entries'),
   setOptions: (o: TaskOptions) => call<{ ok: boolean }>('set_options', o),
   startCrawl: (p: string, dedupe = false) =>

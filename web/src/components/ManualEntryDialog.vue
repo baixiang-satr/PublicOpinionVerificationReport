@@ -15,6 +15,7 @@ const rows = ref<ManualEntryRow[]>([])
 const loading = ref(false)
 const exporting = ref(false)
 const loadMessage = ref('')
+const completedCount = ref(0)
 
 const COLUMNS: { key: string; label: string; width?: number }[] = [
   { key: '证据编号', label: '编号', width: 72 },
@@ -37,9 +38,11 @@ watch(
     loading.value = true
     rows.value = []
     loadMessage.value = ''
+    completedCount.value = 0
     try {
       const res = await bridge.listManualEntries()
       rows.value = res.ok ? res.rows || [] : []
+      completedCount.value = res.ok ? res.completed_count || 0 : 0
       loadMessage.value = res.ok ? '' : res.message || '清单读取失败。'
     } catch (error) {
       loadMessage.value = `清单读取失败：${String(error)}`
@@ -66,6 +69,7 @@ async function doExport() {
     <p class="muted desc">
       以下链接不会出现在 template.zip 中：抓取后仍需人工补录的记录，以及输入阶段被拒的无效链接。
       <template v-if="rejectedCount">本任务有 {{ rejectedCount }} 条输入被拒链接。</template>
+      <template v-if="completedCount">另有 {{ completedCount }} 条已补录完成，已从清单隐藏。</template>
       表格可直接导出为 CSV 用 Excel 打开。
     </p>
     <el-alert v-if="loadMessage" type="info" :title="loadMessage" :closable="false" />

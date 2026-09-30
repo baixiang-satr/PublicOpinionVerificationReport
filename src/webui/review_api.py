@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.services.manual_edit import validate_manual_edit
 from src.webui.serialize import row_delta, sheet_payload
 
 
@@ -25,6 +26,14 @@ class ReviewApiMixin:
         session = self._session()
         if session is None:
             return {"ok": False, "message": "还没有打开的任务。"}
+        try:
+            record = session.get_record(int(evidence_id))
+        except KeyError:
+            return {"ok": False, "message": f"记录 {evidence_id} 不存在，可能已被删除。"}
+        try:
+            validate_manual_edit(session.layout_for(record), str(field), str(value))
+        except ValueError as error:
+            return {"ok": False, "message": str(error)}
         try:
             session.set_field(int(evidence_id), str(field), str(value))
         except Exception as error:  # noqa: BLE001 - 保存失败必须回执，前端据以回滚单元格

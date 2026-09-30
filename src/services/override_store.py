@@ -20,6 +20,9 @@ from src.utils.time_utils import DEFAULT_TIMEZONE
 OVERRIDES_FILE_NAME = "manual_overrides.json"
 OVERRIDES_SCHEMA_VERSION = 1
 
+#: 枚举列（文本类型/发布平台）不允许空值：清空这些字段=回退自动识别值。
+REVERT_ON_EMPTY_FIELDS = frozenset({"text_type", "platform"})
+
 
 class ManualOverrideStore:
     def __init__(self, job_dir: Path) -> None:
@@ -93,10 +96,12 @@ class ManualOverrideStore:
 
     def set_field(self, evidence_id: int, field: str, value: str) -> ManualOverride:
         override = self.get_or_create(evidence_id)
-        if value.strip():
-            override.set_value(field, value)
-        else:
+        if field in REVERT_ON_EMPTY_FIELDS and not value.strip():
+            # 枚举列清空=删除人工值，导出回落自动识别值
             override.clear_value(field)
+        else:
+            # 其余字段空串=显式清空：导出为空单元格，不回落爬取值
+            override.set_value(field, value.strip())
         return self._touch(override)
 
     def set_primary_screenshot(

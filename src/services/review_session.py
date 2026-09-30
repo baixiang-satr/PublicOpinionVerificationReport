@@ -405,10 +405,9 @@ class ReviewSession:
         override: ManualOverride | None,
         field: str,
     ) -> tuple[str, str]:
-        if override is not None:
-            manual = (override.values.get(field) or "").strip()
-            if manual:
-                return manual, "manual"
+        if override is not None and field in override.values:
+            # 键存在即人工意图（空串=显式清空，不回落爬取值）
+            return override.values[field].strip(), "manual"
         page = record.page
         layout = self.layout_for(record)
         crawled = ""

@@ -83,6 +83,66 @@ def test_apply_overrides_validates_text_type_against_sheet() -> None:
     assert any(error.code == "MANUAL_TEXT_TYPE_INVALID" for error in record.errors)
 
 
+def test_apply_overrides_empty_value_clears_field() -> None:
+    """空串人工值=显式清空：page 字段置空而不是回落爬取值。"""
+
+    record = _record()
+    override = ManualOverride(evidence_id=1, values={"title": "", "content": "人工正文"})
+
+    apply_overrides([record], [override])
+
+    assert record.page.title is None
+    assert record.page.field_sources["title"] is ExtractionSource.MANUAL
+    assert record.page.content_text == "人工正文"
+
+
+def test_apply_overrides_empty_published_at_clears() -> None:
+    record = _record()
+    record.page.published_at = datetime(2026, 8, 1, 9, 0, 0)
+    override = ManualOverride(evidence_id=1, values={"published_at": ""})
+
+    apply_overrides([record], [override])
+
+    assert record.page.published_at is None
+    assert record.page.field_sources["published_at"] is ExtractionSource.MANUAL
+
+
+def test_apply_overrides_accepts_chinese_date_text() -> None:
+    """人工解析器与编辑校验共用，中文日期格式「2026年9月1日」可导出。"""
+
+    record = _record()
+    override = ManualOverride(evidence_id=1, values={"published_at": "2026年9月1日"})
+
+    apply_overrides([record], [override])
+
+    parsed = record.page.published_at
+    assert parsed is not None
+    assert (parsed.year, parsed.month, parsed.day) == (2026, 9, 1)
+    assert not any(
+        error.code == "MANUAL_PUBLISHED_AT_INVALID" for error in record.errors
+    )
+
+
+def test_apply_overrides_wechat_author_id_maps_to_author_name() -> None:
+    """公众号表「微信号(必填)」列人工值交付为公众号昵称（三层对齐契约）。"""
+
+    task = UrlTask(1, "https://example.test/a", "https://example.test/a")
+    record = RecordResult(
+        task,
+        RecordStatus.NEEDS_REVIEW,
+        page=PageData(author_name="旧昵称"),
+        route=RouteDecision("公众号", "微信-公众号", "正文"),
+        assets=AssetSet(),
+    )
+    override = ManualOverride(evidence_id=1, values={"author_id": "gh_人工微信号"})
+
+    apply_overrides([record], [override])
+
+    assert record.page.author_name == "gh_人工微信号"
+    assert record.page.author_id is None
+    assert record.page.field_sources["author_name"] is ExtractionSource.MANUAL
+
+
 def test_apply_overrides_invalid_datetime_is_audited_not_fatal() -> None:
     record = _record()
     override = ManualOverride(evidence_id=1, values={"published_at": "不是日期"})

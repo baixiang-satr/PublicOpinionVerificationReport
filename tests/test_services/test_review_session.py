@@ -71,6 +71,20 @@ def test_effective_value_manual_wins_and_marks_source(tmp_path: Path) -> None:
     assert not author_view.missing
 
 
+def test_effective_value_empty_manual_shows_empty_not_crawled(tmp_path: Path) -> None:
+    """显式清空（空串人工值）显示为空，不回落爬取值（2026-09-22 修复）。"""
+
+    record = _record(1, author="抓取昵称", content="抓取正文")
+    session = _session(tmp_path, [record])
+    session.set_field(1, "content", "")
+    views = {view.field: view for view in session.field_views(1)}
+    assert views["content"].value == ""
+    assert views["content"].source == "manual"
+    assert views["author_name"].value == "抓取昵称"  # 未编辑字段不受影响
+    # 必填信息内容被清空 → 重新计入缺失，工作台/未收录清单语义一致
+    assert "信息内容" in session.missing_labels(record, session.get_override(1))
+
+
 def test_missing_labels_cover_required_fields_and_screenshot(tmp_path: Path) -> None:
     record = _record(1)  # nothing crawled
     session = _session(tmp_path, [record])
